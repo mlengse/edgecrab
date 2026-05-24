@@ -569,6 +569,7 @@ impl ToolHandler for DelegateTaskToolReal {
                     injected_messages: None,
                     tool_progress_tx: None,
                     watch_notification_tx: None,
+                    mutation_turn: None,
                 };
 
                 let goal = t.goal.clone();

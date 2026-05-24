@@ -222,6 +222,8 @@ pub struct AgentConfig {
     pub result_spill_preview_lines: usize,
     /// Maximum write payload KiB (None = use default 32 KiB).
     pub max_write_payload_kib: Option<u32>,
+    /// Per-turn file-mutation footers (success log + failure advisory).
+    pub file_mutation_verifier: bool,
 }
 
 impl Default for AgentConfig {
@@ -280,6 +282,7 @@ impl Default for AgentConfig {
             result_spill_threshold: 16_384,
             result_spill_preview_lines: 80,
             max_write_payload_kib: None,
+            file_mutation_verifier: true,
         }
     }
 }
@@ -1576,6 +1579,7 @@ impl Agent {
             injected_messages: None,
             tool_progress_tx: None,
             watch_notification_tx: None,
+            mutation_turn: None,
         };
         registry.tool_inventory(&ctx)
     }
@@ -1805,6 +1809,8 @@ pub enum StreamEvent {
     },
     /// The run has finished and the harness has assessed the terminal state.
     RunFinished { outcome: RunOutcome },
+    /// Per-turn file-mutation footer (success log and/or failure advisory).
+    Footer(String),
     /// The response transport is complete.
     Done,
     /// An error occurred — the response is incomplete.
@@ -1988,6 +1994,10 @@ impl std::fmt::Debug for StreamEvent {
                 let preview = &message[..message.len().min(60)];
                 write!(f, "SteerApplied({preview:?}…)")
             }
+            Self::Footer(text) => {
+                let preview = &text[..text.len().min(60)];
+                write!(f, "Footer({preview:?}…)")
+            }
         }
     }
 }
@@ -2103,6 +2113,7 @@ impl AgentBuilder {
                 result_spill_threshold: config.tools.result_spill_threshold,
                 result_spill_preview_lines: config.tools.result_spill_preview_lines,
                 max_write_payload_kib: config.tools.file.max_write_payload_kib,
+                file_mutation_verifier: config.display.file_mutation_verifier,
                 ..Default::default()
             },
             provider: None,

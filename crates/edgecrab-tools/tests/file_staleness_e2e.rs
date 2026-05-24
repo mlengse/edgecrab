@@ -32,6 +32,7 @@ fn ctx_in(dir: &std::path::Path, session_id: &str) -> ToolContext {
         injected_messages: None,
         tool_progress_tx: None,
         watch_notification_tx: None,
+        mutation_turn: None,
     }
 }
 

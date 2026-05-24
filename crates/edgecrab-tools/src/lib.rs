@@ -22,6 +22,7 @@ pub mod edit_contract;
 pub mod execution_fs;
 pub mod execution_tmp;
 pub mod fuzzy_match;
+pub mod mutations;
 mod local_pty;
 #[cfg(target_os = "macos")]
 pub mod macos_permissions;
@@ -56,6 +57,11 @@ pub use config_ref::AppConfigRef;
 pub use execution_fs::{ExecutionFilesystemView, describe_execution_filesystem};
 pub use process_table::ProcessTable;
 pub use provider_factory::{build_copilot_provider, create_provider_for_model};
+pub use mutations::{
+    MutationKind, MutationRecord, MutationTurnState, extract_file_mutation_targets,
+    file_mutation_result_landed, render_failure_footer, render_success_footer,
+    render_success_footer_width,
+};
 pub use registry::{
     SubAgentResult, SubAgentRunner, ToolContext, ToolHandler, ToolProgressUpdate, ToolRegistry,
     to_llm_definitions,

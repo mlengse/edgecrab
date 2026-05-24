@@ -256,12 +256,32 @@ impl ToolHandler for WriteFileTool {
         }
 
         let bytes_written = content.len();
+        let new_lines = content.lines().count();
+        let old_lines = if file_exists {
+            tokio::fs::read_to_string(&resolved)
+                .await
+                .map(|s| s.lines().count())
+                .unwrap_or(0)
+        } else {
+            0
+        };
 
         tokio::fs::write(&resolved, &content)
             .await
             .map_err(|e| ToolError::Other(format!("Cannot write '{}': {}", args.path, e)))?;
 
         let _ = crate::read_tracker::record_file_snapshot(&ctx.session_id, &resolved);
+
+        ctx.record_mutation(crate::mutations::MutationRecord {
+            path: args.path.clone(),
+            kind: if file_exists {
+                crate::mutations::MutationKind::Modify
+            } else {
+                crate::mutations::MutationKind::Add
+            },
+            lines_added: new_lines.saturating_sub(old_lines) as u32,
+            lines_removed: old_lines.saturating_sub(new_lines) as u32,
+        });
 
         if bytes_written == 0 {
             Ok(format!(
@@ -275,7 +295,7 @@ impl ToolHandler for WriteFileTool {
             // decide next action (patch a specific line, read a range, etc.)
             // without a redundant read_file round-trip.
             let action = if file_exists { "overwrite" } else { "create" };
-            let lines = content.lines().count();
+            let lines = new_lines;
             Ok(serde_json::json!({
                 "ok": true,
                 "action": action,
@@ -300,6 +320,30 @@ mod tests {
         let mut ctx = ToolContext::test_context();
         ctx.cwd = dir.to_path_buf();
         ctx
+    }
+
+    fn ctx_with_mutations(dir: &std::path::Path) -> ToolContext {
+        let mut ctx = ctx_in(dir);
+        ctx.mutation_turn = Some(std::sync::Arc::new(crate::mutations::MutationTurnState::new()));
+        ctx
+    }
+
+    #[tokio::test]
+    async fn write_file_records_mutation_for_footer() {
+        let dir = TempDir::new().expect("tmpdir");
+        let ctx = ctx_with_mutations(dir.path());
+        let turn = ctx.mutation_turn.as_ref().expect("mutation turn");
+
+        WriteFileTool
+            .execute(json!({"path": "tracked.rs", "content": "line1\nline2\n"}), &ctx)
+            .await
+            .expect("write");
+
+        let records = turn.drain_success();
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].path, "tracked.rs");
+        assert_eq!(records[0].kind, crate::mutations::MutationKind::Add);
+        assert_eq!(records[0].lines_added, 2);
     }
 
     #[tokio::test]

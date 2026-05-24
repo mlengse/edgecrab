@@ -327,6 +327,11 @@ pub struct ToolContext {
     /// WHY Option: Only needed when watch_patterns is used on run_process.
     pub watch_notification_tx:
         Option<tokio::sync::mpsc::UnboundedSender<crate::process_table::WatchEvent>>,
+    /// Per-turn file mutation log + failure verifier state.
+    ///
+    /// Set by `execute_loop` at turn start; tools record successful writes here
+    /// and the conversation loop records failures after dispatch.
+    pub mutation_turn: Option<Arc<crate::mutations::MutationTurnState>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -372,6 +377,13 @@ pub trait GatewaySender: Send + Sync + 'static {
 }
 
 impl ToolContext {
+    /// Record a successful filesystem mutation for the turn-end footer.
+    pub fn record_mutation(&self, record: crate::mutations::MutationRecord) {
+        if let Some(state) = &self.mutation_turn {
+            state.push_success(record);
+        }
+    }
+
     /// Create a minimal context for testing
     #[cfg(test)]
     pub fn test_context() -> Self {
@@ -402,6 +414,7 @@ impl ToolContext {
             injected_messages: None,
             tool_progress_tx: None,
             watch_notification_tx: None,
+            mutation_turn: None,
         }
     }
 

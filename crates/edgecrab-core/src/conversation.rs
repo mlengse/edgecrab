@@ -343,6 +343,7 @@ fn build_tool_context(
     // Per-conversation todo store — survives context compression.
     todo_store: Option<Arc<edgecrab_tools::TodoStore>>,
     injected_messages: Option<Arc<tokio::sync::Mutex<Vec<Message>>>>,
+    mutation_turn: Option<Arc<edgecrab_tools::MutationTurnState>>,
 ) -> ToolContext {
     ToolContext {
         task_id: uuid::Uuid::new_v4().to_string(),
@@ -386,6 +387,7 @@ fn build_tool_context(
         injected_messages,
         tool_progress_tx,
         watch_notification_tx: None,
+        mutation_turn,
     }
 }
 
@@ -561,6 +563,8 @@ struct DispatchContext {
     context_engine: Option<Arc<dyn crate::context_engine::ContextEngine>>,
     /// Names of tools owned by the context engine (pre-computed set for O(1) lookup).
     engine_tool_names: Arc<std::collections::HashSet<String>>,
+    /// Per-turn file mutation log + failure verifier (reset each user message).
+    mutation_turn: Arc<edgecrab_tools::MutationTurnState>,
 }
 
 impl Agent {
@@ -611,6 +615,9 @@ impl Agent {
             let mut guard = self.steer_rx.lock().expect("steer_rx mutex not poisoned");
             guard.take()
         };
+
+        let mutation_turn = Arc::new(edgecrab_tools::MutationTurnState::new());
+        mutation_turn.clear();
 
         // Snapshot config and provider at loop start so in-flight
         // conversations are not affected by a /model hot-swap.
@@ -691,6 +698,7 @@ impl Agent {
                     "schema-resolution", // placeholder — schemas are not browser-session-sensitive
                     Some(self.todo_store.clone()),
                     None, // schema resolution never injects conversation messages
+                    None, // mutation_turn not needed for schema resolution
                 );
 
                 // "all" sentinel / genuinely empty → pass None (no filtering).
@@ -1350,6 +1358,7 @@ impl Agent {
                         &conversation_session_id,
                         Some(self.todo_store.clone()),
                         None,
+                        None,
                     );
                     let enabled_filter = if config.enabled_toolsets.is_empty()
                         || edgecrab_tools::toolsets::contains_all_sentinel(&config.enabled_toolsets)
@@ -1870,6 +1879,7 @@ impl Agent {
                 spill_seq: spill_seq.clone(),
                 context_engine: engine_for_dispatch.clone(),
                 engine_tool_names: engine_tool_names.clone(),
+                mutation_turn: Arc::clone(&mutation_turn),
             };
             let action = match process_response(
                 &response,
@@ -2097,6 +2107,23 @@ impl Agent {
                 let _ = tx.send(crate::StreamEvent::Token(msg.clone()));
             }
             final_response = msg;
+        }
+
+        if !interrupted
+            && !final_response.is_empty()
+            && crate::config::file_mutation_verifier_enabled(config.file_mutation_verifier)
+        {
+            let footer = mutation_turn.render_turn_footer();
+            if !footer.is_empty() {
+                if let Some(tx) = event_tx {
+                    let _ = tx.send(crate::StreamEvent::Footer(footer.clone()));
+                }
+                session.messages.push(Message::user(&format!(
+                    "[file-mutation-verifier]\n{footer}"
+                )));
+                final_response = format!("{}\n\n{}", final_response.trim_end(), footer);
+                self.publish_session_state(&session).await;
+            }
         }
 
         // ─── Learning reflection ──────────────────────────────────────────
@@ -4066,6 +4093,7 @@ async fn process_response(
                 let spill_seq = dctx.spill_seq.clone();
                 let context_engine = dctx.context_engine.clone();
                 let engine_tool_names = dctx.engine_tool_names.clone();
+                let mutation_turn = Arc::clone(&dctx.mutation_turn);
 
                 parallel_tasks.spawn(async move {
                     let started = std::time::Instant::now();
@@ -4092,6 +4120,7 @@ async fn process_response(
                         spill_seq,
                         context_engine,
                         engine_tool_names,
+                        mutation_turn,
                     };
                     let result = dispatch_single_tool(&tc_id, &tc_name, &tc_args, &inner).await;
                     let duration_ms = started.elapsed().as_millis() as u64;
@@ -4613,6 +4642,7 @@ async fn dispatch_single_tool(
         &dctx.conversation_session_id,
         dctx.todo_store.clone(),
         Some(injected_messages.clone()),
+        Some(Arc::clone(&dctx.mutation_turn)),
     );
 
     let args: serde_json::Value = match serde_json::from_str(args_json) {
@@ -4642,6 +4672,7 @@ async fn dispatch_single_tool(
         }
     };
 
+    let args_for_mutation = args.clone();
     let result = match reg.dispatch(name, args, &ctx).await {
         Ok(output) => output,
         Err(ref e @ ToolError::InvalidArgs { .. }) => {
@@ -4664,6 +4695,13 @@ async fn dispatch_single_tool(
         }
         Err(e) => e.to_llm_response(),
     };
+
+    dctx.mutation_turn.record_tool_outcome(
+        name,
+        &args_for_mutation,
+        &result,
+        is_tool_error(&result),
+    );
 
     // Emit tool:post hook event
     if let Some(tx) = dctx.event_tx.as_ref() {
@@ -4863,6 +4901,7 @@ async fn run_learning_reflection_bg(ctx: BackgroundReflectionCtx) {
         spill_seq: Arc::new(crate::tool_result_spill::SpillSequence::new()),
         context_engine: None,
         engine_tool_names: Arc::new(std::collections::HashSet::new()),
+        mutation_turn: Arc::new(edgecrab_tools::MutationTurnState::new()),
     };
 
     // Work on local session clone — we don't need results propagated back.
@@ -7162,6 +7201,7 @@ def register(ctx):
             spill_seq: Arc::new(crate::tool_result_spill::SpillSequence::new()),
             context_engine: None,
             engine_tool_names: Arc::new(std::collections::HashSet::new()),
+            mutation_turn: Arc::new(edgecrab_tools::MutationTurnState::new()),
         }
     }
 

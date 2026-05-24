@@ -1488,6 +1488,8 @@ pub struct DisplayConfig {
     pub check_for_updates: bool,
     pub update_check_interval_hours: u64,
     pub skin: String,
+    /// Append per-turn file-mutation footers (success log + failure advisory).
+    pub file_mutation_verifier: bool,
 }
 
 impl Default for DisplayConfig {
@@ -1503,8 +1505,20 @@ impl Default for DisplayConfig {
             check_for_updates: true,
             update_check_interval_hours: 24,
             skin: "default".into(),
+            file_mutation_verifier: true,
         }
     }
+}
+
+/// Whether per-turn file-mutation footers are enabled.
+///
+/// `EDGECRAB_FILE_MUTATION_VERIFIER` overrides `display.file_mutation_verifier`.
+pub fn file_mutation_verifier_enabled(config_default: bool) -> bool {
+    if let Ok(env) = std::env::var("EDGECRAB_FILE_MUTATION_VERIFIER") {
+        let lower = env.trim().to_ascii_lowercase();
+        return !matches!(lower.as_str(), "0" | "false" | "no" | "off");
+    }
+    config_default
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Default)]

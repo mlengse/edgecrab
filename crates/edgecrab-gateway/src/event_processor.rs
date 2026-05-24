@@ -428,6 +428,14 @@ impl GatewayEventProcessor {
                     let _ = self.delta_tx.send(StreamItem::Delta(text)).await;
                 }
 
+                StreamEvent::Footer(text) => {
+                    cancel_typing!();
+                    let _ = self
+                        .delta_tx
+                        .send(StreamItem::Delta(format!("\n\n{text}")))
+                        .await;
+                }
+
                 StreamEvent::RunFinished { outcome } => {
                     if !outcome.is_success() || (self.cfg.enabled && self.cfg.tool_progress) {
                         self.send_status(&format_run_outcome_status(&outcome)).await;

@@ -203,13 +203,21 @@ async fn execute_replace_patch(args: ReplaceArgs, ctx: &ToolContext) -> Result<S
     // `before_lines`/`after_lines` give the agent a measurement signal without a
     // re-read: it can verify the net line delta (e.g. +1 line as expected from
     // a single-line insertion) without an extra read_file round-trip.
+    let before_lines = content.lines().count();
+    let after_lines = new_content.lines().count();
+    ctx.record_mutation(crate::mutations::MutationRecord {
+        path: args.path.clone(),
+        kind: crate::mutations::MutationKind::Modify,
+        lines_added: after_lines.saturating_sub(before_lines) as u32,
+        lines_removed: before_lines.saturating_sub(after_lines) as u32,
+    });
     let result = serde_json::json!({
         "ok": true,
         "replacements": count,
         "before_bytes": before_bytes,
         "after_bytes": after_bytes,
-        "before_lines": content.lines().count(),
-        "after_lines": new_content.lines().count(),
+        "before_lines": before_lines,
+        "after_lines": after_lines,
         "path": args.path,
     });
     Ok(result.to_string())
@@ -855,6 +863,30 @@ async fn execute_v4a_patch(patch_text: &str, ctx: &ToolContext) -> Result<String
                     }
                 }
             }
+        }
+        for path in &files_created {
+            ctx.record_mutation(crate::mutations::MutationRecord {
+                path: path.clone(),
+                kind: crate::mutations::MutationKind::Add,
+                lines_added: 0,
+                lines_removed: 0,
+            });
+        }
+        for path in &files_modified {
+            ctx.record_mutation(crate::mutations::MutationRecord {
+                path: path.clone(),
+                kind: crate::mutations::MutationKind::Modify,
+                lines_added: 0,
+                lines_removed: 0,
+            });
+        }
+        for path in &files_deleted {
+            ctx.record_mutation(crate::mutations::MutationRecord {
+                path: path.clone(),
+                kind: crate::mutations::MutationKind::Delete,
+                lines_added: 0,
+                lines_removed: 0,
+            });
         }
         // R18: Structured JSON result (FP57).
         let result = serde_json::json!({

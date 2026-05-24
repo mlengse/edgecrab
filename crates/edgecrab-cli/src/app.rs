@@ -659,6 +659,10 @@ async fn forward_stream_event_to_tui(
             );
             let _ = tx.send(AgentResponse::RunFinished { outcome });
         }
+        StreamEvent::Footer(text) => {
+            tracing::info!(len = text.len(), "TUI→agent: forwarding mutation footer");
+            let _ = tx.send(AgentResponse::Footer(text));
+        }
         StreamEvent::Done => {
             *saw_terminal_event = true;
             tracing::info!("TUI→agent: forwarding done");
@@ -5145,6 +5149,8 @@ enum AgentResponse {
     RunFinished {
         outcome: edgecrab_types::RunOutcome,
     },
+    /// Per-turn file-mutation footer appended after the assistant response.
+    Footer(String),
     /// Streaming complete — mark processing done.
     Done,
     /// An error occurred.
@@ -12843,6 +12849,14 @@ impl App {
                     // Accumulate response text for voice mode TTS readback.
                     self.last_agent_response_text.push_str(&text);
                 }
+                AgentResponse::Footer(text) => {
+                    if !text.trim().is_empty() {
+                        self.last_agent_response_text.push_str("\n\n");
+                        self.last_agent_response_text.push_str(&text);
+                        self.push_output(text, OutputRole::System);
+                        self.needs_redraw = true;
+                    }
+                }
                 AgentResponse::Notice(text) => {
                     // Detect steering-applied notices to update steer state.
                     if text.starts_with("⛵ Steering applied") {
@@ -20300,6 +20314,7 @@ impl App {
             injected_messages: None,
             tool_progress_tx: None,
             watch_notification_tx: None,
+            mutation_turn: None,
         }
     }
 
