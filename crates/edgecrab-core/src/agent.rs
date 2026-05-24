@@ -947,6 +947,83 @@ impl Agent {
         }
     }
 
+    /// Transfer the live session to another model with brief + window check.
+    ///
+    /// WHY separate from `/model`: handoff adds transparency — brief generation,
+    /// auto-compression when the target window is smaller, cache-safe prompt
+    /// rebuild, and persistence for `/insights`.
+    pub async fn perform_handoff(
+        &self,
+        target_model: &str,
+        events: Option<tokio::sync::mpsc::UnboundedSender<StreamEvent>>,
+    ) -> Result<crate::handoff::HandoffOutcome, crate::handoff::HandoffError> {
+        let (compression_cfg, auxiliary_model, current_model, main_provider) = {
+            let cfg = self.config.read().await;
+            (
+                cfg.compression.clone(),
+                cfg.auxiliary.model.clone(),
+                cfg.model.clone(),
+                self.provider.read().await.clone(),
+            )
+        };
+
+        let (outcome, new_provider) = {
+            let mut session = self.session.write().await;
+            let system_prompt = session.cached_system_prompt.clone();
+            let (outcome, new_provider) = crate::handoff::HandoffOrchestrator::execute(
+                &current_model,
+                target_model,
+                &mut session.messages,
+                system_prompt.as_deref(),
+                &compression_cfg,
+                main_provider,
+                auxiliary_model.as_deref(),
+            )
+            .await?;
+
+            session.cached_system_prompt = None;
+            session.cached_stable_prompt = None;
+            session.messages.push(Message::user(&crate::handoff::format_handoff_user_message(
+                &outcome.from_model,
+                &outcome.to_model,
+                &outcome.brief,
+            )));
+
+            (outcome, new_provider)
+        };
+
+        self.swap_model(outcome.to_model.clone(), new_provider).await;
+
+        if let Some(db) = &self.state_db
+            && let Some(session_id) = self.session.read().await.session_id.as_deref()
+        {
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0);
+            if let Err(err) = db.record_handoff(
+                session_id,
+                &outcome.from_model,
+                &outcome.to_model,
+                &outcome.brief,
+                ts,
+            ) {
+                tracing::warn!(error = %err, "handoff DB record failed");
+            }
+        }
+
+        if let Some(tx) = events {
+            let _ = tx.send(StreamEvent::HandoffComplete {
+                from: outcome.from_model.clone(),
+                to: outcome.to_model.clone(),
+                brief: outcome.brief.clone(),
+                compressed: outcome.compressed,
+            });
+        }
+
+        Ok(outcome)
+    }
+
     /// Get the current model name.
     pub async fn model(&self) -> String {
         self.config.read().await.model.clone()
@@ -1910,6 +1987,13 @@ pub enum StreamEvent {
         /// The full combined steer message that was injected.
         message: String,
     },
+    /// Model handoff completed — brief shown before the next turn.
+    HandoffComplete {
+        from: String,
+        to: String,
+        brief: String,
+        compressed: bool,
+    },
 }
 
 impl std::fmt::Debug for StreamEvent {
@@ -2009,6 +2093,9 @@ impl std::fmt::Debug for StreamEvent {
             Self::SteerApplied { message } => {
                 let preview = &message[..message.len().min(60)];
                 write!(f, "SteerApplied({preview:?}…)")
+            }
+            Self::HandoffComplete { from, to, compressed, .. } => {
+                write!(f, "HandoffComplete({from:?} → {to:?}, compressed={compressed})")
             }
             Self::Footer(text) => {
                 let preview = &text[..text.len().min(60)];

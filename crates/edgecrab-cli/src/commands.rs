@@ -53,6 +53,8 @@ pub enum CommandResult {
     Noop,
     /// Switch the active model (app handles provider creation + agent swap)
     ModelSwitch(String),
+    /// Transfer session to another model with brief + window check
+    Handoff(String),
     /// Activate the interactive model selector overlay
     ModelSelector,
     /// Activate the interactive cheap-model selector overlay.
@@ -527,6 +529,25 @@ impl CommandRegistry {
                     CommandResult::ModelSelector
                 } else {
                     CommandResult::ModelSwitch(args.to_string())
+                }
+            },
+        });
+
+        self.register(Command {
+            name: "handoff",
+            aliases: &[],
+            description: "Transfer session to another model with brief and window check",
+            handler: |args| {
+                let trimmed = args.trim();
+                if trimmed.is_empty() {
+                    CommandResult::Output(
+                        "Usage: /handoff <provider/model>\n\
+                         Example: /handoff copilot/gpt-5-mini\n\
+                         Generates a task brief, checks context window, then hot-swaps."
+                            .into(),
+                    )
+                } else {
+                    CommandResult::Handoff(trimmed.to_string())
                 }
             },
         });
@@ -1643,6 +1664,19 @@ mod tests {
         match reg.dispatch("/model openai/gpt-4o") {
             Some(CommandResult::ModelSwitch(m)) => assert_eq!(m, "openai/gpt-4o"),
             _ => panic!("expected model switch"),
+        }
+    }
+
+    #[test]
+    fn dispatch_handoff_commands() {
+        let reg = CommandRegistry::new();
+        match reg.dispatch("/handoff") {
+            Some(CommandResult::Output(msg)) => assert!(msg.contains("Usage: /handoff")),
+            other => panic!("expected usage output, got {other:?}"),
+        }
+        match reg.dispatch("/handoff copilot/gpt-5-mini") {
+            Some(CommandResult::Handoff(target)) => assert_eq!(target, "copilot/gpt-5-mini"),
+            other => panic!("expected Handoff, got {other:?}"),
         }
     }
 

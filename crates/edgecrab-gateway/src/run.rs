@@ -248,6 +248,7 @@ fn gateway_help_text() -> String {
 fn format_gateway_insights(
     snapshot: &edgecrab_core::SessionSnapshot,
     historical: Option<&edgecrab_state::InsightsReport>,
+    handoffs: Option<&[edgecrab_state::HandoffRecord]>,
 ) -> String {
     let cost = edgecrab_core::pricing::estimate_cost(
         &edgecrab_core::pricing::CanonicalUsage {
@@ -277,6 +278,26 @@ fn format_gateway_insights(
         "• Estimated cost: ${:.4}\n",
         cost.amount_usd.unwrap_or(0.0)
     ));
+
+    if let Some(records) = handoffs
+        && !records.is_empty()
+    {
+        text.push_str("\nHandoffs this session:\n");
+        for (idx, h) in records.iter().enumerate() {
+            let brief_preview = if h.brief.len() > 100 {
+                format!("{}…", &h.brief[..100])
+            } else {
+                h.brief.clone()
+            };
+            text.push_str(&format!(
+                "• {}. {} → {}\n  {}\n",
+                idx + 1,
+                h.from_model,
+                h.to_model,
+                brief_preview.replace('\n', " ")
+            ));
+        }
+    }
 
     if let Some(report) = historical {
         let ov = &report.overview;
@@ -1279,6 +1300,37 @@ impl Gateway {
         Ok(guard.agent.clone())
     }
 
+    async fn handle_handoff_command(&self, msg: &IncomingMessage, origin_chat_id: &str) -> String {
+        let Ok(agent) = self
+            .resolve_command_session_agent(msg, origin_chat_id)
+            .await
+        else {
+            return "No agent configured.".into();
+        };
+
+        let target = msg.get_command_args().trim();
+        if target.is_empty() {
+            return "Usage: /handoff <provider/model>\nExample: /handoff copilot/gpt-5-mini".into();
+        }
+
+        match agent.perform_handoff(target, None).await {
+            Ok(outcome) => {
+                let mut text = format!(
+                    "↻ Handoff complete: {} → {}\n\nTask brief:\n{}",
+                    outcome.from_model, outcome.to_model, outcome.brief
+                );
+                if outcome.compressed {
+                    text.push_str(
+                        "\n\nNote: history was auto-compressed for the target context window.",
+                    );
+                }
+                text.push_str("\n\nGoals and todos are preserved.");
+                text
+            }
+            Err(err) => format!("Handoff failed: {err}"),
+        }
+    }
+
     async fn handle_model_command(&self, msg: &IncomingMessage, origin_chat_id: &str) -> String {
         let Ok(agent) = self
             .resolve_command_session_agent(msg, origin_chat_id)
@@ -1511,11 +1563,22 @@ impl Gateway {
             .filter(|days| *days > 0)
             .unwrap_or(30);
         let snapshot = agent.session_snapshot().await;
+        let handoffs = match agent.state_db().await {
+            Some(db) => snapshot
+                .session_id
+                .as_deref()
+                .and_then(|sid| db.list_handoffs(sid).ok()),
+            None => None,
+        };
         let historical = match agent.state_db().await {
             Some(db) => db.query_insights(days).ok(),
             None => None,
         };
-        format_gateway_insights(&snapshot, historical.as_ref())
+        format_gateway_insights(
+            &snapshot,
+            historical.as_ref(),
+            handoffs.as_deref(),
+        )
     }
 
     /// Returns `true` if the user is authorized to use the gateway.
@@ -2253,6 +2316,16 @@ impl Gateway {
                                 }
                             }
                             "model" => Some(self.handle_model_command(&msg, &origin_chat_id).await),
+                            "handoff" => {
+                                if self.session_is_running(&session_key).await {
+                                    Some(
+                                        "Agent is busy. Wait for the current turn to finish, then retry /handoff."
+                                            .into(),
+                                    )
+                                } else {
+                                    Some(self.handle_handoff_command(&msg, &origin_chat_id).await)
+                                }
+                            }
                             "provider" => {
                                 Some(self.handle_provider_command(&msg, &origin_chat_id).await)
                             }

@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use edgecrab_types::{AgentError, Message, Role};
 
 /// Schema version — incremented on breaking schema changes.
-const SCHEMA_VERSION: u32 = 8;
+const SCHEMA_VERSION: u32 = 9;
 
 // Write-contention constants
 const WRITE_MAX_RETRIES: u32 = 15;
@@ -205,6 +205,16 @@ pub struct StoredGoalState {
     pub consecutive_parse_failures: u32,
 }
 
+/// One recorded model handoff for a session (`/handoff`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct HandoffRecord {
+    pub session_id: String,
+    pub from_model: String,
+    pub to_model: String,
+    pub brief: String,
+    pub ts: f64,
+}
+
 // ── SessionDb ─────────────────────────────────────────────────────────
 
 pub struct SessionDb {
@@ -274,6 +284,9 @@ impl SessionDb {
                 if v < 8 {
                     Self::migrate_to_v8(conn)?;
                 }
+                if v < 9 {
+                    Self::migrate_to_v9(conn)?;
+                }
                 conn.execute(
                     "UPDATE schema_version SET version = ?1",
                     params![SCHEMA_VERSION],
@@ -317,6 +330,22 @@ impl SessionDb {
              ALTER TABLE session_goals ADD COLUMN consecutive_parse_failures INTEGER NOT NULL DEFAULT 0;",
         )
         .map_err(|e| AgentError::Database(format!("migrate v8: {e}")))?;
+        Ok(())
+    }
+
+    fn migrate_to_v9(conn: &Connection) -> Result<(), AgentError> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS handoffs (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                from_model TEXT NOT NULL,
+                to_model TEXT NOT NULL,
+                brief TEXT NOT NULL,
+                ts REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_handoffs_session ON handoffs(session_id, ts);",
+        )
+        .map_err(|e| AgentError::Database(format!("migrate v9: {e}")))?;
         Ok(())
     }
 
@@ -543,6 +572,55 @@ impl SessionDb {
             )?;
             Ok(())
         })
+    }
+
+    /// Persist a model handoff event for `/insights`.
+    pub fn record_handoff(
+        &self,
+        session_id: &str,
+        from_model: &str,
+        to_model: &str,
+        brief: &str,
+        ts: f64,
+    ) -> Result<(), AgentError> {
+        self.execute_write(|conn| {
+            conn.execute(
+                "INSERT INTO handoffs (session_id, from_model, to_model, brief, ts)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![session_id, from_model, to_model, brief, ts],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// List handoffs for a session, oldest first.
+    pub fn list_handoffs(&self, session_id: &str) -> Result<Vec<HandoffRecord>, AgentError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AgentError::Database(format!("lock poisoned: {e}")))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT session_id, from_model, to_model, brief, ts
+                 FROM handoffs WHERE session_id = ?1 ORDER BY ts ASC, id ASC",
+            )
+            .map_err(|e| AgentError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![session_id], |row| {
+                Ok(HandoffRecord {
+                    session_id: row.get(0)?,
+                    from_model: row.get(1)?,
+                    to_model: row.get(2)?,
+                    brief: row.get(3)?,
+                    ts: row.get(4)?,
+                })
+            })
+            .map_err(|e| AgentError::Database(e.to_string()))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| AgentError::Database(e.to_string()))?);
+        }
+        Ok(out)
     }
 
     // ── Title hygiene (matches hermes-agent) ──────────────────────────
@@ -2376,5 +2454,25 @@ mod tests {
         assert_eq!(report.overview.total_messages, 0);
         assert!(report.models.is_empty());
         assert!(report.platforms.is_empty());
+    }
+
+    #[test]
+    fn record_and_list_handoffs() {
+        let db = test_db();
+        let session = sample_session("handoff-session");
+        db.save_session(&session).expect("save session");
+        db.record_handoff(
+            &session.id,
+            "anthropic/claude-opus-4.6",
+            "copilot/gpt-5-mini",
+            "Implement session handoff feature.",
+            1_700_000_000.0,
+        )
+        .expect("record handoff");
+        let rows = db.list_handoffs(&session.id).expect("list handoffs");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].from_model, "anthropic/claude-opus-4.6");
+        assert_eq!(rows[0].to_model, "copilot/gpt-5-mini");
+        assert!(rows[0].brief.contains("session handoff"));
     }
 }

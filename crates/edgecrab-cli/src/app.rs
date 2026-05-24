@@ -761,6 +761,33 @@ async fn forward_stream_event_to_tui(
                 message.chars().take(72).collect::<String>()
             )));
         }
+
+        StreamEvent::HandoffComplete {
+            from,
+            to,
+            brief,
+            compressed,
+        } => {
+            let mut lines = vec![
+                format!("↻ Handoff complete: {from} → {to}"),
+                String::new(),
+                "Task brief:".to_string(),
+                brief.clone(),
+            ];
+            if compressed {
+                lines.push(String::new());
+                lines.push(
+                    "Note: conversation was auto-compressed to fit the target model's context window."
+                        .to_string(),
+                );
+            }
+            lines.push(String::new());
+            lines.push(
+                "Goals, todos, and history are preserved. The next turn continues on the new model."
+                    .to_string(),
+            );
+            let _ = tx.send(AgentResponse::Notice(lines.join("\n")));
+        }
     }
 
     false
@@ -2707,6 +2734,10 @@ enum BackgroundOpResult {
     ModelSwitchDone { model: String },
     /// Context compression finished — show summary message.
     CompressDone { msg: String },
+    /// Model handoff finished — update model + show brief.
+    HandoffDone {
+        outcome: edgecrab_core::HandoffOutcome,
+    },
 }
 
 /// Tab-completion overlay state.
@@ -12008,6 +12039,9 @@ impl App {
             CommandResult::ModelSwitch(model) => {
                 self.handle_model_switch(model);
             }
+            CommandResult::Handoff(target) => {
+                self.handle_handoff(target);
+            }
             CommandResult::ModelSelector => {
                 self.refresh_model_selector_catalog();
             }
@@ -13539,6 +13573,33 @@ impl App {
                         BackgroundOpResult::CompressDone { msg } => {
                             self.push_output(msg, OutputRole::System);
                         }
+                        BackgroundOpResult::HandoffDone { outcome } => {
+                            self.model_name = outcome.to_model.clone();
+                            self.update_context_window();
+                            match persist_model_to_config(&outcome.to_model) {
+                                Ok(()) => self.push_output(
+                                    format!(
+                                        "↻ Handoff complete: {} → {}\n\nTask brief:\n{}\n{}",
+                                        outcome.from_model,
+                                        outcome.to_model,
+                                        outcome.brief,
+                                        if outcome.compressed {
+                                            "\nNote: history was auto-compressed for the target context window."
+                                        } else {
+                                            ""
+                                        }
+                                    ),
+                                    OutputRole::System,
+                                ),
+                                Err(e) => self.push_output(
+                                    format!(
+                                        "↻ Handoff complete: {} → {} (warning: failed to save default: {e})\n\nTask brief:\n{}",
+                                        outcome.from_model, outcome.to_model, outcome.brief
+                                    ),
+                                    OutputRole::System,
+                                ),
+                            }
+                        }
                     }
                 }
                 AgentResponse::RemoteSkillSearchReady {
@@ -14436,6 +14497,50 @@ impl App {
             let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::ModelSwitchDone {
                 model: model_clone,
             }));
+        });
+    }
+
+    fn handle_handoff(&mut self, target: String) {
+        let Some(agent) = self.require_agent() else {
+            return;
+        };
+        if matches!(
+            self.display_state,
+            DisplayState::AwaitingFirstToken { .. }
+                | DisplayState::Thinking { .. }
+                | DisplayState::Streaming { .. }
+                | DisplayState::ToolExec { .. }
+                | DisplayState::WaitingForClarify
+                | DisplayState::WaitingForApproval { .. }
+                | DisplayState::SecretCapture { .. }
+        ) {
+            self.push_output(
+                "Agent is busy. Wait for the current turn to finish, then retry /handoff.",
+                OutputRole::Error,
+            );
+            return;
+        }
+        let tx = self.response_tx.clone();
+        self.display_state = DisplayState::BgOp {
+            label: format!("Handoff to {}…", target),
+            frame: 0,
+            started: Instant::now(),
+        };
+        self.needs_redraw = true;
+        self.rt_handle.spawn(async move {
+            let result = agent.perform_handoff(&target, None).await;
+            match result {
+                Ok(outcome) => {
+                    let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::HandoffDone {
+                        outcome,
+                    }));
+                }
+                Err(err) => {
+                    let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::SystemMsg(format!(
+                        "Handoff failed: {err}"
+                    ))));
+                }
+            }
         });
     }
 
@@ -20914,6 +21019,34 @@ impl App {
             "  Est. cost:      ${:.4}\n",
             cost.amount_usd.unwrap_or(0.0)
         ));
+
+        if let Some(session_id) = snap.session_id.as_deref()
+            && let Some(db) = self.rt_handle.block_on(async { agent.state_db().await })
+        {
+            match db.list_handoffs(session_id) {
+                Ok(handoffs) if !handoffs.is_empty() => {
+                    text.push_str("\n── Handoffs this session ───────────────\n");
+                    for (idx, h) in handoffs.iter().enumerate() {
+                        let brief_preview = if h.brief.len() > 120 {
+                            format!("{}…", &h.brief[..120])
+                        } else {
+                            h.brief.clone()
+                        };
+                        text.push_str(&format!(
+                            "  {}. {} → {}\n     {}\n",
+                            idx + 1,
+                            h.from_model,
+                            h.to_model,
+                            brief_preview.replace('\n', " ")
+                        ));
+                    }
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    text.push_str(&format!("\n  (Handoff history unavailable: {e})\n"));
+                }
+            }
+        }
 
         // ── Historical window ──────────────────────────────────────────
         let db_opt = self.rt_handle.block_on(async { agent.state_db().await });

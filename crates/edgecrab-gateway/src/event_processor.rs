@@ -560,6 +560,20 @@ impl GatewayEventProcessor {
                         "gateway: steering applied — agent received new guidance"
                     );
                 }
+
+                StreamEvent::HandoffComplete {
+                    from,
+                    to,
+                    compressed,
+                    ..
+                } => {
+                    tracing::info!(
+                        from = %from,
+                        to = %to,
+                        compressed,
+                        "gateway: model handoff complete"
+                    );
+                }
             }
         }
 

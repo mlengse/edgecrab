@@ -343,6 +343,7 @@ async fn e2e_agent_streaming_with_copilot() {
             }
             StreamEvent::SteerPending { .. } => {} // steering notification — not relevant in this test
             StreamEvent::SteerApplied { .. } => {} // steering applied — not relevant in this test
+            StreamEvent::HandoffComplete { .. } => {} // handoff — not relevant in this test
             StreamEvent::Footer(text) => accumulated.push_str(&text),
         }
     }

@@ -9,7 +9,7 @@
 pub mod session_db;
 
 pub use session_db::{
-    DailyActivity, InsightsOverview, InsightsReport, ModelBreakdown, PlatformBreakdown,
+    DailyActivity, HandoffRecord, InsightsOverview, InsightsReport, ModelBreakdown, PlatformBreakdown,
     SearchResult, SessionDb, SessionExport, SessionRecord, SessionRichSummary, SessionSearchHit,
     SessionStats, SessionSummary, StoredGoalState, StoredSubGoal, ToolUsage,
 };

@@ -132,6 +132,15 @@ pub const BUILTIN_SLASH_COMMANDS: &[SlashCommandSpec] = &[
         gateway: true,
     },
     SlashCommandSpec {
+        name: "handoff",
+        aliases: &[],
+        description: "Transfer session to another model with brief and window check",
+        category: "Model",
+        args_hint: "<provider/model>",
+        cli: true,
+        gateway: true,
+    },
+    SlashCommandSpec {
         name: "cheap_model",
         aliases: &["cheap-model"],
         description: "Open, show, or set the cheap routing model",

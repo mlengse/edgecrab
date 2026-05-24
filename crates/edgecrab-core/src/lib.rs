@@ -17,6 +17,7 @@ pub mod context_references;
 pub mod conversation;
 pub mod goal_judge;
 pub mod goals;
+pub mod handoff;
 pub mod model_catalog;
 pub mod model_discovery;
 pub mod model_router;
@@ -42,6 +43,11 @@ pub use context_engine::{
     load_context_engine,
 };
 pub use context_references::{ContextRef, ExpansionResult, expand_context_refs};
+pub use handoff::{
+    HandoffBrief, HandoffError, HandoffOrchestrator, HandoffOutcome, HandoffTarget,
+    create_target_provider, format_handoff_user_message, generate_handoff_brief,
+    maybe_compress_for_handoff, resolve_handoff_target,
+};
 pub use goals::{
     GoalContinuationDecision, GoalState, GoalStatus, GoalStatusChip, GoalStore,
     InMemoryGoalStore, SqliteGoalStore, SubGoal, compact_status_chip,
