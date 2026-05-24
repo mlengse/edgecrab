@@ -415,3 +415,40 @@ async fn write_file_result_includes_lsp_diagnostics() {
         "Hermes-compatible lsp_diagnostics block expected: {value}"
     );
 }
+
+#[tokio::test]
+#[cfg_attr(
+    windows,
+    ignore = "integration test spawns cargo run as mock LSP server which is not reliable on Windows CI"
+)]
+async fn write_file_delta_filters_preexisting_diagnostics() {
+    let workspace = TempDir::new().expect("workspace");
+    let home = TempDir::new().expect("home");
+    std::fs::write(
+        workspace.path().join("Cargo.toml"),
+        "[package]\nname='mock'\nversion='0.1.0'\n",
+    )
+    .expect("cargo");
+
+    let registry = ToolRegistry::new();
+    let mut ctx = make_ctx(&workspace, &home);
+    ctx.config.lsp_enabled = true;
+    ctx.config.lsp_post_write_timeout_ms = 3_000;
+    ctx.lsp_gate = Some(Arc::new(EdgecrabLspGate));
+
+    let args = json!({
+        "path": "main.rs",
+        "content": "fn main() { let x: UndefinedType = 1; }\n"
+    });
+
+    let first = dispatch_json(&registry, &ctx, "write_file", args.clone()).await;
+    let diags = first["diagnostics"].as_array().expect("first write diags");
+    assert!(!diags.is_empty(), "first write should surface mock diagnostic");
+
+    let second = dispatch_json(&registry, &ctx, "write_file", args).await;
+    let second_diags = second["diagnostics"].as_array().expect("second write diags");
+    assert!(
+        second_diags.is_empty(),
+        "delta filter should drop unchanged diagnostics on rewrite: {second}"
+    );
+}

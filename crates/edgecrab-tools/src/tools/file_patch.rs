@@ -191,6 +191,7 @@ async fn execute_replace_patch(args: ReplaceArgs, ctx: &ToolContext) -> Result<S
 
     let before_bytes = content.len();
     let after_bytes = new_content.len();
+    let lsp_hook = crate::lsp_gate::LspWriteHook::capture_before(ctx, &resolved).await;
 
     tokio::fs::write(&resolved, &new_content)
         .await
@@ -220,7 +221,9 @@ async fn execute_replace_patch(args: ReplaceArgs, ctx: &ToolContext) -> Result<S
         "after_lines": after_lines,
         "path": args.path,
     });
-    crate::lsp_gate::attach_post_write_diagnostics(ctx, &resolved, &mut result).await;
+    lsp_hook
+        .attach_after(ctx, &resolved, &mut result, &new_content)
+        .await;
     Ok(result.to_string())
 }
 
@@ -745,6 +748,12 @@ async fn execute_v4a_patch(patch_text: &str, ctx: &ToolContext) -> Result<String
     let mut errors: Vec<String> = Vec::new();
 
     for p in &prepared {
+        if matches!(p.op.kind, V4AOpKind::Update | V4AOpKind::Add) {
+            let _ = crate::lsp_gate::LspWriteHook::capture_before(ctx, &p.source).await;
+        }
+    }
+
+    for p in &prepared {
         let op = &p.op;
         let resolved = &p.source;
 
@@ -896,17 +905,22 @@ async fn execute_v4a_patch(patch_text: &str, ctx: &ToolContext) -> Result<String
             "created": files_created,
             "deleted": files_deleted,
         });
-        if let Some(first) = files_created.first() {
-            let path = ctx.cwd.join(first);
-            crate::lsp_gate::attach_post_write_diagnostics(ctx, &path, &mut result).await;
-        } else if let Some(first) = files_modified.first() {
-            let path = ctx.cwd.join(
-                first
-                    .split(" → ")
-                    .next()
-                    .unwrap_or(first.as_str()),
-            );
-            crate::lsp_gate::attach_post_write_diagnostics(ctx, &path, &mut result).await;
+        let lsp_target = files_created
+            .first()
+            .or_else(|| files_modified.first());
+        if let Some(rel) = lsp_target {
+            let rel_path = rel.split(" → ").next().unwrap_or(rel.as_str());
+            let path = ctx.cwd.join(rel_path);
+            let pre_content = backups.get(&path).and_then(|bytes| {
+                bytes
+                    .as_ref()
+                    .and_then(|b| String::from_utf8(b.clone()).ok())
+            });
+            if let Ok(post) = tokio::fs::read_to_string(&path).await {
+                crate::lsp_gate::LspWriteHook::with_pre_content(pre_content)
+                    .attach_after(ctx, &path, &mut result, &post)
+                    .await;
+            }
         }
         Ok(result.to_string())
     } else {

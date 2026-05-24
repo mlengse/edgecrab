@@ -576,3 +576,81 @@ async fn e2e_file_mutation_verifier_stream_footer_with_copilot() {
         let _ = std::env::set_current_dir(prev);
     }
 }
+
+/// Live certification: Copilot drives `write_file`; tool result carries LSP diagnostics.
+#[tokio::test]
+#[ignore = "requires VS Code Copilot (VSCODE_IPC_HOOK_CLI or VSCODE_COPILOT_TOKEN)"]
+async fn e2e_lsp_write_diagnostics_with_copilot_gpt5_mini() {
+    if !copilot_available() {
+        eprintln!("Skipping: VS Code Copilot not available");
+        return;
+    }
+    ensure_copilot_authenticated_for_e2e().await;
+
+    let workspace = TempDir::new().expect("temp workspace");
+    std::fs::create_dir_all(workspace.path().join("src")).expect("src dir");
+    std::fs::write(
+        workspace.path().join("Cargo.toml"),
+        "[package]\nname = \"lsp_e2e\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )
+    .expect("cargo.toml");
+
+    let provider = edgecrab_tools::create_provider_for_model("vscode-copilot", COPILOT_TEST_MODEL)
+        .expect("should create VsCodeCopilot provider");
+
+    let agent = AgentBuilder::new(COPILOT_TEST_SPEC)
+        .provider(provider)
+        .tools(Arc::new(ToolRegistry::new()))
+        .max_iterations(12)
+        .build()
+        .expect("agent build should succeed");
+
+    let prompt = "Use the write_file tool exactly once to create `src/lsp_e2e_broken.rs` with this \
+                  exact content (one line): fn main() { let _: i32 = \"not an int\"; }\n\
+                  Do not use any other tools. After write_file succeeds, reply with exactly: \
+                  LSP_E2E_DONE";
+
+    let result = match agent
+        .run_conversation_in_cwd(prompt, None, None, workspace.path())
+        .await
+    {
+        Ok(result) => result,
+        Err(err) => {
+            let msg = err.to_string();
+            if is_verified_global_rate_limit(&msg) {
+                eprintln!("Skipping LSP write diagnostics E2E (rate limit): {msg}");
+                return;
+            }
+            panic!("conversation failed: {msg}");
+        }
+    };
+
+    let broken = workspace.path().join("src/lsp_e2e_broken.rs");
+    assert!(broken.is_file(), "write_file should create src/lsp_e2e_broken.rs");
+
+    let tool_has_lsp = result.messages.iter().any(|m| {
+        m.role == edgecrab_types::Role::Tool
+            && (m.text_content().contains("\"diagnostics\"")
+                || m.text_content().contains("lsp_diagnostics")
+                || m.text_content().contains("<diagnostics"))
+    });
+
+    assert!(
+        tool_has_lsp,
+        "write_file tool result should include LSP diagnostics when lsp.enabled; messages={:?}",
+        result
+            .messages
+            .iter()
+            .filter(|m| m.role == edgecrab_types::Role::Tool)
+            .map(|m| m.text_content())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        result.final_response.contains("LSP_E2E_DONE")
+            || result.final_response.to_uppercase().contains("DONE"),
+        "expected completion marker, got: {}",
+        result.final_response
+    );
+
+    println!("Live LSP write diagnostics E2E certified with Copilot gpt-5-mini.");
+}

@@ -11,6 +11,13 @@ use async_trait::async_trait;
 use serde::Serialize;
 use serde_json::{Value, json};
 
+/// Pre/post content for line-shift aware delta filtering (Hermes parity).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct LspEditContext<'a> {
+    pub pre_content: Option<&'a str>,
+    pub post_content: Option<&'a str>,
+}
+
 /// Severity-normalized diagnostic attached to a successful file-mutation tool result.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
 pub struct ToolDiagnostic {
@@ -24,33 +31,107 @@ pub struct ToolDiagnostic {
 /// Fetches semantic diagnostics for a path after a successful write/patch.
 #[async_trait]
 pub trait LspGate: Send + Sync {
+    /// Snapshot diagnostics before a write (Hermes `snapshot_baseline`).
+    async fn snapshot_baseline(&self, ctx: &crate::registry::ToolContext, path: &Path, timeout: Duration);
+
+    /// Pull diagnostics introduced since the last baseline (delta + optional line shift).
     async fn pull_diagnostics(
         &self,
         ctx: &crate::registry::ToolContext,
         path: &Path,
         timeout: Duration,
+        edit: Option<LspEditContext<'_>>,
     ) -> Vec<ToolDiagnostic>;
 }
 
-/// Hermes-compatible formatted block for models that scan prose tool results.
+const MAX_PER_FILE: usize = 20;
+const MAX_TOTAL_CHARS: usize = 4_000;
+
+/// Hermes-compatible `<diagnostics>` block with truncation.
 pub fn format_lsp_diagnostics_block(path: &Path, items: &[ToolDiagnostic]) -> Option<String> {
     if items.is_empty() {
         return None;
     }
-    let mut lines = vec![format!(
-        "LSP diagnostics introduced by this edit ({})",
-        path.display()
-    )];
-    for item in items {
-        lines.push(format!(
-            "{} [{}:{}] {}",
-            item.severity.to_uppercase(),
-            path.display(),
-            item.line,
-            item.message
-        ));
+    let limited = items.iter().take(MAX_PER_FILE);
+    let extra = items.len().saturating_sub(MAX_PER_FILE);
+    let mut lines: Vec<String> = limited
+        .map(|item| {
+            let code = item
+                .code
+                .as_ref()
+                .map(|c| format!(" [{c}]"))
+                .unwrap_or_default();
+            format!(
+                "{} [{}:{}] {}{}",
+                item.severity.to_uppercase(),
+                item.line,
+                1,
+                item.message,
+                code
+            )
+        })
+        .collect();
+    if extra > 0 {
+        lines.push(format!("... and {extra} more"));
     }
-    Some(lines.join("\n"))
+    let body = lines.join("\n");
+    let block = format!(
+        "<diagnostics file=\"{}\">\n{body}\n</diagnostics>",
+        path.display()
+    );
+    let prefix = "LSP diagnostics introduced by this edit:\n";
+    Some(truncate_lsp_block(&format!("{prefix}{block}")))
+}
+
+fn truncate_lsp_block(s: &str) -> String {
+    if s.len() <= MAX_TOTAL_CHARS {
+        return s.to_string();
+    }
+    const MARKER: &str = "\n…[truncated]";
+    let keep = MAX_TOTAL_CHARS.saturating_sub(MARKER.len());
+    format!("{}{MARKER}", &s[..keep])
+}
+
+/// Captures pre-edit content and LSP baseline before a file mutation.
+pub struct LspWriteHook {
+    pre_content: Option<String>,
+}
+
+impl LspWriteHook {
+    /// Hook with known pre-edit content (e.g. apply_patch backups); does not re-snapshot.
+    pub fn with_pre_content(pre_content: Option<String>) -> Self {
+        Self { pre_content }
+    }
+
+    /// Read pre-edit content (best-effort) and snapshot LSP baseline.
+    pub async fn capture_before(ctx: &crate::registry::ToolContext, path: &Path) -> Self {
+        let pre_content = tokio::fs::read_to_string(path).await.ok();
+        if ctx.config.lsp_enabled
+            && let Some(gate) = ctx.lsp_gate.as_ref()
+        {
+            let timeout = Duration::from_millis(ctx.config.lsp_post_write_timeout_ms.max(1));
+            gate.snapshot_baseline(ctx, path, timeout).await;
+        }
+        Self { pre_content }
+    }
+
+    /// Attach post-write diagnostics to a JSON tool-success object.
+    pub async fn attach_after(
+        self,
+        ctx: &crate::registry::ToolContext,
+        path: &Path,
+        result: &mut Value,
+        post_content: &str,
+    ) {
+        attach_post_write_diagnostics(
+            ctx,
+            path,
+            result,
+            self.pre_content.as_deref(),
+            Some(post_content),
+        )
+        .await;
+    }
 }
 
 /// Attach post-write diagnostics to a JSON tool-success object (best-effort).
@@ -58,6 +139,8 @@ pub async fn attach_post_write_diagnostics(
     ctx: &crate::registry::ToolContext,
     path: &Path,
     result: &mut Value,
+    pre_content: Option<&str>,
+    post_content: Option<&str>,
 ) {
     if !ctx.config.lsp_enabled {
         return;
@@ -67,8 +150,15 @@ pub async fn attach_post_write_diagnostics(
     };
     let timeout_ms = ctx.config.lsp_post_write_timeout_ms.max(1);
     let timeout = Duration::from_millis(timeout_ms);
-    let diagnostics =
-        match tokio::time::timeout(timeout, gate.pull_diagnostics(ctx, path, timeout)).await
+    let edit = Some(LspEditContext {
+        pre_content,
+        post_content,
+    });
+    let diagnostics = match tokio::time::timeout(
+        timeout,
+        gate.pull_diagnostics(ctx, path, timeout, edit),
+    )
+    .await
     {
         Ok(items) => items,
         Err(_) => {
@@ -96,11 +186,20 @@ pub struct MockLspGate {
 #[cfg(test)]
 #[async_trait]
 impl LspGate for MockLspGate {
+    async fn snapshot_baseline(
+        &self,
+        _ctx: &crate::registry::ToolContext,
+        _path: &Path,
+        _timeout: Duration,
+    ) {
+    }
+
     async fn pull_diagnostics(
         &self,
         _ctx: &crate::registry::ToolContext,
         _path: &Path,
         _timeout: Duration,
+        _edit: Option<LspEditContext<'_>>,
     ) -> Vec<ToolDiagnostic> {
         self.diagnostics.clone()
     }
@@ -129,12 +228,16 @@ mod tests {
         }));
 
         let mut value = json!({"ok": true, "path": "src/foo.rs"});
-        attach_post_write_diagnostics(&ctx, dir.path().join("src/foo.rs").as_path(), &mut value)
+        attach_post_write_diagnostics(&ctx, dir.path().join("src/foo.rs").as_path(), &mut value, None, None)
             .await;
 
         let diags = value["diagnostics"].as_array().expect("diagnostics array");
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0]["severity"], "error");
+        assert!(value["lsp_diagnostics"]
+            .as_str()
+            .unwrap()
+            .contains("<diagnostics"));
     }
 
     #[tokio::test]
@@ -152,7 +255,15 @@ mod tests {
         }));
 
         let mut value = json!({"ok": true});
-        attach_post_write_diagnostics(&ctx, dir.path().join("x.rs").as_path(), &mut value).await;
+        attach_post_write_diagnostics(&ctx, dir.path().join("x.rs").as_path(), &mut value, None, None).await;
         assert!(value.get("diagnostics").is_none());
+    }
+
+    #[test]
+    fn truncate_caps_long_blocks() {
+        let long = "x".repeat(5000);
+        let out = truncate_lsp_block(&long);
+        assert!(out.len() <= MAX_TOTAL_CHARS);
+        assert!(out.ends_with("…[truncated]"));
     }
 }

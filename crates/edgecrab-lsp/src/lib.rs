@@ -3,6 +3,7 @@
 
 pub mod capability;
 pub mod config;
+pub mod delta;
 pub mod diagnostics;
 pub mod edit;
 pub mod enrichment;
@@ -11,6 +12,7 @@ pub mod gate;
 pub mod manager;
 pub mod position;
 pub mod protocol;
+pub mod range_shift;
 pub mod render;
 pub mod sync;
 pub mod tools;

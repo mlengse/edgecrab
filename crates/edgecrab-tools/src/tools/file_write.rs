@@ -227,6 +227,7 @@ impl ToolHandler for WriteFileTool {
         };
 
         let content = args.content;
+        let lsp_hook = crate::lsp_gate::LspWriteHook::capture_before(ctx, &resolved).await;
 
         enforce_write_payload_limit_with_max(
             "write_file",
@@ -303,7 +304,9 @@ impl ToolHandler for WriteFileTool {
                 "lines": lines,
                 "path": args.path,
             });
-            crate::lsp_gate::attach_post_write_diagnostics(ctx, &resolved, &mut payload).await;
+            lsp_hook
+                .attach_after(ctx, &resolved, &mut payload, &content)
+                .await;
             Ok(payload.to_string())
         }
     }

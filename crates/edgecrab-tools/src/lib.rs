@@ -58,7 +58,9 @@ pub use config_ref::AppConfigRef;
 pub use execution_fs::{ExecutionFilesystemView, describe_execution_filesystem};
 pub use process_table::ProcessTable;
 pub use provider_factory::{build_copilot_provider, create_provider_for_model};
-pub use lsp_gate::{LspGate, ToolDiagnostic, attach_post_write_diagnostics};
+pub use lsp_gate::{
+    LspEditContext, LspGate, LspWriteHook, ToolDiagnostic, attach_post_write_diagnostics,
+};
 pub use mutations::{
     MutationKind, MutationRecord, MutationTurnState, extract_file_mutation_targets,
     file_mutation_result_landed, render_failure_footer, render_success_footer,

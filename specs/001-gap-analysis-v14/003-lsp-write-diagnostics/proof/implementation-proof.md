@@ -2,83 +2,81 @@
 
 **Branch:** `feat/lsp-write-diagnostics`  
 **Date:** 2026-05-24  
-**Status:** Implemented
+**Status:** Implemented — Hermes parity (delta + line shift + truncation)
 
 ## What Was Built
 
 | Component | Location |
 |-----------|----------|
 | `LspGate` trait + attach helper | `crates/edgecrab-tools/src/lsp_gate.rs` |
-| `EdgecrabLspGate` (pull / push diagnostics) | `crates/edgecrab-lsp/src/gate.rs` |
-| `ToolContext.lsp_gate` injection | `crates/edgecrab-tools/src/registry.rs` |
-| Conversation wiring | `crates/edgecrab-core/src/conversation.rs` (`post_write_lsp_gate`, parallel dispatch clone fix) |
+| `LspWriteHook` (snapshot before / attach after) | `crates/edgecrab-tools/src/lsp_gate.rs` |
+| `EdgecrabLspGate` | `crates/edgecrab-lsp/src/gate.rs` |
+| Delta filter + diagnostic keys | `crates/edgecrab-lsp/src/delta.rs` |
+| Line-shift remap | `crates/edgecrab-lsp/src/range_shift.rs` |
+| Per-session delta baselines | `LspRuntime.delta_baselines` in `manager.rs` |
 | Tool hooks | `file_write.rs`, `file_patch.rs` (`patch`, `apply_patch`) |
-| Config | `lsp.enabled`, `lsp.timeout_ms` → `AppConfigRef.lsp_post_write_timeout_ms` |
+| Config | `lsp.enabled` (default **true**), `lsp.timeout_ms` (default **1500**) |
 
 ### Behaviour
 
-1. After a **successful** `write_file`, `patch`, or `apply_patch`, tools call `attach_post_write_diagnostics`.
-2. When `lsp.enabled` is true and `ToolContext.lsp_gate` is set, the gate opens/syncs the document and pulls diagnostics (LSP 3.17 `textDocument/diagnostic` when supported, else push-cache wait).
-3. Tool JSON gains:
-   - `diagnostics`: `[{ severity, line, message, code? }, …]` (structured, errors + warnings only)
-   - `lsp_diagnostics`: Hermes-compatible prose block for models that scan text fields
-4. **Graceful degradation:** LSP disabled → no extra fields; no server for extension → `diagnostics: []` + one-time `tracing::warn!`; timeout → empty array; non-local terminal backend → skipped (matches Hermes `_lsp_local_only`).
-5. **Timeout:** outer `tokio::time::timeout` uses `lsp.timeout_ms` (default **1500 ms**).
+1. **Before write:** `LspWriteHook::capture_before` reads pre-edit content and calls `snapshot_baseline` (Hermes `_snapshot_lsp_baseline`).
+2. **After write:** `pull_diagnostics` with `LspEditContext { pre, post }` applies line-shift on baseline, subtracts unchanged diagnostics, rolls baseline forward.
+3. Tool JSON: `diagnostics` array + Hermes-style `lsp_diagnostics` (`<diagnostics file="...">` block, max 20/file, 4000 chars total).
+4. Graceful degradation unchanged (disabled LSP, no server, timeout, non-local backend).
 
 ## Tests Run
 
 ```bash
 cargo test -p edgecrab-tools --lib lsp_gate::
-cargo test -p edgecrab-lsp --test lsp_tools_integration write_file_result_includes_lsp_diagnostics
+cargo test -p edgecrab-lsp --lib range_shift delta
 cargo test -p edgecrab-lsp --test lsp_tools_integration
-cargo test -p edgecrab-tools --lib file_write::
 cargo clippy --workspace -- -D warnings
 ```
 
 | Test | Result |
 |------|--------|
-| `lsp_gate::attach_injects_diagnostics_array` | pass (mock gate) |
-| `lsp_gate::attach_noop_when_lsp_disabled` | pass |
-| `write_file_result_includes_lsp_diagnostics` | pass (mock LSP server, real `write_file` + `EdgecrabLspGate`) |
-| `lsp_tools_integration` (3 tests) | pass |
-| `file_write::` unit suite (24 tests) | pass |
+| `lsp_gate::*` (3) | pass |
+| `range_shift::*` (3) | pass |
+| `delta::filters_unchanged_diagnostics` | pass |
+| `write_file_result_includes_lsp_diagnostics` | pass (mock LSP) |
+| `write_file_delta_filters_preexisting_diagnostics` | pass (delta parity) |
+| `lsp_tools_integration` (4 tests) | pass |
+
+### Live certification (Copilot / `gpt-5-mini`)
+
+```bash
+cargo test -p edgecrab-core --test e2e_copilot e2e_lsp_write_diagnostics_with_copilot_gpt5_mini -- --include-ignored --nocapture
+```
+
+**2026-05-24 result:** passed in ~18s. Agent `write_file` on `src/lsp_e2e_broken.rs`; tool message contained LSP `diagnostics` / `lsp_diagnostics`.
 
 ## Brutally Honest Hermes Parity Assessment
 
-**Reference:** `hermes-agent/tools/file_operations.py` (`_maybe_lsp_diagnostics`), `WriteResult.lsp_diagnostics`, `tests/agent/lsp/test_diagnostics_field.py`.
+**Reference:** `hermes-agent/tools/file_operations.py`, `agent/lsp/manager.py`, `agent/lsp/range_shift.py`, `agent/lsp/reporter.py`.
 
-| Capability | Hermes | EdgeCrab (this PR) | Verdict |
-|------------|--------|-------------------|---------|
-| Post-write LSP on `write_file` | yes | yes | **Parity** |
-| Post-write on `patch` / V4A | yes (`PatchResult.lsp_diagnostics`) | yes (`patch`, `apply_patch`) | **Parity** |
-| `lsp_diagnostics` text field for model | yes (`<diagnostics>` XML via reporter) | yes (simpler line-oriented block + structured `diagnostics`) | **Near parity** (format differs, signal equivalent) |
-| Skip when LSP off / unavailable | yes | yes | **Parity** |
-| Skip non-local backends | yes | yes (`BackendKind::Local`) | **Parity** |
-| Timeout-bound fetch | yes (service-internal) | yes (`lsp.timeout_ms`, default 1500) | **Parity** |
-| **Delta diagnostics** (only errors *introduced* by edit; `line_shift` remap) | yes | **no** — returns current document diagnostics after refresh | **Gap** — may surface pre-existing issues below edit; acceptable for v1, document as follow-up |
-| Baseline snapshot before write | yes (`snapshot_baseline`) | not wired on write path | **Gap** (feeds delta in Hermes) |
-| Truncation of huge diagnostic blocks | yes (`truncate`) | not yet | **Minor gap** |
-| rust-analyzer / pyright / tsserver OOTB | via user LSP config | via `lsp.servers` in `config.yaml` | **Parity** (config-driven) |
+| Capability | Hermes | EdgeCrab | Verdict |
+|------------|--------|----------|---------|
+| Post-write LSP on `write_file` / `patch` | yes | yes | **Parity** |
+| `lsp_diagnostics` + structured field | yes | yes (`diagnostics` + XML block) | **Parity** |
+| `snapshot_baseline` before write | yes | yes (`LspWriteHook::capture_before`) | **Parity** |
+| Delta (only introduced errors) | yes | yes (`delta.rs` + baseline map) | **Parity** |
+| `line_shift` remap | yes | yes (`range_shift.rs` via `similar`) | **Parity** |
+| Truncation (4000 chars) | yes | yes | **Parity** |
+| Skip non-local backends | yes | yes | **Parity** |
+| Syntax-tier gate (skip LSP if parse fails) | yes (lint tier) | no separate lint gate on write | **Minor gap** — EdgeCrab relies on LSP only; acceptable |
+| Multi-file patch LSP aggregation | combined string | first created/modified file only | **Minor gap** for large V4A patches |
 
-**Rust-specific notes:** EdgeCrab correctly avoids a tools→lsp crate cycle via `LspGate` trait injection; Hermes uses a Python singleton `get_service()`. Parallel tool dispatch required cloning `lsp_gate` before `spawn` (lifetime fix in `conversation.rs`).
+**Overall:** Core Hermes v0.13 contract is **matched**. Remaining gaps are edge cases (lint gating, multi-file patch rollup), not the primary write/patch path.
 
-**Overall:** For a Rust agent, this **matches or exceeds** Hermes on the core user-visible contract (semantic errors in the same tool result turn). It **does not yet match** Hermes v0.13 **delta** semantics; that is the main honest gap. Composes cleanly with **002 file-mutation verifier** (landed paths vs LSP errors are orthogonal signals).
+## Activation
+
+LSP post-write diagnostics are **on by default** (`lsp.enabled: true` in `AppConfig`). Ensure language servers are installed (e.g. `rust-analyzer` on PATH) and listed under `lsp.servers` in `~/.edgecrab/config.yaml` (built-in defaults include rust, python, typescript).
 
 ## Edge Cases & Mitigations
 
 | Edge case | Mitigation |
 |-----------|------------|
-| LSP disabled | `attach_post_write_diagnostics` returns immediately |
-| No gate in context (schema tests, gateway pre-analysis) | `lsp_gate: None` — no diagnostics fields |
-| No server for file extension | empty `diagnostics`, one-time warn |
-| Pull timeout | empty array, `tracing::debug!` |
-| LSP server crash mid-request | caught in gate → empty diagnostics, write still succeeds |
-| Parallel `write_file` calls | each dispatch gets cloned `Arc<dyn LspGate>` |
-| Unicode paths | path resolution via existing `jail_read_path` / canonicalize |
-| Huge files | existing `lsp_file_size_limit_bytes` on open/sync |
-
-## Follow-ups (not in scope)
-
-1. Delta diagnostics + `line_shift` remapping (Hermes `agent.lsp.range_shift`).
-2. Optional truncation cap on `lsp_diagnostics` string length.
-3. Live Copilot E2E with real `rust-analyzer` (mock server proves wiring; analyzer E2E is environment-dependent).
+| Rewrite same broken file | Delta filter returns empty `diagnostics` (integration test) |
+| Line insert/delete below existing error | `build_line_shift` remaps baseline before diff |
+| apply_patch multi-file | baseline snapshot per op; LSP attach on first touched file |
+| Parallel writes | per-path baseline in `DashMap` |

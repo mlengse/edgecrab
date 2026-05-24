@@ -40,6 +40,8 @@ pub struct LspRuntime {
     pub manager: Arc<LspServerManager>,
     pub sync: Arc<DocumentSyncLayer>,
     pub diagnostics: Arc<DiagnosticCache>,
+    /// Pre-edit diagnostic snapshots for delta filtering (Hermes `snapshot_baseline`).
+    pub delta_baselines: Arc<DashMap<PathBuf, Vec<lsp_types::Diagnostic>>>,
 }
 
 fn runtimes() -> &'static DashMap<String, Arc<LspRuntime>> {
@@ -71,6 +73,7 @@ pub fn runtime_for_ctx(ctx: &ToolContext) -> Result<Arc<LspRuntime>, LspError> {
         }),
         sync: Arc::new(DocumentSyncLayer::default()),
         diagnostics,
+        delta_baselines: Arc::new(DashMap::new()),
     });
     runtimes().insert(key, Arc::clone(&runtime));
     Ok(runtime)
