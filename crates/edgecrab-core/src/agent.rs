@@ -90,6 +90,8 @@ pub struct Agent {
     /// After each compression `format_for_injection()` re-injects active items
     /// so the model never loses its plan across context-window boundaries.
     pub(crate) todo_store: Arc<edgecrab_tools::TodoStore>,
+    /// Persistent session goals — survives compression and restarts.
+    pub(crate) goal_store: Arc<dyn crate::goals::GoalStore>,
     /// Pluggable context engine for custom context management strategies.
     /// WHY Option: The default `BuiltinCompressorEngine` is used when None.
     /// External engines inject additional tool schemas at session start.
@@ -558,6 +560,7 @@ impl Agent {
         state_db: Option<Arc<SessionDb>>,
         tool_registry: Option<Arc<ToolRegistry>>,
         context_engine: Option<Arc<dyn crate::context_engine::ContextEngine>>,
+        goal_store: Option<Arc<dyn crate::goals::GoalStore>>,
     ) -> Self {
         let budget = Arc::new(IterationBudget::new(config.max_iterations));
 
@@ -566,6 +569,8 @@ impl Agent {
         process_table.spawn_gc_task(gc_cancel.clone());
 
         let (steer_tx, steer_rx) = crate::steering::steering_channel();
+        let goal_store =
+            goal_store.unwrap_or_else(|| crate::goals::goal_store_for_db(state_db.clone()));
         Self {
             config: RwLock::new(config),
             provider: RwLock::new(provider),
@@ -579,6 +584,7 @@ impl Agent {
             cancel: std::sync::Mutex::new(CancellationToken::new()),
             gc_cancel,
             todo_store: Arc::new(TodoStore::new()),
+            goal_store,
             context_engine,
             steer_tx,
             steer_rx: std::sync::Mutex::new(Some(steer_rx)),
@@ -821,6 +827,7 @@ impl Agent {
             self.state_db.clone(),
             self.tool_registry.read().await.clone(),
             self.context_engine.clone(),
+            Some(self.goal_store.clone()),
         );
         if let Some(sender) = gateway_sender {
             child.set_gateway_sender(sender).await;
@@ -1158,6 +1165,62 @@ impl Agent {
         if let (Some(db), Some(sid)) = (&self.state_db, &session.session_id) {
             let _ = db.update_session_title(sid, &title);
         }
+    }
+
+    async fn ensure_session_id(&self) -> Result<String, AgentError> {
+        let mut session = self.session.write().await;
+        if session.session_id.is_none() {
+            session.session_id = Some(uuid::Uuid::new_v4().to_string());
+        }
+        Ok(session
+            .session_id
+            .clone()
+            .expect("session_id initialized above"))
+    }
+
+    /// Set or replace the persistent top-level goal for the current session.
+    pub async fn goal_set(&self, text: &str) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        self.goal_store.set_goal(&session_id, text)?;
+        Ok(format!("🎯 Goal set: {}", text.trim()))
+    }
+
+    /// Display the active goal and subgoals for the current session.
+    pub async fn goal_show(&self) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let state = self.goal_store.active(&session_id)?;
+        if state.is_empty() {
+            return Ok("No active goal. Use /goal <text> to set one.".into());
+        }
+        Ok(crate::goals::render_goal_block(&state))
+    }
+
+    /// Clear all goals for the current session.
+    pub async fn goal_clear(&self) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        self.goal_store.clear(&session_id)?;
+        Ok("🎯 Goals cleared for this session.".into())
+    }
+
+    /// Push a subgoal onto the current goal stack.
+    pub async fn subgoal_push(&self, text: &str) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        self.goal_store.push_subgoal(&session_id, text)?;
+        Ok(format!("📌 Subgoal added: {}", text.trim()))
+    }
+
+    /// Mark the most recently pushed incomplete subgoal as done.
+    pub async fn subgoal_done(&self) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        match self.goal_store.complete_subgoal(&session_id)? {
+            Some(sub) => Ok(format!("✅ Subgoal done: {}", sub.text)),
+            None => Ok("No incomplete subgoals to mark done.".into()),
+        }
+    }
+
+    /// Access the goal store (for tests and gateway wiring).
+    pub fn goal_store(&self) -> Arc<dyn crate::goals::GoalStore> {
+        self.goal_store.clone()
     }
 
     /// Restore a persisted session from the state DB into the live session state.
@@ -1806,6 +1869,7 @@ pub struct AgentBuilder {
     state_db: Option<Arc<SessionDb>>,
     tool_registry: Option<Arc<ToolRegistry>>,
     context_engine: Option<Arc<dyn crate::context_engine::ContextEngine>>,
+    goal_store: Option<Arc<dyn crate::goals::GoalStore>>,
 }
 
 impl AgentBuilder {
@@ -1819,6 +1883,7 @@ impl AgentBuilder {
             state_db: None,
             tool_registry: None,
             context_engine: None,
+            goal_store: None,
         }
     }
 
@@ -1882,6 +1947,7 @@ impl AgentBuilder {
             state_db: None,
             tool_registry: None,
             context_engine: None,
+            goal_store: None,
         }
     }
 
@@ -1902,6 +1968,11 @@ impl AgentBuilder {
 
     pub fn context_engine(mut self, engine: Arc<dyn crate::context_engine::ContextEngine>) -> Self {
         self.context_engine = Some(engine);
+        self
+    }
+
+    pub fn goal_store(mut self, store: Arc<dyn crate::goals::GoalStore>) -> Self {
+        self.goal_store = Some(store);
         self
     }
 
@@ -1997,6 +2068,7 @@ impl AgentBuilder {
             self.state_db,
             self.tool_registry,
             self.context_engine,
+            self.goal_store,
         ))
     }
 }
@@ -2821,5 +2893,27 @@ def register(ctx):
             ..SessionState::default()
         };
         assert!(s.first_compression_done);
+    }
+
+    #[tokio::test]
+    async fn goal_set_does_not_mutate_cached_system_prompt() {
+        use crate::goals::InMemoryGoalStore;
+
+        let provider: Arc<dyn LLMProvider> = Arc::new(edgequake_llm::MockProvider::new());
+        let goal_store = Arc::new(InMemoryGoalStore::new());
+        let agent = AgentBuilder::new("mock")
+            .provider(provider)
+            .goal_store(goal_store)
+            .build()
+            .expect("build");
+
+        agent.chat("hello").await.expect("chat");
+        let before = agent.session.read().await.cached_system_prompt.clone();
+        agent
+            .goal_set("Refactor payment service")
+            .await
+            .expect("goal set");
+        let after = agent.session.read().await.cached_system_prompt.clone();
+        assert_eq!(before, after, "cached system prompt must remain unchanged");
     }
 }

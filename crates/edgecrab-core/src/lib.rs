@@ -14,6 +14,7 @@ pub mod config;
 pub mod context_engine;
 pub mod context_references;
 pub mod conversation;
+pub mod goals;
 pub mod model_catalog;
 pub mod model_discovery;
 pub mod model_router;
@@ -39,6 +40,10 @@ pub use context_engine::{
     load_context_engine,
 };
 pub use context_references::{ContextRef, ExpansionResult, expand_context_refs};
+pub use goals::{
+    GoalState, GoalStore, InMemoryGoalStore, SqliteGoalStore, SubGoal, goal_store_for_db,
+    render_goal_block,
+};
 pub use model_catalog::{
     CatalogData, ModelCatalog, ModelEntry, ModelTier, PricingPair, ProviderEntry,
 };

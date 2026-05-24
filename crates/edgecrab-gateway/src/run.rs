@@ -2069,6 +2069,62 @@ impl Gateway {
                                     }
                                 }
                             }
+                            "goal" => {
+                                match self
+                                    .resolve_command_session_agent(&msg, &origin_chat_id)
+                                    .await
+                                {
+                                    Ok(agent) => {
+                                        let args = msg.get_command_args().trim();
+                                        let result = if args.is_empty()
+                                            || args.eq_ignore_ascii_case("show")
+                                        {
+                                            agent.goal_show().await
+                                        } else if args.eq_ignore_ascii_case("clear") {
+                                            agent.goal_clear().await
+                                        } else {
+                                            agent.goal_set(args).await
+                                        };
+                                        Some(result.unwrap_or_else(|err| format!("Goal error: {err}")))
+                                    }
+                                    Err(error) => Some(error),
+                                }
+                            }
+                            "subgoal" => {
+                                let text = msg.get_command_args().trim();
+                                if text.is_empty() {
+                                    Some("Usage: /subgoal <text>".into())
+                                } else {
+                                    match self
+                                        .resolve_command_session_agent(&msg, &origin_chat_id)
+                                        .await
+                                    {
+                                        Ok(agent) => Some(
+                                            agent
+                                                .subgoal_push(text)
+                                                .await
+                                                .unwrap_or_else(|err| {
+                                                    format!("Subgoal error: {err}")
+                                                }),
+                                        ),
+                                        Err(error) => Some(error),
+                                    }
+                                }
+                            }
+                            "done" => {
+                                match self
+                                    .resolve_command_session_agent(&msg, &origin_chat_id)
+                                    .await
+                                {
+                                    Ok(agent) => Some(
+                                        agent
+                                            .subgoal_done()
+                                            .await
+                                            .unwrap_or_else(|err| format!("Done error: {err}")),
+                                    ),
+                                    Err(error) => Some(error),
+                                }
+                            }
                             "model" => Some(self.handle_model_command(&msg, &origin_chat_id).await),
                             "provider" => {
                                 Some(self.handle_provider_command(&msg, &origin_chat_id).await)

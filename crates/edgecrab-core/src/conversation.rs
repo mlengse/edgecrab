@@ -1571,16 +1571,32 @@ impl Agent {
             // stable zone (8K-12K tokens of binary constants) is cached across
             // sessions.  The combined prompt keeps the stable zone as a prefix so
             // split_dynamic_from_stable() can safely extract the dynamic suffix.
+            // Build API messages, optionally appending ephemeral goal context as a
+            // user-role message (cache-safe — never mutates cached_system_prompt).
+            let goal_block = crate::goals::render_goal_block(
+                &self
+                    .goal_store
+                    .active(&conversation_session_id)
+                    .unwrap_or_default(),
+            );
+            let messages_for_api = if goal_block.is_empty() {
+                session.messages.clone()
+            } else {
+                let mut extended = session.messages.clone();
+                extended.push(Message::user(&goal_block));
+                extended
+            };
+
             let chat_messages = match (session.cached_stable_prompt.as_deref(), cache_cfg.as_ref())
             {
                 (Some(stable), Some(cfg)) => {
                     let combined = session.cached_system_prompt.as_deref().unwrap_or("");
                     let dynamic = split_dynamic_from_stable(combined, stable);
-                    build_chat_messages_blocks(stable, dynamic, &session.messages, Some(cfg))
+                    build_chat_messages_blocks(stable, dynamic, &messages_for_api, Some(cfg))
                 }
                 _ => build_chat_messages(
                     session.cached_system_prompt.as_deref(),
-                    &session.messages,
+                    &messages_for_api,
                     cache_cfg.as_ref(),
                 ),
             };
@@ -4982,6 +4998,7 @@ fn sanitize_orphaned_tool_results(messages: &mut Vec<Message>) {
 mod tests {
     use super::*;
     use crate::AgentBuilder;
+    use crate::goals::GoalStore;
     use async_trait::async_trait;
     use edgecrab_tools::{ProcessTable, ToolRegistry};
     use edgequake_llm::traits::StreamUsage;
@@ -5438,6 +5455,63 @@ mod tests {
 
         fn supports_tool_streaming(&self) -> bool {
             true
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct GoalCapturingProvider {
+        last_user_tail: Arc<Mutex<Option<String>>>,
+    }
+
+    #[async_trait]
+    impl LLMProvider for GoalCapturingProvider {
+        fn name(&self) -> &str {
+            "goal-capturing-test"
+        }
+
+        fn model(&self) -> &str {
+            "goal-capturing-model"
+        }
+
+        fn max_context_length(&self) -> usize {
+            8192
+        }
+
+        async fn complete(
+            &self,
+            prompt: &str,
+        ) -> edgequake_llm::Result<edgequake_llm::LLMResponse> {
+            Ok(edgequake_llm::LLMResponse::new(prompt, self.model()))
+        }
+
+        async fn complete_with_options(
+            &self,
+            prompt: &str,
+            _options: &CompletionOptions,
+        ) -> edgequake_llm::Result<edgequake_llm::LLMResponse> {
+            self.complete(prompt).await
+        }
+
+        async fn chat(
+            &self,
+            messages: &[ChatMessage],
+            options: Option<&CompletionOptions>,
+        ) -> edgequake_llm::Result<edgequake_llm::LLMResponse> {
+            self.chat_with_tools(messages, &[], None, options).await
+        }
+
+        async fn chat_with_tools(
+            &self,
+            messages: &[ChatMessage],
+            _tools: &[ToolDefinition],
+            _tool_choice: Option<ToolChoice>,
+            _options: Option<&CompletionOptions>,
+        ) -> edgequake_llm::Result<edgequake_llm::LLMResponse> {
+            let tail = messages.iter().rev().find_map(|m| {
+                matches!(m.role, edgequake_llm::ChatRole::User).then(|| m.content.clone())
+            });
+            *self.last_user_tail.lock().expect("lock") = tail;
+            Ok(edgequake_llm::LLMResponse::new("ok", self.model()))
         }
     }
 
@@ -6158,6 +6232,76 @@ def register(ctx):
                 .all(|message| message.tool_call_id.as_deref() != Some("orphan-id")),
             "orphaned tool result should be removed before persistence"
         );
+    }
+
+    #[tokio::test]
+    async fn execute_loop_injects_goal_block_without_persisting() {
+        use crate::goals::InMemoryGoalStore;
+
+        let goal_store = Arc::new(InMemoryGoalStore::new());
+        let provider = Arc::new(GoalCapturingProvider::default());
+        let captures = provider.last_user_tail.clone();
+        let agent = AgentBuilder::new("mock")
+            .provider(provider)
+            .goal_store(goal_store.clone())
+            .build()
+            .expect("build");
+
+        agent.chat("hello").await.expect("first turn");
+        let sid = agent
+            .session
+            .read()
+            .await
+            .session_id
+            .clone()
+            .expect("session id");
+        goal_store
+            .set_goal(&sid, "Refactor payment service")
+            .expect("set goal");
+
+        agent.chat("continue").await.expect("second turn");
+        let captured = captures.lock().expect("lock").clone().expect("captured");
+        assert!(captured.contains("[GOAL CONTEXT"));
+        assert!(captured.contains("Refactor payment service"));
+
+        let persisted = agent.messages().await;
+        assert!(
+            !persisted
+                .iter()
+                .any(|m| m.text_content().contains("[GOAL CONTEXT")),
+            "goal block must not be persisted in session messages"
+        );
+    }
+
+    #[tokio::test]
+    async fn execute_loop_injects_goal_after_compression() {
+        use crate::goals::InMemoryGoalStore;
+
+        let goal_store = Arc::new(InMemoryGoalStore::new());
+        let provider = Arc::new(GoalCapturingProvider::default());
+        let captures = provider.last_user_tail.clone();
+        let agent = AgentBuilder::new("mock")
+            .provider(provider)
+            .goal_store(goal_store.clone())
+            .build()
+            .expect("build");
+
+        agent.chat("seed").await.expect("seed");
+        let sid = agent
+            .session
+            .read()
+            .await
+            .session_id
+            .clone()
+            .expect("session id");
+        goal_store
+            .set_goal(&sid, "Stay on mission")
+            .expect("set goal");
+        agent.force_compress().await;
+
+        agent.chat("after compress").await.expect("post compress");
+        let captured = captures.lock().expect("lock").clone().expect("captured");
+        assert!(captured.contains("Stay on mission"));
     }
 
     #[tokio::test]

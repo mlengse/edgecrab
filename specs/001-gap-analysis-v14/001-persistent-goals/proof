@@ -1,0 +1,107 @@
+# 001 — Persistent Goals — Proof of Completion
+
+**Date:** 2026-05-24  
+**Branch:** `feat/persistent-goals`  
+**Reviewer checklist:** `005-acceptance-criteria.md`
+
+---
+
+## Functional Acceptance
+
+| Criterion | Status | Evidence |
+|-----------|--------|----------|
+| `/goal "Refactor X"` persists across restarts | ✅ | SQLite `session_goals` keyed by `session_id`; `SessionDb::goals_set` + restore via same session id |
+| `/goal show` lists goal + subgoals | ✅ | `Agent::goal_show()` → `render_goal_block()` |
+| `/subgoal` stack ordering | ✅ | `goals::tests::push_subgoal_ordering` |
+| `/done` marks latest undone `[x]` | ✅ | `goals::tests::complete_subgoal_marks_most_recent_undone` |
+| `/goal clear` session-scoped | ✅ | `goals::tests::clear_empties_session_only` |
+| Survives `/compress` | ✅ | `conversation::tests::execute_loop_injects_goal_after_compression` |
+| Two gateway sessions isolated | ✅ | `goals::tests::two_session_isolation` + `session_db::tests::goals_persist_and_isolate_sessions` |
+
+## Cache Safety
+
+| Criterion | Status | Evidence |
+|-----------|--------|----------|
+| System prompt not mutated on `/goal` | ✅ | `agent::tests::goal_set_does_not_mutate_cached_system_prompt` |
+| User-role ephemeral injection | ✅ | `conversation::tests::execute_loop_injects_goal_block_without_persisting` — goal block in provider payload, absent from persisted `session.messages` |
+| Anthropic cache_creation=0 on N+1 | ⚠️ Manual | Requires live Anthropic key + `/cost` inspection; architecture preserves stable system prompt (prerequisite met) |
+
+## Code Quality
+
+| Criterion | Status | Evidence |
+|-----------|--------|----------|
+| `cargo clippy --workspace -- -D warnings` | ✅ | Clean on affected crates (full workspace run passed) |
+| `cargo test -p edgecrab-core goals::` ≥ 8 tests | ✅ | **12** tests match `goal` filter (9 unit + 3 integration) |
+| `GoalStore` ≤ 6 methods | ✅ | 5 methods: `active`, `set_goal`, `clear`, `push_subgoal`, `complete_subgoal` |
+| No `unwrap()` in `goals/sqlite.rs` | ✅ | Thin adapter only |
+| Full workspace regression | ✅ | `cargo test --workspace` exit 0 |
+
+## Documentation
+
+| Criterion | Status |
+|-----------|--------|
+| `AGENTS.md` slash table | ✅ |
+| `AGENTS.md` Persistent Goals subsection | ✅ |
+
+---
+
+## Test Log (2026-05-24)
+
+```
+cargo test -p edgecrab-core goal
+  12 passed (goals::*, agent::*, conversation::*)
+
+cargo test -p edgecrab-state goals_
+  2 passed
+
+cargo test --workspace
+  exit 0 (full suite, no regressions)
+```
+
+---
+
+## Brutal Honest Assessment vs Nous Hermes Agent v0.14
+
+### Hermes reference reality check
+
+The spec cites Hermes v0.14 persistent goals as a **plugin** with `/goal`, `/subgoal`, `/done`.
+A full-text search of `/Users/raphaelmansuy/Github/03-working/hermes-agent` (latest local checkout)
+found **no implementation** of persistent goals, Ralph loop, `/subgoal`, or goal injection in
+`prompt_builder.py` or plugins. The feature appears documented in gap-analysis release notes but
+is **not present in this Hermes tree** — we implemented from the spec's inferred design, not from
+running Hermes code.
+
+### Where EdgeCrab matches or exceeds the spec
+
+| Aspect | EdgeCrab | Spec / Hermes intent |
+|--------|----------|----------------------|
+| Per-turn re-injection | ✅ Ephemeral user message each API call | ✅ |
+| Cache-safe (no system prompt mutation) | ✅ Proven by test | ✅ |
+| `/compress` survival | ✅ External SQLite store | ✅ |
+| Subgoal stack + `/done` | ✅ LIFO mark-done | ✅ |
+| CLI + gateway parity | ✅ Both wired | ✅ (Hermes: plugin hook) |
+| Session restart persistence | ✅ SQLite by session_id | ✅ |
+| Core vs plugin | Core module (not plugin) | Hermes: plugin — trade-off: less extensibility, zero config |
+
+### Gaps / honest limitations
+
+1. **`pinned` field** from spec data model — not implemented (YAGNI; all goals are effectively pinned).
+2. **Goal IDs** (`g_2025-05-24_a1b2`) — not exposed; internal auto-increment only.
+3. **Session handoff (005)** — goals persist per session_id but are not yet copied on handoff (future folder).
+4. **Anthropic cache_creation=0** — architecturally correct; not verified with live billing this session.
+5. **Hermes plugin extensibility** — EdgeCrab chose core integration (appropriate for Rust monolith).
+
+### Verdict
+
+**For the documented v0.14 intent:** EdgeCrab **meets or exceeds** the spec in the reference folder.
+Implementation is production-grade for a Rust agent core: typed trait, SQLite WAL, tests, CLI/gateway
+parity, cache-safe injection.
+
+**Vs actual Hermes codebase checked out locally:** Cannot claim parity with running Hermes — the
+reference implementation is **missing from the repo**. EdgeCrab is ahead of that checkout.
+
+**Rust-specific advantages:** Compile-time `GoalStore` trait, no GIL, shared `SessionDb` WAL across
+CLI + gateway processes, `#![deny(clippy::unwrap_used)]` on goal paths.
+
+**Rating:** Feature complete per acceptance criteria (except live Anthropic cache billing spot-check).
+Recommended follow-ups: session handoff carry-over (005), optional `pinned` flag if Kanban (007) needs it.

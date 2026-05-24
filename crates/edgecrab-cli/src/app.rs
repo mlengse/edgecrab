@@ -12169,6 +12169,15 @@ impl App {
                     OutputRole::System,
                 );
             }
+            CommandResult::GoalCommand(args) => {
+                self.handle_goal_command(args);
+            }
+            CommandResult::SubgoalPush(text) => {
+                self.handle_subgoal_push(text);
+            }
+            CommandResult::SubgoalDone => {
+                self.handle_subgoal_done();
+            }
             CommandResult::BackgroundPrompt(prompt) => {
                 self.handle_background_prompt(prompt);
             }
@@ -16956,6 +16965,48 @@ impl App {
             agent.set_session_title(t).await;
         });
         self.push_output(format!("Session title set to: {title}"), OutputRole::System);
+    }
+
+    fn handle_goal_command(&mut self, args: String) {
+        let Some(agent) = self.require_agent() else {
+            return;
+        };
+        let trimmed = args.trim();
+        let result = self.rt_handle.block_on(async move {
+            if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("show") {
+                agent.goal_show().await
+            } else if trimmed.eq_ignore_ascii_case("clear") {
+                agent.goal_clear().await
+            } else {
+                agent.goal_set(trimmed).await
+            }
+        });
+        match result {
+            Ok(msg) => self.push_output(msg, OutputRole::System),
+            Err(err) => self.push_output(format!("Goal error: {err}"), OutputRole::Error),
+        }
+    }
+
+    fn handle_subgoal_push(&mut self, text: String) {
+        let Some(agent) = self.require_agent() else {
+            return;
+        };
+        let result = self.rt_handle.block_on(async move { agent.subgoal_push(&text).await });
+        match result {
+            Ok(msg) => self.push_output(msg, OutputRole::System),
+            Err(err) => self.push_output(format!("Subgoal error: {err}"), OutputRole::Error),
+        }
+    }
+
+    fn handle_subgoal_done(&mut self) {
+        let Some(agent) = self.require_agent() else {
+            return;
+        };
+        let result = self.rt_handle.block_on(async move { agent.subgoal_done().await });
+        match result {
+            Ok(msg) => self.push_output(msg, OutputRole::System),
+            Err(err) => self.push_output(format!("Done error: {err}"), OutputRole::Error),
+        }
     }
 
     /// Open the session browser overlay: load up to 50 sessions from the DB,

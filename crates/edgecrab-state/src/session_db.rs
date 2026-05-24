@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use edgecrab_types::{AgentError, Message, Role};
 
 /// Schema version — incremented on breaking schema changes.
-const SCHEMA_VERSION: u32 = 6;
+const SCHEMA_VERSION: u32 = 7;
 
 // Write-contention constants
 const WRITE_MAX_RETRIES: u32 = 15;
@@ -183,6 +183,21 @@ pub struct SessionStats {
     pub db_size_bytes: i64,
 }
 
+/// One subgoal row for persistent goal storage.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredSubGoal {
+    pub id: u64,
+    pub text: String,
+    pub done: bool,
+}
+
+/// Active goal snapshot loaded from SQLite.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct StoredGoalState {
+    pub goal_text: Option<String>,
+    pub subgoals: Vec<StoredSubGoal>,
+}
+
 // ── SessionDb ─────────────────────────────────────────────────────────
 
 pub struct SessionDb {
@@ -246,7 +261,9 @@ impl SessionDb {
                 .map_err(|e| AgentError::Database(e.to_string()))?;
             }
             Some(v) if v < SCHEMA_VERSION => {
-                // Future: run migrations here
+                if v < 7 {
+                    Self::migrate_to_v7(conn)?;
+                }
                 conn.execute(
                     "UPDATE schema_version SET version = ?1",
                     params![SCHEMA_VERSION],
@@ -258,7 +275,26 @@ impl SessionDb {
         Ok(())
     }
 
-    // ── Session CRUD ──────────────────────────────────────────────────
+    fn migrate_to_v7(conn: &Connection) -> Result<(), AgentError> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS session_goals (
+                session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+                goal_text TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS session_subgoals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES session_goals(session_id) ON DELETE CASCADE,
+                text TEXT NOT NULL,
+                done INTEGER NOT NULL DEFAULT 0,
+                position INTEGER NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_session_subgoals_session
+                ON session_subgoals(session_id, position);",
+        )
+        .map_err(|e| AgentError::Database(format!("migrate v7: {e}")))?;
+        Ok(())
+    }
 
     pub fn save_session(&self, session: &SessionRecord) -> Result<(), AgentError> {
         self.execute_write(|conn| {
@@ -442,6 +478,11 @@ impl SessionDb {
 
     pub fn delete_session(&self, id: &str) -> Result<(), AgentError> {
         self.execute_write(|conn| {
+            conn.execute(
+                "DELETE FROM session_subgoals WHERE session_id = ?1",
+                params![id],
+            )?;
+            conn.execute("DELETE FROM session_goals WHERE session_id = ?1", params![id])?;
             conn.execute("DELETE FROM messages WHERE session_id = ?1", params![id])?;
             conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
             Ok(())
@@ -1522,6 +1563,152 @@ impl SessionDb {
             daily_activity,
         })
     }
+
+    // ── Persistent goals ───────────────────────────────────────────────
+
+    pub fn goals_active(&self, session_id: &str) -> Result<StoredGoalState, AgentError> {
+        if session_id.trim().is_empty() {
+            return Ok(StoredGoalState::default());
+        }
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|_| AgentError::Database("database lock poisoned".into()))?;
+        let goal_text: Option<String> = conn
+            .query_row(
+                "SELECT goal_text FROM session_goals WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )
+            .ok();
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, text, done FROM session_subgoals
+                 WHERE session_id = ?1 ORDER BY position ASC",
+            )
+            .map_err(|e| AgentError::Database(e.to_string()))?;
+        let subgoals = stmt
+            .query_map(params![session_id], |row| {
+                Ok(StoredSubGoal {
+                    id: row.get::<_, i64>(0)? as u64,
+                    text: row.get(1)?,
+                    done: row.get::<_, i64>(2)? != 0,
+                })
+            })
+            .map_err(|e| AgentError::Database(e.to_string()))?
+            .filter_map(|r| r.ok())
+            .collect();
+        Ok(StoredGoalState {
+            goal_text,
+            subgoals,
+        })
+    }
+
+    pub fn goals_set(&self, session_id: &str, text: &str) -> Result<(), AgentError> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Err(AgentError::Config("goal text must not be empty".into()));
+        }
+        if session_id.trim().is_empty() {
+            return Err(AgentError::Config(
+                "session_id is required for goal operations".into(),
+            ));
+        }
+        let now = chrono::Utc::now().timestamp() as f64;
+        self.execute_write(|conn| {
+            conn.execute(
+                "INSERT OR REPLACE INTO session_goals (session_id, goal_text, created_at)
+                 VALUES (?1, ?2, ?3)",
+                params![session_id, trimmed, now],
+            )?;
+            conn.execute(
+                "DELETE FROM session_subgoals WHERE session_id = ?1",
+                params![session_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn goals_clear(&self, session_id: &str) -> Result<(), AgentError> {
+        if session_id.trim().is_empty() {
+            return Ok(());
+        }
+        self.execute_write(|conn| {
+            conn.execute(
+                "DELETE FROM session_subgoals WHERE session_id = ?1",
+                params![session_id],
+            )?;
+            conn.execute(
+                "DELETE FROM session_goals WHERE session_id = ?1",
+                params![session_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn goals_push_subgoal(&self, session_id: &str, text: &str) -> Result<(), AgentError> {
+        let trimmed = text.trim();
+        if trimmed.is_empty() {
+            return Err(AgentError::Config("subgoal text must not be empty".into()));
+        }
+        self.execute_write(|conn| {
+            let has_goal: bool = conn
+                .query_row(
+                    "SELECT 1 FROM session_goals WHERE session_id = ?1",
+                    params![session_id],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+            if !has_goal {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+                    Some("set a top-level goal with /goal before adding subgoals".into()),
+                ));
+            }
+            let next_pos: i64 = conn
+                .query_row(
+                    "SELECT COALESCE(MAX(position), 0) + 1 FROM session_subgoals WHERE session_id = ?1",
+                    params![session_id],
+                    |row| row.get(0),
+                )
+                .unwrap_or(1);
+            conn.execute(
+                "INSERT INTO session_subgoals (session_id, text, done, position)
+                 VALUES (?1, ?2, 0, ?3)",
+                params![session_id, trimmed, next_pos],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn goals_complete_subgoal(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<StoredSubGoal>, AgentError> {
+        self.execute_write_with_result(|conn| {
+            let target: Option<(i64, String)> = conn
+                .query_row(
+                    "SELECT id, text FROM session_subgoals
+                     WHERE session_id = ?1 AND done = 0
+                     ORDER BY position DESC LIMIT 1",
+                    params![session_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .ok();
+            let Some((id, text)) = target else {
+                return Ok(None);
+            };
+            conn.execute(
+                "UPDATE session_subgoals SET done = 1 WHERE id = ?1",
+                params![id],
+            )?;
+            Ok(Some(StoredSubGoal {
+                id: id as u64,
+                text,
+                done: true,
+            }))
+        })
+    }
 }
 
 // ── Tests ─────────────────────────────────────────────────────────────
@@ -1691,6 +1878,54 @@ mod tests {
             .search_sessions_rich("   ", 10)
             .expect("empty search should not fail");
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn goals_persist_and_isolate_sessions() {
+        let db = test_db();
+        db.save_session(&sample_session("goal-a")).expect("save a");
+        db.save_session(&sample_session("goal-b")).expect("save b");
+        db.goals_set("goal-a", "Goal A").expect("set a");
+        db.goals_set("goal-b", "Goal B").expect("set b");
+        db.goals_push_subgoal("goal-a", "step 1").expect("push");
+        assert_eq!(
+            db.goals_active("goal-a")
+                .expect("active a")
+                .goal_text
+                .as_deref(),
+            Some("Goal A")
+        );
+        assert_eq!(db.goals_active("goal-a").expect("active a").subgoals.len(), 1);
+        db.goals_clear("goal-a").expect("clear");
+        assert!(db
+            .goals_active("goal-a")
+            .expect("active a")
+            .goal_text
+            .is_none());
+        assert_eq!(
+            db.goals_active("goal-b")
+                .expect("active b")
+                .goal_text
+                .as_deref(),
+            Some("Goal B")
+        );
+    }
+
+    #[test]
+    fn goals_complete_subgoal_marks_latest_undone() {
+        let db = test_db();
+        db.save_session(&sample_session("goal-s")).expect("save");
+        db.goals_set("goal-s", "Ship").expect("set");
+        db.goals_push_subgoal("goal-s", "one").expect("push");
+        db.goals_push_subgoal("goal-s", "two").expect("push");
+        let done = db
+            .goals_complete_subgoal("goal-s")
+            .expect("done")
+            .expect("marked");
+        assert_eq!(done.text, "two");
+        let state = db.goals_active("goal-s").expect("active");
+        assert!(!state.subgoals[0].done);
+        assert!(state.subgoals[1].done);
     }
 
     #[test]
