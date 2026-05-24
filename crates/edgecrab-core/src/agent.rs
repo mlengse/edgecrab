@@ -90,6 +90,8 @@ pub struct Agent {
     /// After each compression `format_for_injection()` re-injects active items
     /// so the model never loses its plan across context-window boundaries.
     pub(crate) todo_store: Arc<edgecrab_tools::TodoStore>,
+    /// Persistent session goals — survives compression and restarts.
+    pub(crate) goal_store: Arc<dyn crate::goals::GoalStore>,
     /// Pluggable context engine for custom context management strategies.
     /// WHY Option: The default `BuiltinCompressorEngine` is used when None.
     /// External engines inject additional tool schemas at session start.
@@ -190,6 +192,8 @@ pub struct AgentConfig {
     pub auxiliary: crate::config::AuxiliaryConfig,
     /// Shadow judge configuration (completion oracle).
     pub shadow_judge: crate::config::ShadowJudgeConfig,
+    /// Persistent goals / Ralph loop configuration.
+    pub goals: crate::config::GoalsConfig,
     /// Default Mixture-of-Agents roster and aggregator.
     pub moa: crate::config::MoaConfig,
     /// Voice output configuration projected from AppConfig.
@@ -263,6 +267,7 @@ impl Default for AgentConfig {
             compression: crate::config::CompressionConfig::default(),
             auxiliary: crate::config::AuxiliaryConfig::default(),
             shadow_judge: crate::config::ShadowJudgeConfig::default(),
+            goals: crate::config::GoalsConfig::default(),
             moa: crate::config::MoaConfig::default(),
             tts: crate::config::TtsConfig::default(),
             stt: crate::config::SttConfig::default(),
@@ -558,6 +563,7 @@ impl Agent {
         state_db: Option<Arc<SessionDb>>,
         tool_registry: Option<Arc<ToolRegistry>>,
         context_engine: Option<Arc<dyn crate::context_engine::ContextEngine>>,
+        goal_store: Option<Arc<dyn crate::goals::GoalStore>>,
     ) -> Self {
         let budget = Arc::new(IterationBudget::new(config.max_iterations));
 
@@ -566,6 +572,8 @@ impl Agent {
         process_table.spawn_gc_task(gc_cancel.clone());
 
         let (steer_tx, steer_rx) = crate::steering::steering_channel();
+        let goal_store =
+            goal_store.unwrap_or_else(|| crate::goals::goal_store_for_db(state_db.clone()));
         Self {
             config: RwLock::new(config),
             provider: RwLock::new(provider),
@@ -579,6 +587,7 @@ impl Agent {
             cancel: std::sync::Mutex::new(CancellationToken::new()),
             gc_cancel,
             todo_store: Arc::new(TodoStore::new()),
+            goal_store,
             context_engine,
             steer_tx,
             steer_rx: std::sync::Mutex::new(Some(steer_rx)),
@@ -821,6 +830,7 @@ impl Agent {
             self.state_db.clone(),
             self.tool_registry.read().await.clone(),
             self.context_engine.clone(),
+            Some(self.goal_store.clone()),
         );
         if let Some(sender) = gateway_sender {
             child.set_gateway_sender(sender).await;
@@ -1158,6 +1168,220 @@ impl Agent {
         if let (Some(db), Some(sid)) = (&self.state_db, &session.session_id) {
             let _ = db.update_session_title(sid, &title);
         }
+    }
+
+    async fn ensure_session_id(&self) -> Result<String, AgentError> {
+        let session_id = {
+            let mut session = self.session.write().await;
+            if session.session_id.is_none() {
+                session.session_id = Some(uuid::Uuid::new_v4().to_string());
+            }
+            session
+                .session_id
+                .clone()
+                .expect("session_id initialized above")
+        };
+
+        if let Some(db) = &self.state_db {
+            let config = self.config.read().await;
+            let (source, user_id) = match &config.origin_chat {
+                Some(origin) => (origin.platform.clone(), Some(origin.chat_id.clone())),
+                None => (config.platform.to_string(), None),
+            };
+            db.ensure_session_row(
+                &session_id,
+                &source,
+                user_id.as_deref(),
+                Some(config.model.as_str()),
+            )?;
+        }
+
+        Ok(session_id)
+    }
+
+    /// Set or replace the persistent top-level goal for the current session.
+    pub async fn goal_set(&self, text: &str) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let max_turns = self.config.read().await.goals.max_turns.max(1);
+        self.goal_store.set_goal(&session_id, text, max_turns)?;
+        Ok(format!(
+            "⊙ Goal set ({max_turns}-turn budget): {}\n\
+             After each turn, a judge model checks if the goal is done. \
+             EdgeCrab keeps working until it is, you pause/clear it, or the budget is exhausted.",
+            text.trim()
+        ))
+    }
+
+    /// Display status for the active goal (Hermes-compatible `/goal status`).
+    pub async fn goal_status(&self) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let state = self.goal_store.active(&session_id)?;
+        if state.is_empty() {
+            return Ok(crate::goals::status_line(&state));
+        }
+        if state.subgoals.is_empty() {
+            return Ok(crate::goals::status_line(&state));
+        }
+        Ok(format!(
+            "{}\n{}",
+            crate::goals::status_line(&state),
+            crate::goals::render_subgoals_list(&state)
+        ))
+    }
+
+    /// Raw goal state for UI surfaces (status bar chip, etc.).
+    pub async fn goal_state(&self) -> Result<crate::goals::GoalState, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        self.goal_store.active(&session_id)
+    }
+
+    /// Resume a paused goal loop and return an optional auto-continuation prompt.
+    pub async fn goal_resume_with_kickoff(&self) -> Result<(String, Option<String>), AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let state = self.goal_store.active(&session_id)?;
+        if state.is_empty() {
+            return Ok(("No goal to resume.".into(), None));
+        }
+        self.goal_store.resume(&session_id, true)?;
+        let refreshed = self.goal_store.active(&session_id)?;
+        let continuation = crate::goals::next_continuation_prompt(&refreshed);
+        let msg = format!(
+            "▶ Goal resumed: {}",
+            refreshed.goal_text.as_deref().unwrap_or("")
+        );
+        Ok((msg, continuation))
+    }
+
+    /// Display the active goal block (injection preview).
+    pub async fn goal_show(&self) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let state = self.goal_store.active(&session_id)?;
+        if state.is_empty() {
+            return Ok("No active goal. Use /goal <text> to set one.".into());
+        }
+        Ok(crate::goals::render_goal_block(&state))
+    }
+
+    /// Clear all goals for the current session.
+    pub async fn goal_clear(&self) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let had = !self.goal_store.active(&session_id)?.is_empty();
+        self.goal_store.clear(&session_id)?;
+        Ok(if had {
+            "✓ Goal cleared.".into()
+        } else {
+            "No active goal.".into()
+        })
+    }
+
+    /// Pause the Ralph loop for the current session.
+    pub async fn goal_pause(&self) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let state = self.goal_store.active(&session_id)?;
+        if state.is_empty() {
+            return Ok("No goal set.".into());
+        }
+        self.goal_store.pause(&session_id, "user-paused")?;
+        Ok(format!(
+            "⏸ Goal paused: {}",
+            state.goal_text.as_deref().unwrap_or("")
+        ))
+    }
+
+    /// Resume a paused goal loop.
+    pub async fn goal_resume(&self) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let state = self.goal_store.active(&session_id)?;
+        if state.is_empty() {
+            return Ok("No goal to resume.".into());
+        }
+        self.goal_store.resume(&session_id, true)?;
+        Ok(format!(
+            "▶ Goal resumed: {}",
+            state.goal_text.as_deref().unwrap_or("")
+        ))
+    }
+
+    /// Push a subgoal onto the current goal stack.
+    pub async fn subgoal_push(&self, text: &str) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        self.goal_store.push_subgoal(&session_id, text)?;
+        Ok(format!("📌 Subgoal added: {}", text.trim()))
+    }
+
+    /// List subgoals for the active goal.
+    pub async fn subgoal_list(&self) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let state = self.goal_store.active(&session_id)?;
+        if !state.has_goal() {
+            return Ok("No active goal. Set one with /goal <text>.".into());
+        }
+        Ok(format!(
+            "{}\n{}",
+            crate::goals::status_line(&state),
+            crate::goals::render_subgoals_list(&state)
+        ))
+    }
+
+    /// Remove a subgoal by 1-based index.
+    pub async fn subgoal_remove(&self, index_1based: usize) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let removed = self
+            .goal_store
+            .remove_subgoal(&session_id, index_1based)?;
+        Ok(format!("Removed subgoal #{index_1based}: {removed}"))
+    }
+
+    /// Clear all subgoals while keeping the top-level goal.
+    pub async fn subgoal_clear(&self) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let prev = self.goal_store.clear_subgoals(&session_id)?;
+        Ok(format!("Cleared {prev} subgoal(s)."))
+    }
+
+    /// Mark the most recently pushed incomplete subgoal as done.
+    pub async fn subgoal_done(&self) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        match self.goal_store.complete_subgoal(&session_id)? {
+            Some(sub) => Ok(format!("✅ Subgoal done: {}", sub.text)),
+            None => Ok("No incomplete subgoals to mark done.".into()),
+        }
+    }
+
+    /// True when the session has an active Ralph-loop goal.
+    pub async fn goal_is_active(&self) -> Result<bool, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let state = self.goal_store.active(&session_id)?;
+        Ok(state.status == crate::goals::GoalStatus::Active && state.has_goal())
+    }
+
+    /// Run the goal judge after a completed turn and return continuation decision.
+    pub async fn goal_evaluate_after_turn(
+        &self,
+        last_response: &str,
+        interrupted: bool,
+    ) -> Result<crate::goals::GoalContinuationDecision, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let cfg = self.config.read().await.clone();
+        let provider = self.provider.read().await.clone();
+        let model = cfg.model.clone();
+        crate::goals::evaluate_goal_after_turn(
+            self.goal_store.clone(),
+            &session_id,
+            last_response,
+            interrupted,
+            &cfg.goals,
+            &cfg.auxiliary.goal_judge,
+            cfg.auxiliary.model.as_deref(),
+            provider,
+            &model,
+        )
+        .await
+    }
+
+    /// Access the goal store (for tests and gateway wiring).
+    pub fn goal_store(&self) -> Arc<dyn crate::goals::GoalStore> {
+        self.goal_store.clone()
     }
 
     /// Restore a persisted session from the state DB into the live session state.
@@ -1806,6 +2030,7 @@ pub struct AgentBuilder {
     state_db: Option<Arc<SessionDb>>,
     tool_registry: Option<Arc<ToolRegistry>>,
     context_engine: Option<Arc<dyn crate::context_engine::ContextEngine>>,
+    goal_store: Option<Arc<dyn crate::goals::GoalStore>>,
 }
 
 impl AgentBuilder {
@@ -1819,6 +2044,7 @@ impl AgentBuilder {
             state_db: None,
             tool_registry: None,
             context_engine: None,
+            goal_store: None,
         }
     }
 
@@ -1864,6 +2090,7 @@ impl AgentBuilder {
                 compression: config.compression.clone(),
                 auxiliary: config.auxiliary.clone(),
                 shadow_judge: config.shadow_judge.clone(),
+                goals: config.goals.clone(),
                 moa: config.moa.clone(),
                 tts: config.tts.clone(),
                 stt: config.stt.clone(),
@@ -1882,6 +2109,7 @@ impl AgentBuilder {
             state_db: None,
             tool_registry: None,
             context_engine: None,
+            goal_store: None,
         }
     }
 
@@ -1902,6 +2130,11 @@ impl AgentBuilder {
 
     pub fn context_engine(mut self, engine: Arc<dyn crate::context_engine::ContextEngine>) -> Self {
         self.context_engine = Some(engine);
+        self
+    }
+
+    pub fn goal_store(mut self, store: Arc<dyn crate::goals::GoalStore>) -> Self {
+        self.goal_store = Some(store);
         self
     }
 
@@ -1997,6 +2230,7 @@ impl AgentBuilder {
             self.state_db,
             self.tool_registry,
             self.context_engine,
+            self.goal_store,
         ))
     }
 }
@@ -2821,5 +3055,51 @@ def register(ctx):
             ..SessionState::default()
         };
         assert!(s.first_compression_done);
+    }
+
+    #[tokio::test]
+    async fn goal_set_before_first_chat_avoids_foreign_key_error() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let db_path = dir.path().join("state.db");
+        let db = Arc::new(
+            edgecrab_state::SessionDb::open(&db_path).expect("open db"),
+        );
+        let provider: Arc<dyn LLMProvider> = Arc::new(edgequake_llm::MockProvider::new());
+        let agent = AgentBuilder::new("mock")
+            .provider(provider)
+            .state_db(db)
+            .build()
+            .expect("build");
+
+        let msg = agent
+            .goal_set("Refactor demo module in ./demo")
+            .await
+            .expect("goal set before any chat turn");
+        assert!(msg.contains("Goal set"));
+
+        let shown = agent.goal_show().await.expect("show");
+        assert!(shown.contains("Refactor demo module"));
+    }
+
+    #[tokio::test]
+    async fn goal_set_does_not_mutate_cached_system_prompt() {
+        use crate::goals::InMemoryGoalStore;
+
+        let provider: Arc<dyn LLMProvider> = Arc::new(edgequake_llm::MockProvider::new());
+        let goal_store = Arc::new(InMemoryGoalStore::new());
+        let agent = AgentBuilder::new("mock")
+            .provider(provider)
+            .goal_store(goal_store)
+            .build()
+            .expect("build");
+
+        agent.chat("hello").await.expect("chat");
+        let before = agent.session.read().await.cached_system_prompt.clone();
+        agent
+            .goal_set("Refactor payment service")
+            .await
+            .expect("goal set");
+        let after = agent.session.read().await.cached_system_prompt.clone();
+        assert_eq!(before, after, "cached system prompt must remain unchanged");
     }
 }

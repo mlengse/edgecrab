@@ -1180,6 +1180,16 @@ impl Gateway {
         self.running_sessions.lock().await.contains_key(session_key)
     }
 
+    async fn clear_pending_goal_continuation(&self, session_key: &str) {
+        let mut pending = self.pending_messages.lock().await;
+        if pending
+            .get(session_key)
+            .is_some_and(|msg| edgecrab_core::is_goal_continuation_text(&msg.text))
+        {
+            pending.remove(session_key);
+        }
+    }
+
     async fn resolve_command_session_agent(
         &self,
         msg: &IncomingMessage,
@@ -2067,6 +2077,119 @@ impl Gateway {
                                         }
                                         Err(error) => Some(error),
                                     }
+                                }
+                            }
+                            "goal" => {
+                                let args = msg.get_command_args().trim();
+                                let lower = args.to_ascii_lowercase();
+                                let safe_mid_run = args.is_empty()
+                                    || matches!(
+                                        lower.as_str(),
+                                        "show" | "status" | "pause" | "resume" | "clear" | "stop" | "done"
+                                    );
+                                if self.session_is_running(&session_key).await && !safe_mid_run {
+                                    Some(
+                                        "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal.".into(),
+                                    )
+                                } else {
+                                    match self
+                                        .resolve_command_session_agent(&msg, &origin_chat_id)
+                                        .await
+                                    {
+                                        Ok(agent) => {
+                                            let (result, kickoff) = if args.is_empty()
+                                                || lower == "show"
+                                                || lower == "status"
+                                            {
+                                                (agent.goal_status().await, None)
+                                            } else if lower == "pause" {
+                                                (agent.goal_pause().await, None)
+                                            } else if lower == "resume" {
+                                                match agent.goal_resume_with_kickoff().await {
+                                                    Ok((msg, cont)) => (Ok(msg), cont),
+                                                    Err(err) => (Err(err), None),
+                                                }
+                                            } else if matches!(lower.as_str(), "clear" | "stop" | "done") {
+                                                (agent.goal_clear().await, None)
+                                            } else {
+                                                (
+                                                    agent.goal_set(args).await,
+                                                    Some(args.to_string()),
+                                                )
+                                            };
+                                            if matches!(lower.as_str(), "pause" | "clear" | "stop" | "done") {
+                                                self.clear_pending_goal_continuation(&session_key)
+                                                    .await;
+                                            }
+                                            if let Some(goal_text) = kickoff {
+                                                let mut kickoff_msg = msg.clone();
+                                                kickoff_msg.text = goal_text;
+                                                let _ = tx.send(kickoff_msg).await;
+                                            }
+                                            Some(result.unwrap_or_else(|err| format!("Goal error: {err}")))
+                                        }
+                                        Err(error) => Some(error),
+                                    }
+                                }
+                            }
+                            "subgoal" => {
+                                let args = msg.get_command_args().trim();
+                                match self
+                                    .resolve_command_session_agent(&msg, &origin_chat_id)
+                                    .await
+                                {
+                                    Ok(agent) => {
+                                        let result = if args.is_empty() {
+                                            agent.subgoal_list().await
+                                        } else {
+                                            let tokens: Vec<&str> = args.split_whitespace().collect();
+                                            let verb = tokens[0].to_ascii_lowercase();
+                                            let rest = tokens
+                                                .get(1..)
+                                                .map(|parts| parts.join(" "))
+                                                .unwrap_or_default();
+                                            match verb.as_str() {
+                                                "remove" => {
+                                                    let idx = rest
+                                                        .split_whitespace()
+                                                        .next()
+                                                        .ok_or_else(|| {
+                                                            edgecrab_types::AgentError::Config(
+                                                                "Usage: /subgoal remove <n>".into(),
+                                                            )
+                                                        })?
+                                                        .parse::<usize>()
+                                                        .map_err(|_| {
+                                                            edgecrab_types::AgentError::Config(
+                                                                "/subgoal remove: <n> must be an integer (1-based index)."
+                                                                    .into(),
+                                                            )
+                                                        })?;
+                                                    agent.subgoal_remove(idx).await
+                                                }
+                                                "clear" => agent.subgoal_clear().await,
+                                                _ => agent.subgoal_push(args).await,
+                                            }
+                                        };
+                                        Some(
+                                            result.unwrap_or_else(|err| format!("Subgoal error: {err}")),
+                                        )
+                                    }
+                                    Err(error) => Some(error),
+                                }
+                            }
+                            "done" => {
+                                match self
+                                    .resolve_command_session_agent(&msg, &origin_chat_id)
+                                    .await
+                                {
+                                    Ok(agent) => Some(
+                                        agent
+                                            .subgoal_done()
+                                            .await
+                                            .unwrap_or_else(|err| format!("Done error: {err}")),
+                                    ),
+                                    Err(error) => Some(error),
                                 }
                             }
                             "model" => Some(self.handle_model_command(&msg, &origin_chat_id).await),
@@ -2968,12 +3091,12 @@ impl Gateway {
                                             .find(|message| message.role == Role::Assistant)
                                             .map(|message| message.text_content())
                                             .filter(|text| !text.trim().is_empty());
-                                        if let Some(response_text) = response_text {
+                                        if let Some(ref response_text) = response_text {
                                             maybe_send_voice_reply(
                                                 &session_agent,
-                                                voice_adapter,
+                                                voice_adapter.clone(),
                                                 &msg_clone,
-                                                &response_text,
+                                                response_text,
                                                 gateway_voice_mode,
                                             )
                                             .await;
@@ -3056,6 +3179,54 @@ impl Gateway {
                                                     .with_str("summary", run_outcome.user_summary.clone()),
                                             )
                                             .await;
+                                        }
+
+                                        if let Some(response_text) = response_text.as_ref() {
+                                            let interrupted = matches!(
+                                                run_outcome.state,
+                                                edgecrab_types::CompletionDecision::Interrupted
+                                            );
+                                            let pending_slot_free = pending_messages
+                                                .lock()
+                                                .await
+                                                .get(&task_session_key)
+                                                .is_none();
+                                            let goal_still_active = session_agent
+                                                .goal_is_active()
+                                                .await
+                                                .unwrap_or(false);
+                                            if pending_slot_free
+                                                && goal_still_active
+                                                && let Ok(decision) = session_agent
+                                                    .goal_evaluate_after_turn(
+                                                        response_text,
+                                                        interrupted,
+                                                    )
+                                                    .await
+                                            {
+                                                if !decision.message.is_empty()
+                                                    && let Some(adapter) = voice_adapter.as_ref()
+                                                {
+                                                    let _ = adapter
+                                                        .send_status(
+                                                            &decision.message,
+                                                            &msg_clone.metadata,
+                                                        )
+                                                        .await;
+                                                }
+                                                if decision.should_continue
+                                                    && let Some(prompt) =
+                                                        decision.continuation_prompt
+                                                    && session_agent
+                                                        .goal_is_active()
+                                                        .await
+                                                        .unwrap_or(false)
+                                                {
+                                                    let mut cont = msg_clone.clone();
+                                                    cont.text = prompt;
+                                                    let _ = msg_tx.send(cont).await;
+                                                }
+                                            }
                                         }
                                     }
                                     Err(e) => {

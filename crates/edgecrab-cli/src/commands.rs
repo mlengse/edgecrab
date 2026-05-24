@@ -141,6 +141,12 @@ pub enum CommandResult {
     SessionPrune(u32),
     /// Queue a prompt to run after the current one completes
     QueuePrompt(String),
+    /// Set or manage the persistent session goal (`/goal`, `/goal status`, etc.).
+    GoalCommand(String),
+    /// Manage subgoals on the active goal (`/subgoal`, `/subgoal remove N`, etc.).
+    SubgoalCommand(String),
+    /// Mark the most recent incomplete subgoal done.
+    SubgoalDone,
     /// Run a prompt in the background
     BackgroundPrompt(String),
     /// Ask an ephemeral side question using the current session context.
@@ -1127,6 +1133,27 @@ impl CommandRegistry {
         });
 
         self.register(Command {
+            name: "goal",
+            aliases: &[],
+            description: "Set, pause, resume, or clear the persistent Ralph-loop goal",
+            handler: |args| CommandResult::GoalCommand(args.trim().to_string()),
+        });
+
+        self.register(Command {
+            name: "subgoal",
+            aliases: &[],
+            description: "Add, list, remove, or clear subgoals on the active goal",
+            handler: |args| CommandResult::SubgoalCommand(args.trim().to_string()),
+        });
+
+        self.register(Command {
+            name: "done",
+            aliases: &[],
+            description: "Mark the most recent incomplete subgoal as done",
+            handler: |_| CommandResult::SubgoalDone,
+        });
+
+        self.register(Command {
             name: "btw",
             aliases: &[],
             description: "Ask an ephemeral side question using the current session context",
@@ -1393,13 +1420,14 @@ fn provider_help_text() -> String {
                             GOOGLE_CLOUD_PROJECT is auto-detected from `gcloud config` if unset.\n\
                             Usage: vertexai/gemini-2.5-flash\n\
          bedrock          — AWS Bedrock (AWS credential chain + AWS_REGION, {})\n\
+         nvidia           — NVIDIA NIM (NVIDIA_API_KEY, {})\n\
          azure            — Azure OpenAI (AZURE_OPENAI_API_KEY + endpoint, static catalog)\n\
-         xai              — xAI Grok (XAI_API_KEY, static catalog)\n\
-         mistral          — Mistral (MISTRAL_API_KEY, static catalog)\n\
-         groq             — Groq (GROQ_API_KEY, static catalog)\n\
+         xai              — xAI Grok (XAI_API_KEY, {})\n\
+         mistral          — Mistral (MISTRAL_API_KEY, {})\n\
+         groq             — Groq (GROQ_API_KEY, {})\n\
          cohere           — Cohere (COHERE_API_KEY, static catalog)\n\
          perplexity       — Perplexity (PERPLEXITY_API_KEY, static catalog)\n\
-         deepseek         — DeepSeek (DEEPSEEK_API_KEY, static catalog)\n\
+         deepseek         — DeepSeek (DEEPSEEK_API_KEY, {})\n\
          ollama           — Ollama (local, OLLAMA_BASE_URL or OLLAMA_HOST, {})\n\
          lmstudio         — LM Studio (local, LMSTUDIO_BASE_URL or LMSTUDIO_HOST, {})\n\
          openrouter       — OpenRouter (OPENROUTER_API_KEY, {})\n\
@@ -1410,6 +1438,11 @@ fn provider_help_text() -> String {
         discovery_note("google"),
         discovery_note("vertexai"),
         discovery_note("bedrock"),
+        discovery_note("nvidia"),
+        discovery_note("xai"),
+        discovery_note("mistral"),
+        discovery_note("groq"),
+        discovery_note("deepseek"),
         discovery_note("ollama"),
         discovery_note("lmstudio"),
         discovery_note("openrouter"),

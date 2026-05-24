@@ -62,6 +62,7 @@ pub struct AppConfig {
     pub honcho: HonchoConfig,
     pub auxiliary: AuxiliaryConfig,
     pub shadow_judge: ShadowJudgeConfig,
+    pub goals: GoalsConfig,
     pub moa: MoaConfig,
     pub reasoning_effort: Option<String>,
     pub context: ContextConfig,
@@ -598,6 +599,7 @@ fn has_explicit_provider_prefix(model_name: &str) -> bool {
             | "open-router"
             | "xai"
             | "grok"
+            | "deepseek"
             | "huggingface"
             | "hf"
             | "hugging-face"
@@ -613,6 +615,13 @@ fn has_explicit_provider_prefix(model_name: &str) -> bool {
             | "mistral"
             | "mistral-ai"
             | "mistralai"
+            | "groq"
+            | "cohere"
+            | "perplexity"
+            | "zai"
+            | "nvidia"
+            | "nvidia-nim"
+            | "nim"
             | "azure"
             | "azure-openai"
             | "azure_openai"
@@ -1986,7 +1995,8 @@ impl Default for HonchoConfig {
 /// Auxiliary model configuration.
 ///
 /// Mirrors hermes-agent's support for a secondary cheap model used
-/// for TTS prompts, compression summaries, and tool-result formatting.
+/// for TTS prompts, compression summaries, tool-result formatting, and
+/// the `/goal` Ralph-loop judge.
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AuxiliaryConfig {
@@ -1998,6 +2008,41 @@ pub struct AuxiliaryConfig {
     pub base_url: Option<String>,
     /// Environment variable holding the API key.
     pub api_key_env: Option<String>,
+    /// Goal judge overrides (`auxiliary.goal_judge` in config.yaml).
+    pub goal_judge: GoalJudgeConfig,
+}
+
+/// Goal judge auxiliary task configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct GoalJudgeConfig {
+    /// Optional dedicated judge model (falls back to `auxiliary.model`, then main model).
+    pub model: Option<String>,
+    /// Max tokens for judge reply (reasoning models need headroom). Default: 4096.
+    pub max_tokens: u32,
+}
+
+impl Default for GoalJudgeConfig {
+    fn default() -> Self {
+        Self {
+            model: None,
+            max_tokens: 4096,
+        }
+    }
+}
+
+/// Persistent goals / Ralph loop configuration.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct GoalsConfig {
+    /// Auto-continuation turn budget after `/goal` is set. Default: 20.
+    pub max_turns: u32,
+}
+
+impl Default for GoalsConfig {
+    fn default() -> Self {
+        Self { max_turns: 20 }
+    }
 }
 
 /// Shadow judge configuration — lightweight LLM completion oracle.

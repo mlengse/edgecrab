@@ -164,6 +164,40 @@ steer_tx.send(SteeringEvent::new(SteeringKind::Stop, "stop after this tool")).ok
 //   gateway.second_message_mode: interrupt # cancel & restart
 ```
 
+### Persistent Goals (Ralph Loop)
+
+Persistent goals keep the agent on-mission across long conversations, `/compress`, and restarts.
+Goals are stored in SQLite (`session_goals` / `session_subgoals` tables) keyed by `session_id`,
+**outside** the message history.
+
+Each ReAct iteration appends a synthetic **user-role** goal block immediately before
+`provider.chat(...)` — never mutating `cached_system_prompt` (Anthropic cache-safe).
+
+| Command | Effect |
+|---------|--------|
+| `/goal <text>` | Set standing goal + kick off Ralph loop (20-turn budget default) |
+| `/goal status` | Show goal status, turn budget, subgoal count |
+| `/goal pause` / `/goal resume` | Pause or resume the auto-continuation loop |
+| `/goal clear` | Wipe goal + subgoals for the current session |
+| `/subgoal` | List subgoals |
+| `/subgoal <text>` | Add a criterion |
+| `/subgoal remove <N>` | Remove subgoal N (1-based) |
+| `/subgoal clear` | Drop all subgoals, keep top-level goal |
+| `/done` | Mark the most recently pushed incomplete subgoal done `[x]` |
+
+Config: `goals.max_turns` (default 20), `auxiliary.goal_judge.model` for a cheap judge model.
+
+```rust
+// Core API (also wired to CLI + gateway slash commands)
+agent.goal_set("Refactor payment service to async/await").await?;
+agent.subgoal_push("migrate handlers").await?;
+agent.subgoal_done().await?; // marks latest undone subgoal [x]
+let block = agent.goal_show().await?; // same text injected each turn
+```
+
+Mission Steering (HINT/REDIRECT/STOP) remains for **one-shot** mid-flight nudges.
+Persistent goals are for **standing intent** that survives compression and session resume.
+
 ### ReAct Loop (conversation.rs `execute_loop`)
 
 ```text
@@ -407,7 +441,7 @@ The `send_message` tool (in `advanced.rs`) uses the `GatewaySender` trait to sen
 | Memory | `/memory` |
 | Analysis | `/cost` `/usage` `/compress` `/insights` |
 | Appearance | `/theme` `/paste` |
-| Advanced | `/queue` `/background` `/rollback [checkpoint]` `/debug` `/dump` |
+| Advanced | `/goal` `/subgoal` `/done` `/queue` `/background` `/rollback [checkpoint]` `/debug` `/dump` |
 | Gateway | `/platforms` `/approve` `/deny` `/sethome` `/update` |
 | Scheduling | `/cron` |
 | Media | `/voice <on\|off\|status>` |

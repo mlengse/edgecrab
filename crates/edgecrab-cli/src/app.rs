@@ -1140,6 +1140,37 @@ fn run_outcome_badge_style(outcome: &edgecrab_types::RunOutcome) -> Style {
     }
 }
 
+fn goal_status_chip_style(status: edgecrab_core::GoalStatus) -> Style {
+    match status {
+        edgecrab_core::GoalStatus::Active => Style::default()
+            .fg(Color::Rgb(180, 230, 255))
+            .add_modifier(Modifier::BOLD),
+        edgecrab_core::GoalStatus::Paused => Style::default()
+            .fg(Color::Rgb(255, 210, 120))
+            .add_modifier(Modifier::BOLD),
+        edgecrab_core::GoalStatus::Done => Style::default()
+            .fg(Color::Rgb(140, 255, 180))
+            .add_modifier(Modifier::BOLD),
+        edgecrab_core::GoalStatus::Cleared => Style::default().fg(Color::Rgb(140, 140, 160)),
+    }
+}
+
+fn goal_flash_badge_style(flash: &str) -> Style {
+    if flash.contains("continuing") {
+        Style::default()
+            .fg(Color::Rgb(200, 230, 255))
+            .add_modifier(Modifier::BOLD)
+    } else if flash.contains("complete") {
+        Style::default()
+            .fg(Color::Rgb(140, 255, 180))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default()
+            .fg(Color::Rgb(255, 210, 120))
+            .add_modifier(Modifier::BOLD)
+    }
+}
+
 fn format_task_status_progress_notice(preview: &str) -> String {
     let trimmed = preview.trim();
     let lower = trimmed.to_ascii_lowercase();
@@ -4715,6 +4746,10 @@ pub struct App {
     shadow_judge_enabled: bool,
     /// Queued prompts to run after the current one completes
     prompt_queue: Vec<String>,
+    /// Cached Ralph-loop chip for the status bar (refreshed on goal mutations).
+    goal_status_chip: Option<edgecrab_core::GoalStatusChip>,
+    /// Ephemeral flash line after judge verdict (↻ continuing / ✓ done / ⏸ paused).
+    goal_flash_status: Option<String>,
     /// Display state machine (spinner animation)
     display_state: DisplayState,
     /// Tab-completion overlay
@@ -5724,6 +5759,8 @@ impl App {
             yolo_enabled: false,
             shadow_judge_enabled: runtime_config.shadow_judge.enabled,
             prompt_queue: Vec::new(),
+            goal_status_chip: None,
+            goal_flash_status: None,
             display_state: DisplayState::Idle,
             completion: CompletionState {
                 candidates: Vec::new(),
@@ -5895,6 +5932,7 @@ impl App {
         self.steer_applied_at = None;
         self.steering_overlay_active = false;
         self.agent = Some(agent);
+        self.refresh_goal_status_chip();
     }
 
     pub fn set_yolo_enabled(&mut self, enabled: bool) {
@@ -11847,7 +11885,15 @@ impl App {
         // Internally generated stop-hook follow-ups are hidden from the visible
         // transcript so the TUI stays focused on real user input.
         let auto_stop_prompt = input.strip_prefix(STOP_HOOK_AUTO_PREFIX).map(str::trim);
-        if auto_stop_prompt.is_none() {
+        let goal_continuation = edgecrab_core::is_goal_continuation_text(input);
+        if goal_continuation {
+            self.push_output(
+                "↻ Continuing toward standing goal…",
+                OutputRole::System,
+            );
+            self.goal_flash_status = Some("↻ goal continuing".into());
+            self.refresh_goal_status_chip();
+        } else if auto_stop_prompt.is_none() {
             self.stop_hook_retry_count = 0;
             self.push_output(format!("> {}", input), OutputRole::User);
         } else {
@@ -11872,6 +11918,7 @@ impl App {
             self.push_output("Still processing previous request...", OutputRole::System);
             return;
         }
+        self.goal_flash_status = None;
         self.is_processing = true;
         self.reasoning_line = None;
         // Reset per-turn streaming counters.
@@ -12168,6 +12215,15 @@ impl App {
                     format!("Queued ({n} pending): {preview}"),
                     OutputRole::System,
                 );
+            }
+            CommandResult::GoalCommand(args) => {
+                self.handle_goal_command(args);
+            }
+            CommandResult::SubgoalCommand(args) => {
+                self.handle_subgoal_command(args);
+            }
+            CommandResult::SubgoalDone => {
+                self.handle_subgoal_done();
             }
             CommandResult::BackgroundPrompt(prompt) => {
                 self.handle_background_prompt(prompt);
@@ -13271,6 +13327,16 @@ impl App {
                 }
                 AgentResponse::Done => {
                     self.flush_buffered_assistant_output();
+                    let goal_last_response = self.last_agent_response_text.clone();
+                    let goal_interrupted = self
+                        .last_run_outcome
+                        .as_ref()
+                        .is_some_and(|o| {
+                            matches!(
+                                o.state,
+                                edgecrab_types::CompletionDecision::Interrupted
+                            )
+                        });
                     self.clear_active_request_state();
                     self.last_response_time = Some(Instant::now());
                     self.turn_count += 1;
@@ -13304,9 +13370,14 @@ impl App {
                         );
                     }
 
-                    if let Some(next) = self.prompt_queue.first().cloned() {
-                        self.prompt_queue.remove(0);
-                        self.process_input(&next);
+                    if edgecrab_core::prompt_queue_has_real_user_message(&self.prompt_queue) {
+                        if let Some(next) = self.prompt_queue.first().cloned() {
+                            self.prompt_queue.remove(0);
+                            self.process_input(&next);
+                        }
+                    } else {
+                        self.drain_queued_slash_commands();
+                        self.maybe_continue_goal_loop(&goal_last_response, goal_interrupted);
                     }
                 }
                 AgentResponse::Error(err) => {
@@ -15721,6 +15792,7 @@ impl App {
             model: Some(model.clone()),
             base_url: None,
             api_key_env: None,
+            ..Default::default()
         };
         let agent_clone = Arc::clone(&agent);
         self.rt_handle.block_on(async move {
@@ -15731,6 +15803,7 @@ impl App {
             model: Some(model.clone()),
             base_url: None,
             api_key_env: None,
+            ..Default::default()
         }) {
             Ok(()) => self.push_output(
                 format!(
@@ -16958,6 +17031,179 @@ impl App {
         self.push_output(format!("Session title set to: {title}"), OutputRole::System);
     }
 
+    fn refresh_goal_status_chip(&mut self) {
+        let Some(agent) = self.agent.clone() else {
+            self.goal_status_chip = None;
+            return;
+        };
+        self.goal_status_chip = self.rt_handle.block_on(async move {
+            agent
+                .goal_state()
+                .await
+                .ok()
+                .and_then(|state| edgecrab_core::compact_status_chip(&state))
+        });
+    }
+
+    fn enqueue_or_dispatch_followup(&mut self, text: String) {
+        if self.is_processing {
+            self.prompt_queue.push(text);
+        } else {
+            self.process_input(&text);
+        }
+    }
+
+    fn handle_goal_command(&mut self, args: String) {
+        let Some(agent) = self.require_agent() else {
+            return;
+        };
+        let trimmed = args.trim().to_string();
+        let lower = trimmed.to_ascii_lowercase();
+
+        let action = if trimmed.is_empty() || lower == "show" || lower == "status" {
+            "status"
+        } else if lower == "pause" {
+            "pause"
+        } else if lower == "resume" {
+            "resume"
+        } else if matches!(lower.as_str(), "clear" | "stop" | "done") {
+            "clear"
+        } else {
+            "set"
+        };
+
+        if action == "set" && self.is_processing {
+            self.push_output(
+                "Agent is running — use /goal status / pause / clear mid-run, or /stop before setting a new goal.",
+                OutputRole::System,
+            );
+            return;
+        }
+
+        let (result, followup) = self.rt_handle.block_on(async move {
+            match action {
+                "pause" => (agent.goal_pause().await, None),
+                "resume" => match agent.goal_resume_with_kickoff().await {
+                    Ok((msg, cont)) => (Ok(msg), cont),
+                    Err(err) => (Err(err), None),
+                },
+                "clear" => (agent.goal_clear().await, None),
+                "set" => match agent.goal_set(trimmed.trim()).await {
+                    Ok(msg) => (Ok(msg), Some(trimmed.trim().to_string())),
+                    Err(err) => (Err(err), None),
+                },
+                _ => (agent.goal_status().await, None),
+            }
+        });
+
+        match result {
+            Ok(msg) => {
+                self.push_output(msg, OutputRole::System);
+                if matches!(action, "pause" | "clear") {
+                    let removed =
+                        edgecrab_core::drain_goal_continuations_from_queue(&mut self.prompt_queue);
+                    if removed > 0 {
+                        tracing::debug!(removed, "cleared queued goal continuations");
+                    }
+                }
+                self.refresh_goal_status_chip();
+                if let Some(text) = followup {
+                    self.enqueue_or_dispatch_followup(text);
+                }
+            }
+            Err(err) => self.push_output(format!("Goal error: {err}"), OutputRole::Error),
+        }
+    }
+
+    fn drain_queued_slash_commands(&mut self) {
+        while let Some(first) = self.prompt_queue.first().cloned() {
+            if edgecrab_core::looks_like_slash_command(&first) {
+                self.prompt_queue.remove(0);
+                self.process_input(&first);
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn handle_subgoal_command(&mut self, args: String) {
+        let Some(agent) = self.require_agent() else {
+            return;
+        };
+        let trimmed = args.trim().to_string();
+        if trimmed.is_empty() {
+            let result = self.rt_handle.block_on(async move { agent.subgoal_list().await });
+            match result {
+                Ok(msg) => self.push_output(msg, OutputRole::System),
+                Err(err) => self.push_output(format!("Subgoal error: {err}"), OutputRole::Error),
+            }
+            self.refresh_goal_status_chip();
+            return;
+        }
+
+        let tokens: Vec<&str> = trimmed.split_whitespace().collect();
+        let verb = tokens[0].to_ascii_lowercase();
+        let rest = tokens.get(1..).map(|parts| parts.join(" ")).unwrap_or_default();
+
+        let result = self.rt_handle.block_on(async move {
+            match verb.as_str() {
+                "remove" => {
+                    let idx = rest
+                        .split_whitespace()
+                        .next()
+                        .ok_or_else(|| edgecrab_types::AgentError::Config("Usage: /subgoal remove <n>".into()))?
+                        .parse::<usize>()
+                        .map_err(|_| edgecrab_types::AgentError::Config("/subgoal remove: <n> must be an integer (1-based index).".into()))?;
+                    agent.subgoal_remove(idx).await
+                }
+                "clear" => agent.subgoal_clear().await,
+                _ => agent.subgoal_push(trimmed.trim()).await,
+            }
+        });
+        match result {
+            Ok(msg) => self.push_output(msg, OutputRole::System),
+            Err(err) => self.push_output(format!("Subgoal error: {err}"), OutputRole::Error),
+        }
+        self.refresh_goal_status_chip();
+    }
+
+    fn maybe_continue_goal_loop(&mut self, last_response: &str, interrupted: bool) {
+        let Some(agent) = self.require_agent() else {
+            return;
+        };
+        let response = last_response.to_string();
+        let result = self
+            .rt_handle
+            .block_on(async move { agent.goal_evaluate_after_turn(&response, interrupted).await });
+        match result {
+            Ok(decision) => {
+                self.goal_flash_status = edgecrab_core::goal_flash_from_decision(&decision);
+                if !decision.message.is_empty() {
+                    self.push_output(decision.message, OutputRole::System);
+                }
+                self.refresh_goal_status_chip();
+                if decision.should_continue
+                    && let Some(prompt) = decision.continuation_prompt
+                {
+                    self.enqueue_or_dispatch_followup(prompt);
+                }
+            }
+            Err(err) => tracing::debug!("goal continuation skipped: {err}"),
+        }
+    }
+
+    fn handle_subgoal_done(&mut self) {
+        let Some(agent) = self.require_agent() else {
+            return;
+        };
+        let result = self.rt_handle.block_on(async move { agent.subgoal_done().await });
+        match result {
+            Ok(msg) => self.push_output(msg, OutputRole::System),
+            Err(err) => self.push_output(format!("Done error: {err}"), OutputRole::Error),
+        }
+        self.refresh_goal_status_chip();
+    }
+
     /// Open the session browser overlay: load up to 50 sessions from the DB,
     /// convert them to `SessionBrowserEntry`, activate the `FuzzySelector`.
     fn open_skin_browser(&mut self) {
@@ -17484,6 +17730,15 @@ impl App {
                     format!("Resumed session {}", &target[..target.len().min(12)]),
                     OutputRole::System,
                 );
+                self.refresh_goal_status_chip();
+                if self.goal_status_chip.is_some() {
+                    let status = self.rt_handle.block_on(async {
+                        agent.goal_status().await
+                    });
+                    if let Ok(line) = status {
+                        self.push_output(line, OutputRole::System);
+                    }
+                }
             }
             Err(e) => self.push_output(format!("Resume failed: {e}"), OutputRole::Error),
         }
@@ -22912,7 +23167,12 @@ impl App {
                 ));
             }
             DisplayState::Idle => {
-                if let Some(outcome) = self.last_run_outcome.as_ref() {
+                if let Some(flash) = self.goal_flash_status.as_ref() {
+                    left_spans.push(Span::styled(
+                        format!(" {flash} "),
+                        goal_flash_badge_style(flash),
+                    ));
+                } else if let Some(outcome) = self.last_run_outcome.as_ref() {
                     left_spans.push(Span::styled(
                         format!(
                             " {} {} ",
@@ -22986,6 +23246,17 @@ impl App {
                 Style::default()
                     .fg(overlay.accent)
                     .add_modifier(Modifier::BOLD),
+            ));
+            left_spans.push(Span::styled(
+                "│",
+                Style::default().fg(Color::Rgb(50, 50, 65)),
+            ));
+        }
+
+        if let Some(chip) = self.goal_status_chip.as_ref() {
+            left_spans.push(Span::styled(
+                format!(" {} ", chip.label),
+                goal_status_chip_style(chip.status),
             ));
             left_spans.push(Span::styled(
                 "│",
@@ -23345,14 +23616,16 @@ impl App {
         let divider = " | ";
         let state = match &self.display_state {
             DisplayState::Idle => self
-                .last_run_outcome
-                .as_ref()
-                .map(|outcome| {
-                    format!(
-                        "{} {}",
-                        outcome.state.emoji(),
-                        outcome.state.compact_label()
-                    )
+                .goal_flash_status
+                .clone()
+                .or_else(|| {
+                    self.last_run_outcome.as_ref().map(|outcome| {
+                        format!(
+                            "{} {}",
+                            outcome.state.emoji(),
+                            outcome.state.compact_label()
+                        )
+                    })
                 })
                 .unwrap_or_else(|| "idle".to_string()),
             DisplayState::AwaitingFirstToken { frame, started } => format!(
@@ -23433,9 +23706,15 @@ impl App {
                 ""
             }
         );
+        let goal_part = self
+            .goal_status_chip
+            .as_ref()
+            .map(|chip| format!("{divider}{}", chip.label))
+            .unwrap_or_default();
         let left = format!(
-            "{}{}{}{}{}{}${:.4}{}{}{}{}{}{}",
+            "{}{}{}{}{}{}{}${:.4}{}{}{}{}{}{}",
             state,
+            goal_part,
             divider,
             edgecrab_core::safe_truncate(&self.model_name, 18),
             divider,

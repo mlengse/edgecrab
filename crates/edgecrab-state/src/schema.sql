@@ -82,3 +82,27 @@ CREATE INDEX IF NOT EXISTS idx_sessions_started  ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session   ON messages(session_id, timestamp);
 
 CREATE INDEX IF NOT EXISTS idx_sessions_title ON sessions(title);
+
+-- Persistent session goals (Ralph loop) — keyed by session_id, survives compression.
+CREATE TABLE IF NOT EXISTS session_goals (
+    session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
+    goal_text TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    turns_used INTEGER NOT NULL DEFAULT 0,
+    max_turns INTEGER NOT NULL DEFAULT 20,
+    paused_reason TEXT,
+    last_verdict TEXT,
+    last_reason TEXT,
+    consecutive_parse_failures INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS session_subgoals (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES session_goals(session_id) ON DELETE CASCADE,
+    text TEXT NOT NULL,
+    done INTEGER NOT NULL DEFAULT 0,
+    position INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_session_subgoals_session ON session_subgoals(session_id, position);
