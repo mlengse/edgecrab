@@ -18,6 +18,7 @@ mod auth_cmd;
 mod backup;
 mod banner;
 mod bundled_profiles;
+mod checkpoints_cmd;
 mod cli_args;
 mod commands;
 mod cron_cmd;
@@ -203,6 +204,18 @@ async fn main() -> anyhow::Result<()> {
         edgecrab_home = %logging_home.display(),
         "edgecrab startup"
     );
+
+    if let Ok(config) = edgecrab_core::AppConfig::load()
+        && config.checkpoints.auto_prune
+    {
+        let _ = edgecrab_tools::maybe_auto_prune_checkpoints(
+            &logging_home,
+            config.checkpoints.retention_days,
+            config.checkpoints.min_interval_hours,
+            config.checkpoints.delete_orphans,
+            config.checkpoints.max_total_size_mb,
+        );
+    }
 
     // Route to non-interactive subcommands immediately. `chat` and slash-backed
     // deliberately reuse the default interactive runtime below.
@@ -625,6 +638,10 @@ async fn run_subcommand(cmd: Command, args: &CliArgs) -> anyhow::Result<()> {
             if !all_ok {
                 std::process::exit(1);
             }
+        }
+
+        Command::Checkpoints { command } => {
+            checkpoints_cmd::run(command)?;
         }
 
         Command::Migrate { dry_run, source } => {

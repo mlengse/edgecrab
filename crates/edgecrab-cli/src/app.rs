@@ -21283,47 +21283,40 @@ impl App {
 
     // ─── Rollback / Checkpoint ──────────────────────────────────────
     //
-    // WHY: hermes-agent wires /rollback to the checkpoint tool via the
-    // agent. We mirror this by sending a natural-language request to the
-    // agent which calls checkpoint(action="list") or checkpoint(action=
-    // "restore", name=<name>) as appropriate.
+    // Direct Hermes-style rollback — no LLM round-trip.
 
     fn handle_rollback_checkpoint(&mut self, args: String) {
-        let prompt = match args.trim() {
-            "" | "list" => {
-                "Please list all available checkpoints by calling the checkpoint tool with action='list'.".to_string()
-            }
-            name => {
-                format!(
-                    "Please restore the checkpoint named '{}' by calling the checkpoint tool \
-                     with action='restore', name='{}'.",
-                    name, name
-                )
-            }
-        };
-        let Some(agent) = self.require_agent() else {
-            return;
-        };
-        let tx = self.response_tx.clone();
-        self.push_output(
-            if args.trim().is_empty() || args.trim() == "list" {
-                "Listing checkpoints...".into()
-            } else {
-                format!("Restoring checkpoint '{}'...", args.trim())
-            },
-            OutputRole::System,
+        let config = self.load_runtime_config();
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let cfg = edgecrab_tools::CheckpointConfig::from_home(
+            edgecrab_core::edgecrab_home(),
+            config.checkpoints.enabled,
+            config.checkpoints.max_snapshots,
+            config.checkpoints.max_total_size_mb,
+            config.checkpoints.max_file_size_mb,
         );
-        self.rt_handle.spawn(async move {
-            match agent.chat(&prompt).await {
-                Ok(resp) => {
-                    let _ = tx.send(AgentResponse::Token(resp));
-                    let _ = tx.send(AgentResponse::Done);
-                }
-                Err(e) => {
-                    let _ = tx.send(AgentResponse::Error(format!("Rollback error: {e}")));
-                }
+
+        match edgecrab_tools::handle_rollback_command(&args, &cwd, cfg) {
+            edgecrab_tools::RollbackOutcome::Disabled => {
+                self.push_output(
+                    "Checkpoints are disabled. Set checkpoints.enabled: true in config.yaml.",
+                    OutputRole::System,
+                );
             }
-        });
+            edgecrab_tools::RollbackOutcome::System(msg) => {
+                self.push_output(msg, OutputRole::System);
+            }
+            edgecrab_tools::RollbackOutcome::Error(msg) => {
+                self.push_output(msg, OutputRole::Error);
+            }
+            edgecrab_tools::RollbackOutcome::Report {
+                title,
+                subtitle,
+                body,
+            } => {
+                self.open_report_overlay(&title, &subtitle, body);
+            }
+        }
     }
 
     // ─── MCP Reload ─────────────────────────────────────────────────

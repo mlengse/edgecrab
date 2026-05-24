@@ -2433,31 +2433,32 @@ impl Gateway {
                                     )),
                                 }
                             }
-                            "rollback" => {
+                            "rollback" | "checkpoint" => {
                                 let args = msg.get_command_args().trim();
-                                let prompt = match args {
-                                    "" | "list" => {
-                                        "Please list all available checkpoints by calling the checkpoint tool with action='list'.".to_string()
+                                let config =
+                                    edgecrab_core::AppConfig::load().unwrap_or_default();
+                                let cwd = std::env::current_dir()
+                                    .unwrap_or_else(|_| PathBuf::from("."));
+                                let cfg = edgecrab_tools::CheckpointConfig::from_home(
+                                    edgecrab_core::edgecrab_home(),
+                                    config.checkpoints.enabled,
+                                    config.checkpoints.max_snapshots,
+                                    config.checkpoints.max_total_size_mb,
+                                    config.checkpoints.max_file_size_mb,
+                                );
+                                Some(match edgecrab_tools::handle_rollback_command(
+                                    args, &cwd, cfg,
+                                ) {
+                                    edgecrab_tools::RollbackOutcome::Disabled => {
+                                        "Checkpoints are disabled. Set checkpoints.enabled: true in config.yaml.".into()
                                     }
-                                    name => format!(
-                                        "Please restore the checkpoint named '{}' by calling the checkpoint tool with action='restore', name='{}'.",
-                                        name, name
-                                    ),
-                                };
-                                let rollback_msg = IncomingMessage {
-                                    platform: msg.platform,
-                                    user_id: msg.user_id.clone(),
-                                    channel_id: msg.channel_id.clone(),
-                                    chat_type: msg.chat_type,
-                                    text: prompt,
-                                    thread_id: msg.thread_id.clone(),
-                                    metadata: msg.metadata.clone(),
-                                };
-                                let _ = tx.send(rollback_msg).await;
-                                Some(if args.is_empty() || args == "list" {
-                                    "Listing checkpoints...".into()
-                                } else {
-                                    format!("Attempting to restore checkpoint '{args}'...")
+                                    edgecrab_tools::RollbackOutcome::System(msg) => msg,
+                                    edgecrab_tools::RollbackOutcome::Error(msg) => msg,
+                                    edgecrab_tools::RollbackOutcome::Report {
+                                        title,
+                                        subtitle,
+                                        body,
+                                    } => format!("{title}\n{subtitle}\n\n{body}"),
                                 })
                             }
                             "background" | "bg" => {

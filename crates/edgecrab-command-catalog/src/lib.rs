@@ -592,10 +592,10 @@ pub const BUILTIN_SLASH_COMMANDS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         name: "rollback",
-        aliases: &[],
-        description: "List or restore checkpoints",
+        aliases: &["checkpoint"],
+        description: "List, diff, pin, or restore filesystem checkpoints",
         category: "Advanced",
-        args_hint: "[name]",
+        args_hint: "[list|diff|pin|N|hash] [file]",
         cli: true,
         gateway: true,
     },
@@ -905,6 +905,7 @@ mod tests {
             ("reload-mcp", "reload_mcp"),
             ("quit", "exit"),
             ("quit", "q"),
+            ("rollback", "checkpoint"),
         ] {
             let alias_spec =
                 resolve_slash_command(alias).unwrap_or_else(|| panic!("missing alias /{alias}"));

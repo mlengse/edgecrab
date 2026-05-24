@@ -632,6 +632,7 @@ impl Agent {
 
         let mutation_turn = Arc::new(edgecrab_tools::MutationTurnState::new());
         mutation_turn.clear();
+        edgecrab_tools::tools::checkpoint::checkpoint_new_turn();
 
         // Snapshot config and provider at loop start so in-flight
         // conversations are not affected by a /model hot-swap.

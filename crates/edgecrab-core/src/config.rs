@@ -1899,27 +1899,42 @@ impl Default for BrowserConfig {
 /// Checkpoint and rollback configuration.
 ///
 /// Checkpoints are automatically created before destructive operations
-/// (write_file, patch, destructive terminal commands) and stored as
-/// shadow git commits under `~/.edgecrab/checkpoints/`.
+/// (write_file, patch, destructive terminal commands) and stored in a
+/// single shared shadow git store under `~/.edgecrab/checkpoints/store/`.
 ///
-/// Mirrors hermes-agent's `checkpoints:` config block.
+/// Mirrors hermes-agent's `checkpoints:` config block (v2).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CheckpointsConfig {
     /// Master switch — set to false to disable all checkpoint operations.
-    /// Default: true.
     pub enabled: bool,
-    /// Maximum number of checkpoints to retain per working directory.
-    /// Older checkpoints are pruned when this limit is reached.
-    /// Default: 50.
+    /// Maximum checkpoints retained per working directory (FIFO eviction).
     pub max_snapshots: u32,
+    /// Hard ceiling on total checkpoint store size in MB (0 = disabled).
+    pub max_total_size_mb: u32,
+    /// Skip staging any single file larger than this (MB). 0 = disabled.
+    pub max_file_size_mb: u32,
+    /// Auto-prune orphan/stale projects at startup.
+    pub auto_prune: bool,
+    /// Drop projects whose last_touch is older than this many days.
+    pub retention_days: u32,
+    /// Delete projects whose workdir no longer exists.
+    pub delete_orphans: bool,
+    /// Minimum hours between automatic prune sweeps.
+    pub min_interval_hours: u32,
 }
 
 impl Default for CheckpointsConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            max_snapshots: 50,
+            max_snapshots: 20,
+            max_total_size_mb: 200,
+            max_file_size_mb: 10,
+            auto_prune: true,
+            retention_days: 7,
+            delete_orphans: true,
+            min_interval_hours: 24,
         }
     }
 }

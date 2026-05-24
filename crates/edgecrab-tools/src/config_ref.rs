@@ -133,8 +133,12 @@ pub struct AppConfigRef {
     /// Mirrors `checkpoints.enabled` in config.yaml (default: true).
     pub checkpoints_enabled: bool,
     /// Maximum number of checkpoints to keep per working directory.
-    /// Mirrors `checkpoints.max_snapshots` in config.yaml (default: 50).
+    /// Mirrors `checkpoints.max_snapshots` in config.yaml (default: 20).
     pub checkpoints_max_snapshots: u32,
+    /// Total checkpoint store size cap in MB (`checkpoints.max_total_size_mb`).
+    pub checkpoints_max_total_size_mb: u32,
+    /// Per-file size cap when staging checkpoints (`checkpoints.max_file_size_mb`).
+    pub checkpoints_max_file_size_mb: u32,
     /// Skills to preload into the system prompt (from -s/--skill flags).
     pub preloaded_skills: Vec<String>,
 
@@ -249,7 +253,9 @@ impl Default for AppConfigRef {
             browser_command_timeout: 30,
             browser_recording_max_age_hours: 72,
             checkpoints_enabled: true,
-            checkpoints_max_snapshots: 50,
+            checkpoints_max_snapshots: 20,
+            checkpoints_max_total_size_mb: 200,
+            checkpoints_max_file_size_mb: 10,
             preloaded_skills: Vec::new(),
             terminal_env_passthrough: Vec::new(),
             terminal_backend: BackendKind::Local,

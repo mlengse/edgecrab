@@ -1235,7 +1235,7 @@ impl CommandRegistry {
         self.register(Command {
             name: "rollback",
             aliases: &["checkpoint"],
-            description: "Restore a file checkpoint from the current session",
+            description: "List, diff, pin, or restore filesystem checkpoints",
             handler: |args| {
                 let a = args.trim().to_string();
                 CommandResult::RollbackCheckpoint(a)

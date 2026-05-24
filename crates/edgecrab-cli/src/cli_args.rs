@@ -289,6 +289,14 @@ pub enum Command {
     /// Equivalent to `hermes doctor`. Prints a colored status report.
     Doctor,
 
+    /// Inspect and maintain the filesystem checkpoint store
+    ///
+    /// Equivalent to `hermes checkpoints`. Safe to run while EdgeCrab is idle.
+    Checkpoints {
+        #[command(subcommand)]
+        command: Option<CheckpointsCommand>,
+    },
+
     /// Migrate from hermes-agent (~/.hermes/) to EdgeCrab (~/.edgecrab/)
     ///
     /// Copies config, memories, skills, and .env. Safe to re-run.
@@ -1012,6 +1020,35 @@ pub enum CronCommand {
     Run { id: String },
     /// Remove a scheduled job
     Remove { id: String },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum CheckpointsCommand {
+    /// Show total size, project count, and per-project breakdown (default)
+    #[command(visible_alias = "list")]
+    Status {
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Delete orphan/stale checkpoints and GC the store
+    Prune {
+        #[arg(long, default_value_t = 7)]
+        retention_days: u32,
+        #[arg(long, default_value_t = 200)]
+        max_size_mb: u32,
+        #[arg(long)]
+        keep_orphans: bool,
+    },
+    /// Delete the entire checkpoint base (all /rollback history)
+    Clear {
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Delete only legacy-* archives from v1 migration
+    ClearLegacy {
+        #[arg(short, long)]
+        force: bool,
+    },
 }
 
 #[derive(Subcommand, Debug, Clone)]

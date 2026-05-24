@@ -71,6 +71,11 @@ pub use registry::{
     to_llm_definitions,
 };
 pub use tools::todo::TodoStore;
+pub use tools::checkpoint::{
+    checkpoint_new_turn, clear_all, clear_legacy, format_checkpoint_list, format_store_status,
+    handle_rollback_command, maybe_auto_prune_checkpoints, prune_checkpoints, store_status,
+    AutoPruneResult, CheckpointConfig, CheckpointManager, PruneCounts, RollbackOutcome,
+};
 pub use toolsets::{
     ACP_TOOLS, CORE_TOOLS, LSP_TOOLS, MCP_EXTENDED_TOOLS, MOA_TOOLS, acp_tools,
     resolve_active_toolsets, resolve_alias,
