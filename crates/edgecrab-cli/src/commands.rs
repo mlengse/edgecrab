@@ -231,6 +231,8 @@ pub enum CommandResult {
     /// macOS permission diagnostics and bootstrap workflow.
     #[cfg(target_os = "macos")]
     MacosPermissions(String),
+    /// macOS computer_use status / permissions probe.
+    ShowComputer(String),
     /// Restore a file checkpoint (list if no name given, restore <name> otherwise).
     /// Wires to the `checkpoint` tool via the agent.
     RollbackCheckpoint(String),
@@ -1230,6 +1232,13 @@ impl CommandRegistry {
                 let name = args.trim();
                 CommandResult::BranchSession((!name.is_empty()).then_some(name.to_string()))
             },
+        });
+
+        self.register(Command {
+            name: "computer",
+            aliases: &[],
+            description: "Show computer_use status or permissions (macOS + cua-driver)",
+            handler: |args| CommandResult::ShowComputer(args.trim().to_string()),
         });
 
         self.register(Command {

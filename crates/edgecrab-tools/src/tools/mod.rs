@@ -27,6 +27,7 @@ pub mod advanced;
 pub mod backend_pool;
 pub mod backends;
 pub mod browser;
+pub mod computer_use;
 pub mod checkpoint;
 pub mod clarify;
 pub mod cron;

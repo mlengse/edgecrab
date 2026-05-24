@@ -80,6 +80,7 @@ pub use toolsets::{
     ACP_TOOLS, CORE_TOOLS, LSP_TOOLS, MCP_EXTENDED_TOOLS, MOA_TOOLS, acp_tools,
     resolve_active_toolsets, resolve_alias,
 };
+pub use tools::computer_use::permissions_status;
 
 #[cfg(test)]
 pub(crate) mod test_support {

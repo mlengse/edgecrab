@@ -147,6 +147,9 @@ pub const MCP_EXTENDED_TOOLS: &[&str] = &[
 /// On-demand Mixture-of-Agents tool — loaded via `enabled_toolsets: ["core", "moa"]`.
 pub const MOA_TOOLS: &[&str] = &["moa"];
 
+/// macOS desktop control via cua-driver — opt-in via `enabled_toolsets: ["computer_use"]`.
+pub const COMPUTER_USE_TOOLS: &[&str] = &["computer_use"];
+
 /// Tools EXCLUDED from ACP (editor integration) mode.
 ///
 /// DRY: Instead of duplicating the full CORE_TOOLS list, we define only

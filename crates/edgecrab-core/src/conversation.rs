@@ -57,7 +57,8 @@ use edgecrab_types::trajectory::{
     TrajectoryMetadata, convert_scratchpad_to_think, save_trajectory,
 };
 use edgecrab_types::{
-    AgentError, Content, Cost, Message, Role, ToolError, ToolErrorResponse, Trajectory, Usage,
+    AgentError, Content, ContentPart, Cost, Message, Role, ToolError, ToolErrorResponse, Trajectory,
+    Usage,
 };
 use edgequake_llm::traits::{CacheControl, StreamChunk, StreamUsage};
 use edgequake_llm::{CachePromptConfig, LLMProvider, apply_cache_control};
@@ -1436,6 +1437,15 @@ impl Agent {
             // Cross-ref: Hermes `_strip_budget_warnings_from_history()` in `run_agent.py`.
             strip_budget_warnings_from_history(&mut session.messages);
 
+            // Strip stale computer_use screenshots before token estimation / compression.
+            // Keeps only the last N capture images in history (default 3).
+            if app_config_ref.computer_use_keep_last_n_screenshots > 0 {
+                session.messages = crate::compression::prune_computer_use_screenshots(
+                    &session.messages,
+                    app_config_ref.computer_use_keep_last_n_screenshots,
+                );
+            }
+
             // Context compression: check status, emit pressure warning, compress if needed.
             //
             // WHY before the API call: Compressing after the call is too late —
@@ -2452,13 +2462,29 @@ fn append_conversation_messages(out: &mut Vec<edgequake_llm::ChatMessage>, messa
                 out.push(edgequake_llm::ChatMessage::assistant(&text));
             }
             Role::Tool => {
-                // Map tool result messages with their tool_call_id for correlation.
                 let tool_call_id = m.tool_call_id.as_deref().unwrap_or("unknown");
                 let mut chat_msg = edgequake_llm::ChatMessage::tool_result(tool_call_id, &text);
-                // Propagate the tool function name so Gemini/VertexAI providers can
-                // build the correct FunctionResponse.name in convert_messages().
-                // The name is stored in Message::name by Message::tool_result().
                 chat_msg.name = m.name.clone();
+                if let Some(Content::Parts(parts)) = &m.content {
+                    let images: Vec<edgequake_llm::ImageData> = parts
+                        .iter()
+                        .filter_map(|p| match p {
+                            ContentPart::ImageUrl { image_url } => {
+                                let url = &image_url.url;
+                                url.strip_prefix("data:image/png;base64,")
+                                    .map(|b64| edgequake_llm::ImageData::new(b64, "image/png"))
+                                    .or_else(|| {
+                                        url.strip_prefix("data:image/jpeg;base64,")
+                                            .map(|b64| edgequake_llm::ImageData::new(b64, "image/jpeg"))
+                                    })
+                            }
+                            _ => None,
+                        })
+                        .collect();
+                    if !images.is_empty() {
+                        chat_msg.images = Some(images);
+                    }
+                }
                 out.push(chat_msg);
             }
         }
@@ -4210,7 +4236,7 @@ async fn process_response(
                     dedup_tracker.record(&tc_name, &args_json, &tool_result);
                     session
                         .messages
-                        .push(Message::tool_result(&tc_id, &tc_name, &tool_result));
+                        .push(Message::tool_result_from_output(&tc_id, &tc_name, &tool_result));
                     session.messages.extend(injected_messages);
                 }
                 Err(e) => {
@@ -4315,7 +4341,7 @@ async fn process_response(
             }
             // Record for duplicate detection (FP11)
             dedup_tracker.record(&tc.function.name, &tc.function.arguments, &tool_result);
-            session.messages.push(Message::tool_result(
+            session.messages.push(Message::tool_result_from_output(
                 &tc.id,
                 &tc.function.name,
                 &tool_result,

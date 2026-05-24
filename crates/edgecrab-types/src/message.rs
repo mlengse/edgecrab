@@ -111,6 +111,48 @@ impl Message {
         }
     }
 
+    /// Build a tool result message, promoting computer_use multimodal JSON to parts.
+    pub fn tool_result_from_output(tool_call_id: &str, name: &str, content: &str) -> Self {
+        if name == "computer_use"
+            && let Ok(value) = serde_json::from_str::<serde_json::Value>(
+                content.lines().next().unwrap_or(content),
+            )
+            && value.get("_multimodal") == Some(&serde_json::Value::Bool(true))
+        {
+            let summary = value
+                .get("text_summary")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let mut parts = vec![ContentPart::Text { text: summary }];
+            if let Some(items) = value.get("content").and_then(|c| c.as_array()) {
+                for item in items {
+                    if item.get("type").and_then(|t| t.as_str()) == Some("image_url")
+                        && let Some(url) = item
+                            .get("image_url")
+                            .and_then(|iu| iu.get("url"))
+                            .and_then(|u| u.as_str())
+                    {
+                        parts.push(ContentPart::ImageUrl {
+                            image_url: ImageUrl {
+                                url: url.to_string(),
+                                detail: Some("auto".into()),
+                            },
+                        });
+                    }
+                }
+            }
+            return Self {
+                role: Role::Tool,
+                content: Some(Content::Parts(parts)),
+                tool_call_id: Some(tool_call_id.to_string()),
+                name: Some(name.to_string()),
+                ..Default::default()
+            };
+        }
+        Self::tool_result(tool_call_id, name, content)
+    }
+
     /// Assistant message that requested tool calls.
     ///
     /// WHY store tool_calls on assistant messages: When rebuilding the

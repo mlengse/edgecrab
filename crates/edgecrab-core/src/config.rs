@@ -54,6 +54,7 @@ pub struct AppConfig {
     pub privacy: PrivacyConfig,
     pub browser: BrowserConfig,
     pub checkpoints: CheckpointsConfig,
+    pub computer_use: ComputerUseConfig,
     pub timezone: Option<String>,
     pub tts: TtsConfig,
     pub stt: SttConfig,
@@ -1935,6 +1936,31 @@ impl Default for CheckpointsConfig {
             retention_days: 7,
             delete_orphans: true,
             min_interval_hours: 24,
+        }
+    }
+}
+
+/// macOS desktop control via cua-driver (`computer_use` tool).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ComputerUseConfig {
+    /// Master switch — disabled by default (high-risk capability).
+    pub enabled: bool,
+    /// Keep only the last N screenshot captures in conversation history.
+    pub keep_last_n_screenshots: u32,
+    /// Require approval for destructive actions unless yolo is on.
+    pub confirm_destructive: bool,
+    /// cua-driver binary name or path.
+    pub cua_driver_cmd: String,
+}
+
+impl Default for ComputerUseConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            keep_last_n_screenshots: 3,
+            confirm_destructive: true,
+            cua_driver_cmd: "cua-driver".into(),
         }
     }
 }

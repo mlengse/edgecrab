@@ -139,6 +139,14 @@ pub struct AppConfigRef {
     pub checkpoints_max_total_size_mb: u32,
     /// Per-file size cap when staging checkpoints (`checkpoints.max_file_size_mb`).
     pub checkpoints_max_file_size_mb: u32,
+    /// Whether computer_use desktop control is enabled (`computer_use.enabled`).
+    pub computer_use_enabled: bool,
+    /// Screenshot history cap for compression (`computer_use.keep_last_n_screenshots`).
+    pub computer_use_keep_last_n_screenshots: u32,
+    /// Require approval for destructive computer_use actions.
+    pub computer_use_confirm_destructive: bool,
+    /// cua-driver command (`computer_use.cua_driver_cmd`).
+    pub computer_use_cua_cmd: String,
     /// Skills to preload into the system prompt (from -s/--skill flags).
     pub preloaded_skills: Vec<String>,
 
@@ -256,6 +264,10 @@ impl Default for AppConfigRef {
             checkpoints_max_snapshots: 20,
             checkpoints_max_total_size_mb: 200,
             checkpoints_max_file_size_mb: 10,
+            computer_use_enabled: false,
+            computer_use_keep_last_n_screenshots: 3,
+            computer_use_confirm_destructive: true,
+            computer_use_cua_cmd: "cua-driver".into(),
             preloaded_skills: Vec::new(),
             terminal_env_passthrough: Vec::new(),
             terminal_backend: BackendKind::Local,

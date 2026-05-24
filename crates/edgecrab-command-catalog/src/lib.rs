@@ -591,6 +591,15 @@ pub const BUILTIN_SLASH_COMMANDS: &[SlashCommandSpec] = &[
         gateway: true,
     },
     SlashCommandSpec {
+        name: "computer",
+        aliases: &[],
+        description: "Show computer_use status or permissions",
+        category: "Advanced",
+        args_hint: "[status|permissions]",
+        cli: true,
+        gateway: false,
+    },
+    SlashCommandSpec {
         name: "rollback",
         aliases: &["checkpoint"],
         description: "List, diff, pin, or restore filesystem checkpoints",
