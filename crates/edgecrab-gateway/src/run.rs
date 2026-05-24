@@ -246,15 +246,34 @@ fn gateway_help_text() -> String {
 
 fn handle_computer_command(msg: &IncomingMessage) -> String {
     let config = edgecrab_core::AppConfig::load().unwrap_or_default();
-    edgecrab_tools::format_computer_command(
-        msg.get_command_args(),
-        &edgecrab_tools::ComputerUseStatusConfig {
-            enabled: config.computer_use.enabled,
-            keep_last_n_screenshots: config.computer_use.keep_last_n_screenshots,
-            confirm_destructive: config.computer_use.confirm_destructive,
-            cua_driver_cmd: config.computer_use.cua_driver_cmd.clone(),
-        },
-    )
+    let status_cfg = edgecrab_tools::ComputerUseStatusConfig {
+        enabled: config.computer_use.enabled,
+        keep_last_n_screenshots: config.computer_use.keep_last_n_screenshots,
+        confirm_destructive: config.computer_use.confirm_destructive,
+        cua_driver_cmd: config.computer_use.cua_driver_cmd.clone(),
+    };
+    let ctx = edgecrab_tools::ComputerUseReportContext {
+        active_model: String::new(),
+        enabled_toolsets: config.tools.enabled_toolsets.clone().unwrap_or_default(),
+        disabled_toolsets: config.tools.disabled_toolsets.clone().unwrap_or_default(),
+        auxiliary_provider: config.auxiliary.provider.clone(),
+        auxiliary_model: config.auxiliary.model.clone(),
+        auxiliary_base_url: config.auxiliary.base_url.clone(),
+        ..Default::default()
+    };
+  let sub = msg.get_command_args().trim().to_ascii_lowercase();
+    match sub.as_str() {
+        "enable" | "on" | "disable" | "off" => {
+            let enabled = matches!(sub.as_str(), "enable" | "on");
+            let persist_result = edgecrab_core::AppConfig::persist_computer_use_enabled(enabled);
+            edgecrab_tools::format_computer_enable_result(
+                enabled,
+                persist_result.is_ok(),
+                persist_result.err().as_ref().map(|e| e.to_string()).as_deref(),
+            )
+        }
+        _ => edgecrab_tools::format_computer_command(&sub, &status_cfg, &ctx),
+    }
 }
 
 fn format_gateway_insights(

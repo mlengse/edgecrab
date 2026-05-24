@@ -190,20 +190,25 @@ async fn blocked_key_returns_error_json() {
 }
 
 #[test]
-fn format_computer_status_includes_enabled_flag() {
-    use crate::tools::computer_use::{ComputerUseStatusConfig, format_computer_command};
+fn format_computer_status_includes_readiness_sections() {
+    use crate::tools::computer_use::{ComputerUseReportContext, ComputerUseStatusConfig, format_computer_command};
 
     let body = format_computer_command(
         "status",
         &ComputerUseStatusConfig {
-            enabled: true,
+            enabled: false,
             keep_last_n_screenshots: 3,
             confirm_destructive: true,
             cua_driver_cmd: "cua-driver".into(),
         },
+        &ComputerUseReportContext {
+            enabled_toolsets: vec!["computer_use".into()],
+            ..Default::default()
+        },
     );
-    assert!(body.contains("computer_use.enabled: true"));
-    assert!(body.contains("keep_last_n_screenshots: 3"));
+    assert!(body.contains("Readiness"));
+    assert!(body.contains("Configuration"));
+    assert!(body.contains("NOT READY"));
 }
 
 #[test]

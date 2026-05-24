@@ -182,6 +182,24 @@ impl AppConfig {
         config.save()
     }
 
+    /// Enable or disable `computer_use` and ensure the toolset is registered.
+    pub fn persist_computer_use_enabled(enabled: bool) -> Result<(), AgentError> {
+        let mut config = Self::load()?;
+        config.computer_use.enabled = enabled;
+        if enabled {
+            Self::ensure_toolset_enabled(&mut config.tools.enabled_toolsets, "computer_use");
+        }
+        config.save()
+    }
+
+    fn ensure_toolset_enabled(toolsets: &mut Option<Vec<String>>, name: &str) {
+        match toolsets {
+            Some(list) if list.iter().any(|entry| entry.eq_ignore_ascii_case(name)) => {}
+            Some(list) => list.push(name.to_string()),
+            None => *toolsets = Some(vec![name.to_string()]),
+        }
+    }
+
     /// Human-readable summary for `/lsp status`.
     pub fn lsp_status_summary(lsp: &LspConfig) -> String {
         let post_write = if lsp.enabled {
@@ -2397,6 +2415,14 @@ model:
         // Everything else should be defaults
         assert!(cfg.model.streaming);
         assert_eq!(cfg.tools.tool_delay, 1.0);
+    }
+
+    #[test]
+    fn ensure_toolset_enabled_appends_computer_use() {
+        let mut toolsets = Some(vec!["core".into()]);
+        AppConfig::ensure_toolset_enabled(&mut toolsets, "computer_use");
+        let list = toolsets.expect("toolsets");
+        assert!(list.iter().any(|name| name == "computer_use"));
     }
 
     #[test]

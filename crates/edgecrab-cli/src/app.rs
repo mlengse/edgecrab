@@ -12444,17 +12444,7 @@ impl App {
                 self.push_output(report, OutputRole::System);
             }
             CommandResult::ShowComputer(args) => {
-                let config = self.load_runtime_config();
-                let body = edgecrab_tools::format_computer_command(
-                    &args,
-                    &edgecrab_tools::ComputerUseStatusConfig {
-                        enabled: config.computer_use.enabled,
-                        keep_last_n_screenshots: config.computer_use.keep_last_n_screenshots,
-                        confirm_destructive: config.computer_use.confirm_destructive,
-                        cua_driver_cmd: config.computer_use.cua_driver_cmd.clone(),
-                    },
-                );
-                self.push_output(body, OutputRole::System);
+                self.handle_computer_command(args);
             }
             CommandResult::RollbackCheckpoint(args) => {
                 self.handle_rollback_checkpoint(args);
@@ -21680,6 +21670,71 @@ impl App {
     //
     // EdgeCrab now supports deterministic local microphone capture in the TUI
     // using controlled recorder backends plus the existing STT/TTS tools.
+
+    fn handle_computer_command(&mut self, args: String) {
+        let runtime = self.load_runtime_config();
+        let status_cfg = edgecrab_tools::ComputerUseStatusConfig {
+            enabled: runtime.computer_use.enabled,
+            keep_last_n_screenshots: runtime.computer_use.keep_last_n_screenshots,
+            confirm_destructive: runtime.computer_use.confirm_destructive,
+            cua_driver_cmd: runtime.computer_use.cua_driver_cmd.clone(),
+        };
+        let mut ctx = edgecrab_tools::ComputerUseReportContext {
+            enabled_toolsets: runtime.tools.enabled_toolsets.clone().unwrap_or_default(),
+            disabled_toolsets: runtime.tools.disabled_toolsets.clone().unwrap_or_default(),
+            auxiliary_provider: runtime.auxiliary.provider.clone(),
+            auxiliary_model: runtime.auxiliary.model.clone(),
+            auxiliary_base_url: runtime.auxiliary.base_url.clone(),
+            ..Default::default()
+        };
+        if let Some(agent) = self.agent.as_ref() {
+            ctx.active_model = self.block_on_agent({
+                let agent = Arc::clone(agent);
+                async move { agent.model().await }
+            });
+            let (enabled, disabled, _, _) = self.current_tool_filters();
+            ctx.enabled_toolsets = enabled;
+            ctx.disabled_toolsets = disabled;
+        }
+
+        let sub = args.trim().to_ascii_lowercase();
+        match sub.as_str() {
+            "enable" | "on" | "disable" | "off" => {
+                let enabled = matches!(sub.as_str(), "enable" | "on");
+                if let Some(agent) = self.agent.as_ref() {
+                    let agent = Arc::clone(agent);
+                    self.block_on_agent(async move { agent.set_computer_use_enabled(enabled).await });
+                }
+                let persist_result = edgecrab_core::AppConfig::persist_computer_use_enabled(enabled);
+                let body = edgecrab_tools::format_computer_enable_result(
+                    enabled,
+                    persist_result.is_ok(),
+                    persist_result.err().as_ref().map(|e| e.to_string()).as_deref(),
+                );
+                self.open_report_overlay(
+                    if enabled {
+                        "Computer Use Enabled"
+                    } else {
+                        "Computer Use Disabled"
+                    },
+                    "Configuration saved to ~/.edgecrab/config.yaml",
+                    body,
+                );
+            }
+            "help" => {
+                self.open_report_overlay(
+                    "Computer Use — Help",
+                    "Background macOS desktop control via cua-driver",
+                    edgecrab_tools::computer_command_usage(),
+                );
+            }
+            _ => {
+                let (title, subtitle, body) =
+                    edgecrab_tools::computer_command_overlay(&sub, &status_cfg, &ctx);
+                self.open_report_overlay(title, subtitle, body);
+            }
+        }
+    }
 
     fn handle_lsp_mode(&mut self, args: String) {
         let normalized = args.trim().to_ascii_lowercase();

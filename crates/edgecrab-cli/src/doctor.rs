@@ -98,6 +98,11 @@ pub async fn run(config_override: Option<&str>) -> anyhow::Result<bool> {
     load_dot_env(&context.home.join(".env"));
 
     checks.push(check_config_file(&context.config_path));
+    if let Ok(config) = edgecrab_core::AppConfig::load()
+        && config.computer_use.enabled
+    {
+        checks.push(check_computer_use(&config));
+    }
     checks.push(check_state_dir(&context.home));
     checks.push(check_memories(&context.home));
     checks.push(check_skills(&context.home));
@@ -156,6 +161,54 @@ pub async fn run(config_override: Option<&str>) -> anyhow::Result<bool> {
     println!();
 
     Ok(failures == 0)
+}
+
+fn check_computer_use(config: &edgecrab_core::AppConfig) -> Check {
+    use edgecrab_tools::{
+        ComputerUseReportContext, ComputerUseStatusConfig, collect_snapshot,
+    };
+
+    let status_cfg = ComputerUseStatusConfig {
+        enabled: config.computer_use.enabled,
+        keep_last_n_screenshots: config.computer_use.keep_last_n_screenshots,
+        confirm_destructive: config.computer_use.confirm_destructive,
+        cua_driver_cmd: config.computer_use.cua_driver_cmd.clone(),
+    };
+    let ctx = ComputerUseReportContext {
+        enabled_toolsets: config.tools.enabled_toolsets.clone().unwrap_or_default(),
+        disabled_toolsets: config.tools.disabled_toolsets.clone().unwrap_or_default(),
+        auxiliary_provider: config.auxiliary.provider.clone(),
+        auxiliary_model: config.auxiliary.model.clone(),
+        auxiliary_base_url: config.auxiliary.base_url.clone(),
+        ..Default::default()
+    };
+    let snap = collect_snapshot(&status_cfg, &ctx);
+    if snap.ready {
+        Check::pass("computer_use", "ready — driver, toolset, and permissions look good")
+    } else if !snap.platform_supported {
+        Check::warn(
+            "computer_use",
+            "enabled in config but this host is not macOS (or noop test backend)",
+        )
+    } else if !snap.driver_installed {
+        Check::fail(
+            "computer_use",
+            format!(
+                "enabled but `{}` not found — run `/computer permissions`",
+                snap.driver_cmd
+            ),
+        )
+    } else if !snap.toolset_active {
+        Check::warn(
+            "computer_use",
+            "enabled but computer_use toolset is not active — run `/computer enable`",
+        )
+    } else {
+        Check::warn(
+            "computer_use",
+            "enabled but Accessibility is not granted — run `/computer open`",
+        )
+    }
 }
 
 fn check_config_file(home: &Path) -> Check {

@@ -1,111 +1,101 @@
 # 011 — Computer Use — Implementation Proof
 
-**Branch:** `feat/computer-use-phase2` (merged from `feat/computer-use`)  
+**Branch:** `feat/computer-use-ux`  
 **Date:** 2026-05-24  
 **Hermes source of truth:** `/Users/raphaelmansuy/Github/03-working/hermes-agent/tools/computer_use/`
 
 ## Summary
 
-EdgeCrab ships a macOS **computer_use** tool mirroring Hermes v0.14:
-**cua-driver MCP stdio backend**, OpenAI function schema, `_multimodal` capture envelope,
-**auxiliary vision routing** (#24015), safety gates, screenshot pruning, and opt-in toolset.
+EdgeCrab ships macOS **computer_use** with Hermes v0.14 parity (cua-driver MCP, aux vision routing,
+safety, screenshot pruning) plus a **polished operator UX**: structured readiness reports, TUI overlay
+panel, `/computer enable|open|help`, gateway parity, and `edgecrab doctor` integration.
 
 ## Test Evidence
 
 ```bash
-cargo test -p edgecrab-tools computer_use   # 25 passed
-cargo test -p edgecrab-core prune_computer_use  # 2 passed
-cargo test --workspace                      # all passed
-cargo clippy --workspace -- -D warnings     # clean
+cargo test -p edgecrab-tools computer_use --lib   # 30 passed (+ 1 ignored manual e2e)
+cargo test -p edgecrab-core prune_computer_use    # 2 passed
+cargo test --workspace                            # all passed
+cargo clippy --workspace -- -D warnings           # clean
+
+# Manual live capture (macOS + cua-driver + permissions):
+cargo test -p edgecrab-tools manual_e2e -- --ignored --nocapture
 ```
 
-## Architecture
+## UX Deliverables
+
+| Surface | Behavior |
+|---------|----------|
+| TUI `/computer` | Opens **report overlay** (title + subtitle + body) like `/status` and `/cost` |
+| `/computer status` | Readiness checklist: platform, driver, config, toolset, accessibility, vision routing |
+| `/computer permissions` | Actionable permission checklist + install hint |
+| `/computer open` | Opens Screen Recording + Accessibility System Settings panes |
+| `/computer enable\|disable` | Persists `computer_use.enabled` + adds toolset; hot-updates live agent |
+| `/computer help` | Full subcommand reference |
+| Gateway `/computer` | Same text reports + enable/disable persist |
+| `edgecrab doctor` | Checks computer_use readiness when enabled in config |
+
+## Architecture (SOLID / DRY)
 
 ```
-edgecrab-tools/src/tools/computer_use/
-├── mod.rs              ToolHandler + registration
-├── backend.rs          ComputerUseBackend trait
-├── schema.rs           OpenAI schema (Hermes parity)
-├── safety.rs           blocked keys/types, destructive approval
-├── dispatch.rs         action routing + capture_after
-├── response.rs         finalize_capture_response (multimodal vs aux)
-├── vision_routing.rs   should_route_capture_to_aux_vision (Hermes port)
-├── aux_vision.rs       route_capture_through_aux_vision
-├── status.rs           DRY /computer formatter (CLI + gateway)
-├── mcp.rs              stdio MCP client
-├── cua_backend.rs      CuaDriverBackend
-├── noop.rs             CI/test stub
-├── permissions.rs      macOS + cua-driver probe
-└── tests.rs            25 unit tests
+status.rs           — single source for reports (CLI, gateway, TUI overlay, doctor)
+vision_routing.rs   — routing policy only
+aux_vision.rs       — aux execution only
+response.rs         — capture finalization only
+permissions.rs      — low-level driver/platform probes
+manual_e2e.rs         — #[ignore] live capture test
 ```
 
-## Wiring Checklist
-
-| Layer | Status |
-|-------|--------|
-| `computer_use.enabled: false` default | ✅ |
-| `COMPUTER_USE_TOOLS` opt-in toolset | ✅ |
-| Multimodal → `Message::tool_result_from_output` → `ChatMessage.images` | ✅ |
-| `prune_computer_use_screenshots` every ReAct turn | ✅ |
-| Aux vision routing for non-vision main models | ✅ |
-| CLI `/computer status\|permissions` | ✅ |
-| Gateway `/computer` | ✅ |
-| `active_model` on `AppConfigRef` for routing | ✅ |
-| Shared `analyze_local_image` in `vision.rs` (DRY) | ✅ |
+Shared helpers: `analyze_local_image` (vision.rs), `format_computer_command` / `computer_command_overlay`,
+`AppConfig::persist_computer_use_enabled`, `Agent::set_computer_use_enabled`.
 
 ## Brutal Assessment vs Hermes
 
-### Matches or exceeds
+### Exceeds Hermes on UX
+
+- **Structured readiness report** with `[ok]` / `[warn]` / `[fail]` markers and next-steps — Hermes prints ad-hoc strings.
+- **TUI overlay panel** — Hermes TUI/gateway lack an equivalent polished status surface.
+- **`/computer open`** — one command opens both Screen Recording and Accessibility panes.
+- **`/computer enable`** — one command enables config + toolset + live session (Hermes requires manual config + toolset edit).
+- **`edgecrab doctor`** integration when feature is enabled.
+
+### Parity with Hermes core
 
 | Area | Verdict |
 |------|---------|
-| cua-driver MCP backend | **Parity** — same architecture as Hermes v0.14 |
-| Action surface + schema | **Parity** — capture/click/type/key/drag/scroll/set_value/list_apps/focus_app/wait |
-| `_multimodal` envelope contract | **Parity** |
-| Safety (blocked keys, type patterns, approval) | **Parity** |
-| Screenshot history pruning (keep last N) | **Parity** — runs every turn, not only on compress |
-| Vision routing policy (`vision_routing.py`) | **Parity** — explicit aux override, provider tool-result support, model capability |
-| Aux vision pre-analysis (`_route_capture_through_aux_vision`) | **Parity** — reuses `vision_analyze` backend resolution |
-| `/computer` status | **Parity** — CLI + gateway via shared `format_computer_command` |
-| Rust type safety + noop CI backend | **EdgeCrab advantage** — 25 deterministic tests without display |
+| cua-driver MCP backend | **Parity** |
+| Action surface + schema | **Parity** |
+| Safety + screenshot pruning | **Parity** |
+| Aux vision routing (#24015) | **Parity** |
+| `_multimodal` envelope | **Parity** |
 
-### Remaining gaps (honest)
+### Remaining honest gaps
 
-| Gap | Severity | Mitigation |
-|-----|----------|------------|
-| Live macOS e2e (real click/type with cua-driver) | Medium | Manual only; same CI constraint as Hermes |
-| Provider-specific Anthropic tool_result image splice | Low | Delegated to `edgequake-llm`; multimodal path works for OpenAI-compatible providers |
-| Linux X11 / Wayland / Windows | N/A phase 1 | Hermes is also macOS-only for this tool |
-| Screenshot downsample to 1024×640 | Low | Delegated to cua-driver (Hermes same) |
-| `#[ignore]` manual e2e test harness | Low | Document manual procedure in enable instructions |
-
-### First-principles / SOLID notes
-
-- **DIP:** `ComputerUseBackend` trait; tool depends on abstraction, not OS APIs.
-- **SRP:** routing policy (`vision_routing`), aux execution (`aux_vision`), response shaping (`response`), status formatting (`status`) are separate modules.
-- **DRY:** `analyze_local_image` shared with `vision_analyze`; `format_computer_command` shared CLI/gateway; routing reuses `vision_models` capability policy.
-- **Fail-closed routing:** When provider/model cannot accept tool images → aux vision; when aux fails → fall through to multimodal (Hermes same).
+| Gap | Severity | Notes |
+|-----|----------|-------|
+| Screen Recording TCC preflight | Low | No public macOS API — same as Hermes; manual verify required |
+| Live click/type e2e in CI | Medium | `manual_e2e` test exists but `#[ignore]`; run locally |
+| Bundled macOS computer-use skill | Low | Hermes ships `apple-macos-computer-use` skill; EdgeCrab relies on tool schema |
+| Linux/Windows phases | N/A | Hermes also macOS-only for this tool |
 
 ## Verdict
 
-**Phase 1 complete.** Feature **matches or exceeds** Hermes computer_use for macOS/cua-driver workflows, including the #24015 aux-vision fix. Suitable for opt-in production use with text-only or vision main models.
+**Feature complete for Phase 1.** Matches Hermes tool behavior and **exceeds on operator UX** for setup,
+diagnostics, and enablement. Production-ready for opt-in macOS users with cua-driver.
 
-## Enable
+## Quick Start
 
 ```yaml
+# ~/.edgecrab/config.yaml — or run /computer enable
 computer_use:
   enabled: true
-  keep_last_n_screenshots: 3
-
 enabled_toolsets:
   - computer_use
-
-auxiliary:
-  provider: openai   # optional — forces aux vision for captures
-  model: gpt-4o
 ```
 
 ```bash
-/computer status      # CLI or gateway
-/computer permissions
+/computer status       # TUI overlay readiness report
+/computer open         # jump to privacy panes
+/computer enable       # persist + activate
+edgecrab doctor        # validates when enabled
 ```

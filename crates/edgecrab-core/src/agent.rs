@@ -1773,6 +1773,20 @@ impl Agent {
         config.lsp.enabled = enabled;
     }
 
+    /// Enable or disable computer_use for future tool calls in this session.
+    pub async fn set_computer_use_enabled(&self, enabled: bool) {
+        let mut config = self.config.write().await;
+        config.computer_use_enabled = enabled;
+        if enabled
+            && !config
+                .enabled_toolsets
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case("computer_use"))
+        {
+            config.enabled_toolsets.push("computer_use".to_string());
+        }
+    }
+
     /// Update the enabled/disabled toolset filters for future turns.
     pub async fn set_toolset_filters(&self, enabled: Vec<String>, disabled: Vec<String>) {
         let mut config = self.config.write().await;

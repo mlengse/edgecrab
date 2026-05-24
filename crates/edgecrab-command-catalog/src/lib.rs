@@ -593,9 +593,9 @@ pub const BUILTIN_SLASH_COMMANDS: &[SlashCommandSpec] = &[
     SlashCommandSpec {
         name: "computer",
         aliases: &[],
-        description: "Show computer_use status or permissions",
+        description: "Computer use status, permissions, enable, and setup",
         category: "Advanced",
-        args_hint: "[status|permissions]",
+        args_hint: "[status|permissions|open|enable|disable|help]",
         cli: true,
         gateway: true,
     },

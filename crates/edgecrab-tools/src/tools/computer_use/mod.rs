@@ -7,6 +7,8 @@ mod aux_vision;
 mod backend;
 mod cua_backend;
 mod dispatch;
+#[cfg(test)]
+mod manual_e2e;
 mod mcp;
 mod noop;
 mod permissions;
@@ -31,7 +33,11 @@ use crate::registry::{ToolContext, ToolHandler};
 
 pub use permissions::{check_requirements, permissions_status};
 pub use response::parse_multimodal_tool_output;
-pub use status::{ComputerUseStatusConfig, format_computer_command};
+pub use status::{
+    ComputerUseReportContext, ComputerUseStatusConfig, collect_snapshot, computer_command_overlay,
+    computer_command_usage, format_computer_command, format_computer_enable_result,
+    is_computer_use_toolset_active, open_computer_use_settings,
+};
 
 static BACKEND: OnceLock<Mutex<Box<dyn backend::ComputerUseBackend>>> = OnceLock::new();
 
