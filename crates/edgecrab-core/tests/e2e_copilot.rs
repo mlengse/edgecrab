@@ -20,7 +20,9 @@
 use std::sync::Arc;
 
 use edgecrab_core::agent::{AgentBuilder, ApprovalChoice, StreamEvent};
+use edgecrab_tools::registry::ToolRegistry;
 use edgequake_llm::providers::vscode::{auth::GitHubAuth, token::TokenManager};
+use tempfile::TempDir;
 
 const COPILOT_TEST_MODEL: &str = "gpt-5-mini";
 const COPILOT_TEST_SPEC: &str = "vscode-copilot/gpt-5-mini";
@@ -409,4 +411,168 @@ async fn e2e_model_swap_with_copilot() {
         }
     };
     assert!(r2.to_uppercase().contains("BETA"), "got: {r2}");
+}
+
+/// Live certification: Copilot drives `write_file`, turn-end footer surfaces ground truth.
+#[tokio::test]
+#[ignore = "requires VS Code Copilot (VSCODE_IPC_HOOK_CLI or VSCODE_COPILOT_TOKEN)"]
+async fn e2e_file_mutation_verifier_footer_with_copilot() {
+    if !copilot_available() {
+        eprintln!("Skipping: VS Code Copilot not available");
+        return;
+    }
+    ensure_copilot_authenticated_for_e2e().await;
+
+    let workspace = TempDir::new().expect("temp workspace");
+    let provider = edgecrab_tools::create_provider_for_model("vscode-copilot", COPILOT_TEST_MODEL)
+        .expect("should create VsCodeCopilot provider");
+
+    let agent = AgentBuilder::new(COPILOT_TEST_SPEC)
+        .provider(provider)
+        .tools(Arc::new(ToolRegistry::new()))
+        .max_iterations(12)
+        .build()
+        .expect("agent build should succeed");
+
+    let prompt = "Use the write_file tool exactly once to create the file \
+                  `mutation_e2e_probe.txt` with content `PROBE_LIVE` in the current working \
+                  directory. Do not use any other tools. After write_file succeeds, reply with \
+                  exactly: MUTATION_E2E_DONE";
+
+    let result = match agent
+        .run_conversation_in_cwd(prompt, None, None, workspace.path())
+        .await
+    {
+        Ok(result) => result,
+        Err(err) => {
+            let msg = err.to_string();
+            if is_verified_global_rate_limit(&msg) {
+                eprintln!("Skipping live mutation verifier E2E (rate limit): {msg}");
+                return;
+            }
+            panic!("conversation failed: {msg}");
+        }
+    };
+
+    let probe = workspace.path().join("mutation_e2e_probe.txt");
+    assert!(
+        probe.is_file(),
+        "write_file should create mutation_e2e_probe.txt in workspace"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&probe).expect("read probe"),
+        "PROBE_LIVE"
+    );
+
+    let history_has_footer = result.messages.iter().any(|m| {
+        m.text_content().contains("files-mutated")
+            || m.text_content().contains("[file-mutation-verifier]")
+    });
+    assert!(
+        result.final_response.contains("files-mutated") || history_has_footer,
+        "expected mutation footer in final response or history; final_response={}",
+        result.final_response
+    );
+    assert!(
+        result.final_response.contains("MUTATION_E2E_DONE")
+            || result.final_response.to_uppercase().contains("DONE"),
+        "expected completion marker, got: {}",
+        result.final_response
+    );
+
+    println!("Live mutation verifier E2E certified.");
+    let tail = result.final_response.len().saturating_sub(500);
+    println!("Response tail:\n{}", &result.final_response[tail..]);
+}
+
+/// Streaming path: `StreamEvent::Footer` is emitted before `Done`.
+#[tokio::test]
+#[ignore = "requires VS Code Copilot (VSCODE_IPC_HOOK_CLI or VSCODE_COPILOT_TOKEN)"]
+async fn e2e_file_mutation_verifier_stream_footer_with_copilot() {
+    if !copilot_available() {
+        eprintln!("Skipping: VS Code Copilot not available");
+        return;
+    }
+    ensure_copilot_authenticated_for_e2e().await;
+
+    let workspace = TempDir::new().expect("temp workspace");
+    let previous_cwd = std::env::current_dir().ok();
+    std::env::set_current_dir(workspace.path()).expect("chdir to temp workspace");
+
+    let provider = edgecrab_tools::create_provider_for_model("vscode-copilot", COPILOT_TEST_MODEL)
+        .expect("should create VsCodeCopilot provider");
+
+    let agent = Arc::new(
+        AgentBuilder::new(COPILOT_TEST_SPEC)
+            .provider(provider)
+            .tools(Arc::new(ToolRegistry::new()))
+            .max_iterations(12)
+            .build()
+            .expect("agent build should succeed"),
+    );
+
+    let prompt = "Use write_file once to create `mutation_stream_probe.txt` with content `STREAM_PROBE`. \
+                  Then reply exactly: STREAM_OK";
+
+    let (chunk_tx, mut chunk_rx) = tokio::sync::mpsc::unbounded_channel::<StreamEvent>();
+    let agent_clone = Arc::clone(&agent);
+    let prompt = prompt.to_string();
+    let handle = tokio::spawn(async move {
+        match agent_clone.chat_streaming(&prompt, chunk_tx).await {
+            Ok(()) => {}
+            Err(err) => {
+                let msg = err.to_string();
+                if is_verified_global_rate_limit(&msg) {
+                    eprintln!("Skipping stream mutation E2E (rate limit): {msg}");
+                    return;
+                }
+                panic!("chat_streaming failed: {msg}");
+            }
+        }
+    });
+
+    let mut footer = String::new();
+    let mut got_done = false;
+    while let Some(event) = chunk_rx.recv().await {
+        match event {
+            StreamEvent::Footer(text) => footer = text,
+            StreamEvent::Done => {
+                got_done = true;
+                break;
+            }
+            StreamEvent::Error(e) => {
+                if is_verified_global_rate_limit(&e) {
+                    eprintln!("Skipping stream mutation E2E (rate limit): {e}");
+                    return;
+                }
+                panic!("stream error: {e}");
+            }
+            StreamEvent::Approval { response_tx, .. } => {
+                let _ = response_tx.send(ApprovalChoice::Once);
+            }
+            StreamEvent::Clarify { response_tx, .. } => {
+                let _ = response_tx.send("yes".into());
+            }
+            StreamEvent::SecretRequest { response_tx, .. } => {
+                let _ = response_tx.send(String::new());
+            }
+            _ => {}
+        }
+    }
+    handle.await.expect("join streaming task");
+
+    assert!(got_done, "should receive Done");
+    assert!(
+        footer.contains("files-mutated"),
+        "Footer event should carry success log, got: {footer}"
+    );
+    assert!(
+        workspace.path().join("mutation_stream_probe.txt").is_file(),
+        "stream path should still write the probe file"
+    );
+    println!("Stream Footer event:\n{footer}");
+
+    if let Some(prev) = previous_cwd {
+        let _ = std::env::set_current_dir(prev);
+    }
 }

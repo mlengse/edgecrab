@@ -29,8 +29,28 @@
 ```bash
 cargo test -p edgecrab-tools mutations::
 cargo test -p edgecrab-core --test file_mutation_verifier
-cargo test --workspace   # full suite
 cargo clippy --workspace -- -D warnings
+```
+
+### Live certification (Copilot / `gpt-5-mini`, no API key)
+
+```bash
+cargo test -p edgecrab-core --test e2e_copilot e2e_file_mutation_verifier -- --include-ignored --nocapture
+```
+
+**2026-05-24 result:** both live tests passed in ~19s.
+
+| Test | Result |
+|------|--------|
+| `e2e_file_mutation_verifier_footer_with_copilot` | `write_file` created `mutation_e2e_probe.txt`; footer appended to `final_response` |
+| `e2e_file_mutation_verifier_stream_footer_with_copilot` | `StreamEvent::Footer` received with `files-mutated` block |
+
+Sample footer from live run:
+
+```text
+─── files-mutated this turn ───────────────────────
+A  mutation_e2e_probe.txt                   +1 −0
+───────────────────────────────────────────────────
 ```
 
 ## Brutal Honest Assessment vs Nous Hermes Agent
