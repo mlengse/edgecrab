@@ -254,6 +254,63 @@ impl TelegramAdapter {
         Ok(resp.result.unwrap_or_default())
     }
 
+    /// Create a forum topic (DM topics or forum supergroups). Returns `message_thread_id`.
+    async fn create_forum_topic(&self, chat_id: &str, name: &str) -> anyhow::Result<Option<i64>> {
+        let chat_id_int: i64 = chat_id
+            .parse()
+            .map_err(|_| anyhow::anyhow!("invalid Telegram chat_id '{chat_id}'"))?;
+
+        #[derive(Serialize)]
+        struct CreateForumTopicRequest<'a> {
+            chat_id: i64,
+            name: &'a str,
+        }
+
+        #[derive(Debug, Deserialize)]
+        struct ForumTopic {
+            message_thread_id: i64,
+        }
+
+        let url = self.api_url("createForumTopic");
+        let body = CreateForumTopicRequest {
+            chat_id: chat_id_int,
+            name,
+        };
+        let resp: TelegramResponse<ForumTopic> = self
+            .client
+            .post(&url)
+            .json(&body)
+            .send()
+            .await?
+            .json()
+            .await?;
+
+        if resp.ok {
+            return Ok(resp.result.map(|topic| topic.message_thread_id));
+        }
+
+        let description = resp.description.unwrap_or_default();
+        let normalized = description.to_ascii_lowercase();
+        if normalized.contains("topic_name_duplicate") || normalized.contains("already") {
+            warn!(
+                chat_id = %chat_id,
+                name = %name,
+                "Telegram forum topic already exists; continuing without thread isolation"
+            );
+            return Ok(None);
+        }
+        if normalized.contains("not a forum") || normalized.contains("forums_disabled") {
+            warn!(
+                chat_id = %chat_id,
+                name = %name,
+                "Telegram topics mode is not enabled for this chat"
+            );
+            return Ok(None);
+        }
+
+        anyhow::bail!("Telegram createForumTopic failed: {description}")
+    }
+
     /// Send a text message to a chat.
     async fn send_message(
         &self,
@@ -1203,6 +1260,25 @@ impl PlatformAdapter for TelegramAdapter {
         .await;
         prepared.cleanup().await;
         result
+    }
+
+    async fn create_handoff_thread(
+        &self,
+        parent_chat_id: &str,
+        name: &str,
+    ) -> anyhow::Result<Option<String>> {
+        match self.create_forum_topic(parent_chat_id, name).await {
+            Ok(Some(thread_id)) => Ok(Some(thread_id.to_string())),
+            Ok(None) => Ok(None),
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    chat_id = %parent_chat_id,
+                    "Telegram handoff topic creation failed; falling back to home channel"
+                );
+                Ok(None)
+            }
+        }
     }
 }
 

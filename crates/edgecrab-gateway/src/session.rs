@@ -116,6 +116,36 @@ impl SessionManager {
         self.sessions.remove(key).is_some()
     }
 
+    /// Re-bind a gateway session key to an existing CLI session transcript.
+    pub async fn rebind_cli_session(
+        &self,
+        key: &SessionKey,
+        cli_session_id: &str,
+        base_agent: &Arc<Agent>,
+        origin_chat: OriginChat,
+    ) -> Result<Arc<RwLock<GatewaySession>>, edgecrab_types::AgentError> {
+        if let Some((_, existing)) = self.sessions.remove(key) {
+            let agent = existing.read().await.agent.clone();
+            agent.finalize_session().await;
+        }
+
+        let child = Arc::new(
+            base_agent
+                .fork_isolated(IsolatedAgentOptions {
+                    session_id: Some(cli_session_id.to_string()),
+                    platform: Some(key.platform),
+                    origin_chat: Some(origin_chat),
+                    ..IsolatedAgentOptions::default()
+                })
+                .await?,
+        );
+        child.restore_session(cli_session_id).await?;
+
+        let created = Arc::new(RwLock::new(GatewaySession::new(child)));
+        self.sessions.insert(key.clone(), created.clone());
+        Ok(created)
+    }
+
     /// Remove all idle sessions older than the configured timeout.
     ///
     /// Returns the number of sessions evicted.

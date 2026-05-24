@@ -79,6 +79,21 @@ use crate::tool_result_spill::{SpillConfig, SpillOutcome, SpillSequence};
 pub const SUMMARY_PREFIX: &str =
     "[CONTEXT COMPACTION] Earlier turns were summarised to reclaim context window space.\n\n";
 
+/// One-shot note for the model after the first context compression (FP33).
+///
+/// Appended to the cached system prompt during in-loop compression, or to the
+/// handoff user message when `/handoff` auto-compresses before a model swap.
+pub const FIRST_COMPRESSION_NOTE: &str = concat!(
+    "\n\n[Note: Earlier conversation turns have been compacted into a ",
+    "handoff summary to stay within the context window. The current ",
+    "session state already reflects that earlier work — build on it ",
+    "rather than re-doing completed steps.]"
+);
+
+/// Inline variant for handoff user messages (no leading newlines).
+pub const HANDOFF_COMPRESSION_NOTE: &str =
+    "[Note: Earlier turns were auto-compressed for the target model's context window.]";
+
 /// Replacement text for pruned tool output blocks.
 ///
 /// WHY prune first: Tool results (file contents, shell output) can be

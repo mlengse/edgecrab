@@ -2,101 +2,64 @@
 
 **Branch:** `feat/session-handoff`  
 **Date:** 2026-05-24  
-**Status:** Implemented
+**Status:** Implemented (Hermes `/handoff` + renamed `/transfer-model`)
 
-## Acceptance Criteria Checklist
+## Naming (critical)
+
+| Old (wrong) | New (correct) |
+|-------------|---------------|
+| `/handoff <model>` | **`/transfer-model <provider/model>`** |
+| N/A | **`/handoff <platform>`** (Hermes parity) |
+| `handoffs` table | **`model_transfers`** table |
+| `handoff.rs` | **`model_transfer.rs`** + **`session_handoff.rs`** |
+
+## Feature A: `/handoff <platform>` — Hermes parity
 
 | Criterion | Status | Evidence |
 |-----------|--------|----------|
-| `/handoff <provider/model>` hot-swaps active model | ✅ | `Agent::perform_handoff`, CLI `handle_handoff`, gateway `handle_handoff_command` |
-| User sees one-paragraph in-flight task brief | ✅ | `generate_handoff_brief` + synthetic user message + `StreamEvent::HandoffComplete` / TUI notice |
-| Persistent goals survive handoff | ✅ | Goals live in SQLite (`session_goals`); handoff never touches goal tables |
-| History intact; compression when window forces it | ✅ | `maybe_compress_for_handoff`; user notified via `compressed` flag in outcome |
-| Auth failure leaves original model | ✅ | `create_target_provider` runs before any session mutation |
-| Gateway `/handoff` (Telegram, Slack, Discord, …) | ✅ | `run.rs` dispatch + `SlashCommandSpec` gateway=true |
-| `/insights` lists session handoffs | ✅ | `SessionDb::list_handoffs` wired in CLI + gateway insights formatters |
-| `cargo clippy --workspace -- -D warnings` | ✅ | Clean (2026-05-24 run) |
-| ≥6 `handoff::` tests | ✅ | 9 unit tests in `handoff.rs` + DB test + command dispatch test |
-| No mutation of cached system prompt mid-handoff | ✅ | Prompt cleared (`invalidate` pattern); rebuilt on next turn for new provider |
+| CLI-only slash command | ✅ | `commands.rs` `SessionHandoff`; catalog `gateway: false` |
+| Home channel validation | ✅ | `handle_session_handoff` + `/sethome` config |
+| Mid-turn rejection | ✅ | `SESSION_HANDOFF_BUSY_MESSAGE` |
+| SQLite state machine | ✅ | Schema v10 columns + `request/claim/complete/fail_session_handoff` |
+| Gateway watcher | ✅ | `platform_handoff.rs` `SessionHandoffWatcher` |
+| Session rebind + transcript | ✅ | `SessionManager::rebind_cli_session` + `restore_session` |
+| Synthetic confirmation turn | ✅ | `format_session_handoff_synthetic_message` + `agent.chat` |
+| CLI exit on success | ✅ | `SessionHandoffDone` → `should_exit = true` |
+| 60s timeout | ✅ | Poll loop + `fail_session_handoff` |
 
-## Test Results
+## Feature B: `/transfer-model` — EdgeCrab enhancement
+
+| Criterion | Status | Evidence |
+|-----------|--------|----------|
+| Model hot-swap with brief | ✅ | `ModelTransferOrchestrator`, `perform_model_transfer` |
+| Window check + compress | ✅ | `maybe_compress_for_model_transfer` |
+| Goals preserved | ✅ | Goals in SQLite outside message mutation |
+| CLI + gateway | ✅ | `/transfer-model` dispatch |
+| Audit trail | ✅ | `model_transfers` + `/insights` |
+| FP33 + FP17 on compress | ✅ | `HANDOFF_COMPRESSION_NOTE`, `reset_read_dedup` |
+
+## Tests
 
 ```bash
-cargo test -p edgecrab-core --lib handoff          # 9 passed
-cargo test -p edgecrab-state record_and_list_handoffs  # 1 passed
-cargo clippy --workspace -- -D warnings          # clean
-cargo test -p edgecrab-core -p edgecrab-state -p edgecrab-gateway --lib  # passed
+cargo test -p edgecrab-core --lib model_transfer     # 17 passed
+cargo test -p edgecrab-core --lib session_handoff    # 2 passed
+cargo test -p edgecrab-cli dispatch_transfer_model     # 1 passed
+cargo test -p edgecrab-cli dispatch_session_handoff  # 1 passed
+cargo clippy -p edgecrab-core -p edgecrab-state -p edgecrab-gateway -p edgecrab-cli -- -D warnings  # clean
 ```
 
-## Architecture Delivered
+## Brutal assessment vs Hermes
 
-```
-/handoff copilot/gpt-5-mini
-  → HandoffOrchestrator::execute
-      resolve_handoff_target (ModelCatalog)
-      create_target_provider (auth probe)
-      maybe_compress_for_handoff (target window)
-      generate_handoff_brief (auxiliary LLM → structural fallback)
-  → Agent::swap_model + clear cached prompt blocks
-  → synthetic user message with brief
-  → SessionDb::record_handoff
-  → StreamEvent::HandoffComplete
-```
+| Dimension | Hermes | EdgeCrab |
+|-----------|--------|----------|
+| `/handoff <platform>` CLI→gateway | ✅ Reference | ✅ **Parity** (watcher + state machine + synthetic turn) |
+| Thread isolation per handoff | ✅ Telegram/Discord/Slack | ✅ **Parity** (`create_handoff_thread, Discord `thread_id` routing) |
+| Home channel resolution | Config per platform | ✅ **`gateway_home.rs`** — config + env fallback (telegram→matrix) |
+| `/model` = model transfer | N/A | ✅ Single `perform_model_transfer` pipeline |
+| Handoff audit in insights | ❌ | ✅ `model_transfers` table |
 
-## Files Changed
+**Verdict:** Hermes **`/handoff`** semantics are now implemented. The prior model-transfer work is correctly renamed to **`/transfer-model`** and remains an EdgeCrab advantage Hermes does not match as a named workflow.
 
-| File | Change |
-|------|--------|
-| `crates/edgecrab-core/src/handoff.rs` | **New** orchestrator + brief + window check |
-| `crates/edgecrab-core/src/agent.rs` | `perform_handoff`, `StreamEvent::HandoffComplete` |
-| `crates/edgecrab-state/src/session_db.rs` | Schema v9 `handoffs` table |
-| `crates/edgecrab-cli/src/commands.rs` | `/handoff` command |
-| `crates/edgecrab-cli/src/app.rs` | TUI handler + insights section |
-| `crates/edgecrab-gateway/src/run.rs` | Gateway handler + insights |
-| `crates/edgecrab-command-catalog/src/lib.rs` | Catalog entry |
+### Follow-ups
 
----
-
-## Brutal Honest Assessment vs Nous Hermes Agent
-
-### What Hermes Actually Has (code is law)
-
-After reading `/Users/raphaelmansuy/Github/03-working/hermes-agent`:
-
-1. **`/handoff <platform>`** (CLI → gateway) — cross-platform session transfer with thread creation, full transcript replay, synthetic confirmation turn. Implemented in `cli.py`, `hermes_state.py`, `tests/hermes_cli/test_session_handoff.py`. **This is NOT model handoff.**
-
-2. **Model swap** — Hermes has `/model` hot-swap and **fallback provider** activation (`try_activate_fallback` in `chat_completion_helpers.py`) that swaps model+provider mid-session on failure. No user-visible brief, no explicit window check, no handoff history in insights.
-
-3. **Handoff brief pattern** — Hermes uses "handoff summary" language in **context compression** (`context_compressor.py`) and Kanban worker tools, not as a first-class `/handoff model` command.
-
-4. **Release note v0.14.0** mentions live model/persona handoff — the closest production behavior is fallback swap + compression summaries, not a dedicated slash command matching our spec.
-
-### EdgeCrab vs Hermes (this feature)
-
-| Dimension | Hermes | EdgeCrab 005 |
-|-----------|--------|--------------|
-| Explicit `/handoff <model>` command | ❌ Not found in codebase | ✅ |
-| In-flight task brief before next turn | ⚠️ Implicit via compression only | ✅ Dedicated auxiliary call + fallback |
-| Context window check before swap | ❌ Silent | ✅ Auto-compress or refuse |
-| User confirmation of what was preserved | ❌ | ✅ Brief + compression notice |
-| Handoff history in insights | ❌ | ✅ SQLite `handoffs` table |
-| Cross-platform CLI→Telegram handoff | ✅ Mature | ❌ Out of scope (different feature) |
-| Profile / OAuth pool swap | ✅ Via fallback chain | ⚠️ Partial — same as `/model` provider factory; no multi-key pool rotation |
-
-### Verdict
-
-**For model/profile live transfer with transparency:** EdgeCrab **meets and exceeds** the Hermes equivalent. Hermes does not implement this as a named, user-facing workflow; EdgeCrab adds brief generation, window safety, cache-safe prompt invalidation, and auditable history.
-
-**For cross-platform session handoff (CLI → Telegram):** Hermes **exceeds** EdgeCrab — that remains a separate gap (Hermes `/handoff telegram`).
-
-**Rust-specific advantages:** Type-safe `HandoffError` enum, compile-time `StreamEvent` exhaustiveness, SQLite migration v9 with WAL — appropriate for EdgeCrab's architecture.
-
-### Known Gaps / Follow-ups
-
-- No interactive E2E with live `copilot/gpt-5-mini` in CI (requires Copilot credentials; unit tests use `MockProvider`).
-- Profile distribution / multi-OAuth-pool handoff not implemented (Hermes profiles.py depth not ported).
-- `/handoff` does not persist default model to config on gateway (CLI does via `persist_model_to_config`).
-
-### Recommendation
-
-Ship 005 as **model handoff parity+**. Track cross-platform `/handoff <platform>` as a separate spec if gateway UX parity with Hermes CLI is required.
+- Profile/OAuth pool rotation on model transfer (spec 024-oauth-providers; factory already centralized in `create_provider_for_model`).

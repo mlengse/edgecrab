@@ -561,7 +561,7 @@ impl GatewayEventProcessor {
                     );
                 }
 
-                StreamEvent::HandoffComplete {
+                StreamEvent::ModelTransferComplete {
                     from,
                     to,
                     compressed,

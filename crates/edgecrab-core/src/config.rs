@@ -403,6 +403,9 @@ impl AppConfig {
         if let Ok(val) = std::env::var("SIGNAL_ACCOUNT") {
             self.gateway.signal.account = Some(val);
         }
+        if let Ok(val) = std::env::var("SIGNAL_HOME_CHANNEL") {
+            self.gateway.signal.home_channel = Some(val);
+        }
         if let Ok(val) = std::env::var("WHATSAPP_ENABLED")
             && parse_bool_env(&val)
             && !self.gateway.platform_disabled("whatsapp")
@@ -415,6 +418,9 @@ impl AppConfig {
         }
         if let Ok(val) = std::env::var("WHATSAPP_ALLOWED_USERS") {
             self.gateway.whatsapp.allowed_users = parse_csv_env(&val);
+        }
+        if let Ok(val) = std::env::var("WHATSAPP_HOME_CHANNEL") {
+            self.gateway.whatsapp.home_channel = Some(val);
         }
         if let Ok(val) = std::env::var("WHATSAPP_BRIDGE_PORT")
             && let Ok(port) = val.parse()
@@ -1244,6 +1250,7 @@ pub struct SignalGatewayConfig {
     /// Phone number registered with signal-cli.
     pub account: Option<String>,
     pub allowed_users: Vec<String>,
+    pub home_channel: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1259,6 +1266,7 @@ pub struct WhatsAppGatewayConfig {
     pub allowed_users: Vec<String>,
     pub reply_prefix: Option<String>,
     pub install_dependencies: bool,
+    pub home_channel: Option<String>,
 }
 
 impl Default for WhatsAppGatewayConfig {
@@ -1274,6 +1282,7 @@ impl Default for WhatsAppGatewayConfig {
             allowed_users: Vec::new(),
             reply_prefix: Some("\u{2695} *EdgeCrab Agent*\n------------\n".into()),
             install_dependencies: true,
+            home_channel: None,
         }
     }
 }

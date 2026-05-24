@@ -53,8 +53,10 @@ pub enum CommandResult {
     Noop,
     /// Switch the active model (app handles provider creation + agent swap)
     ModelSwitch(String),
-    /// Transfer session to another model with brief + window check
-    Handoff(String),
+    /// Transfer session to another model with brief + window check (`/transfer-model`)
+    TransferModel(String),
+    /// CLI → gateway session handoff (`/handoff <platform>`)
+    SessionHandoff(String),
     /// Activate the interactive model selector overlay
     ModelSelector,
     /// Activate the interactive cheap-model selector overlay.
@@ -520,10 +522,10 @@ impl CommandRegistry {
             name: "model",
             aliases: &[],
             description:
-                "Show model selector or switch model (e.g. /model openrouter/openai/gpt-5.4)",
+                "Show model selector or transfer model (e.g. /model openrouter/openai/gpt-5.4)",
             // WHY return ModelSwitch: The handler can't access the agent directly
-            // (fn pointer, not closure). The App event loop performs the actual
-            // provider creation + agent.swap_model() call.
+            // (fn pointer, not closure). The App event loop runs the model-transfer
+            // pipeline via `Agent::perform_model_transfer`.
             handler: |args| {
                 if args.is_empty() {
                     CommandResult::ModelSelector
@@ -534,20 +536,29 @@ impl CommandRegistry {
         });
 
         self.register(Command {
-            name: "handoff",
-            aliases: &[],
-            description: "Transfer session to another model with brief and window check",
+            name: "transfer-model",
+            aliases: &["transfer_model"],
+            description: "Alias for /model <provider/model> — same model-transfer pipeline",
             handler: |args| {
                 let trimmed = args.trim();
                 if trimmed.is_empty() {
-                    CommandResult::Output(
-                        "Usage: /handoff <provider/model>\n\
-                         Example: /handoff copilot/gpt-5-mini\n\
-                         Generates a task brief, checks context window, then hot-swaps."
-                            .into(),
-                    )
+                    CommandResult::Output(edgecrab_core::MODEL_TRANSFER_USAGE.into())
                 } else {
-                    CommandResult::Handoff(trimmed.to_string())
+                    CommandResult::TransferModel(trimmed.to_string())
+                }
+            },
+        });
+
+        self.register(Command {
+            name: "handoff",
+            aliases: &[],
+            description: "Hand CLI session to a gateway platform home channel",
+            handler: |args| {
+                let trimmed = args.trim();
+                if trimmed.is_empty() {
+                    CommandResult::Output(edgecrab_core::SESSION_HANDOFF_USAGE.into())
+                } else {
+                    CommandResult::SessionHandoff(trimmed.to_string())
                 }
             },
         });
@@ -1668,15 +1679,28 @@ mod tests {
     }
 
     #[test]
-    fn dispatch_handoff_commands() {
+    fn dispatch_transfer_model_commands() {
+        let reg = CommandRegistry::new();
+        match reg.dispatch("/transfer-model") {
+            Some(CommandResult::Output(msg)) => assert!(msg.contains("Usage: /transfer-model")),
+            other => panic!("expected usage output, got {other:?}"),
+        }
+        match reg.dispatch("/transfer-model copilot/gpt-5-mini") {
+            Some(CommandResult::TransferModel(target)) => assert_eq!(target, "copilot/gpt-5-mini"),
+            other => panic!("expected TransferModel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_session_handoff_commands() {
         let reg = CommandRegistry::new();
         match reg.dispatch("/handoff") {
             Some(CommandResult::Output(msg)) => assert!(msg.contains("Usage: /handoff")),
             other => panic!("expected usage output, got {other:?}"),
         }
-        match reg.dispatch("/handoff copilot/gpt-5-mini") {
-            Some(CommandResult::Handoff(target)) => assert_eq!(target, "copilot/gpt-5-mini"),
-            other => panic!("expected Handoff, got {other:?}"),
+        match reg.dispatch("/handoff telegram") {
+            Some(CommandResult::SessionHandoff(platform)) => assert_eq!(platform, "telegram"),
+            other => panic!("expected SessionHandoff, got {other:?}"),
         }
     }
 

@@ -54,7 +54,6 @@ use crate::webhook_subscriptions::{
 };
 use edgecrab_core::{Agent, IsolatedAgentOptions};
 use edgecrab_core::{config::resolve_personality, model_catalog::ModelCatalog};
-use edgecrab_tools::create_provider_for_model;
 use edgecrab_types::Role;
 
 /// Deterministic gateway-side image pre-analysis prompt.
@@ -279,24 +278,8 @@ fn format_gateway_insights(
         cost.amount_usd.unwrap_or(0.0)
     ));
 
-    if let Some(records) = handoffs
-        && !records.is_empty()
-    {
-        text.push_str("\nHandoffs this session:\n");
-        for (idx, h) in records.iter().enumerate() {
-            let brief_preview = if h.brief.len() > 100 {
-                format!("{}…", &h.brief[..100])
-            } else {
-                h.brief.clone()
-            };
-            text.push_str(&format!(
-                "• {}. {} → {}\n  {}\n",
-                idx + 1,
-                h.from_model,
-                h.to_model,
-                brief_preview.replace('\n', " ")
-            ));
-        }
+    if let Some(records) = handoffs {
+        text.push_str(&edgecrab_core::format_model_transfer_insights_section(records));
     }
 
     if let Some(report) = historical {
@@ -1300,7 +1283,12 @@ impl Gateway {
         Ok(guard.agent.clone())
     }
 
-    async fn handle_handoff_command(&self, msg: &IncomingMessage, origin_chat_id: &str) -> String {
+    async fn handle_session_model_transfer(
+        &self,
+        msg: &IncomingMessage,
+        origin_chat_id: &str,
+        target: &str,
+    ) -> String {
         let Ok(agent) = self
             .resolve_command_session_agent(msg, origin_chat_id)
             .await
@@ -1308,27 +1296,16 @@ impl Gateway {
             return "No agent configured.".into();
         };
 
+        edgecrab_core::format_model_transfer_result(agent.perform_model_transfer(target, None).await)
+    }
+
+    async fn handle_transfer_model_command(&self, msg: &IncomingMessage, origin_chat_id: &str) -> String {
         let target = msg.get_command_args().trim();
         if target.is_empty() {
-            return "Usage: /handoff <provider/model>\nExample: /handoff copilot/gpt-5-mini".into();
+            return edgecrab_core::MODEL_TRANSFER_USAGE.into();
         }
-
-        match agent.perform_handoff(target, None).await {
-            Ok(outcome) => {
-                let mut text = format!(
-                    "↻ Handoff complete: {} → {}\n\nTask brief:\n{}",
-                    outcome.from_model, outcome.to_model, outcome.brief
-                );
-                if outcome.compressed {
-                    text.push_str(
-                        "\n\nNote: history was auto-compressed for the target context window.",
-                    );
-                }
-                text.push_str("\n\nGoals and todos are preserved.");
-                text
-            }
-            Err(err) => format!("Handoff failed: {err}"),
-        }
+        self.handle_session_model_transfer(msg, origin_chat_id, target)
+            .await
     }
 
     async fn handle_model_command(&self, msg: &IncomingMessage, origin_chat_id: &str) -> String {
@@ -1343,21 +1320,17 @@ impl Gateway {
         if target.is_empty() || target.eq_ignore_ascii_case("status") {
             let current = agent.model().await;
             return format!(
-                "Current model: {current}\nUsage: /model <provider>/<model>\nThis is session-scoped in gateway mode."
+                "Current model: {current}\nUsage: /model <provider>/<model>\n\
+                 Session switches run the model-transfer pipeline (brief, window check, audit)."
             );
         }
 
-        let Some((provider, model)) = target.split_once('/') else {
+        if target.split_once('/').is_none() {
             return format!("Invalid model target '{target}'. Use /model <provider>/<model>.");
-        };
-
-        match create_provider_for_model(provider, model) {
-            Ok(provider_impl) => {
-                agent.swap_model(target.to_string(), provider_impl).await;
-                format!("Model switched to {target} for this chat session.")
-            }
-            Err(error) => format!("Failed to switch model to {target}: {error}"),
         }
+
+        self.handle_session_model_transfer(msg, origin_chat_id, target)
+            .await
     }
 
     async fn handle_provider_command(&self, msg: &IncomingMessage, origin_chat_id: &str) -> String {
@@ -1567,7 +1540,7 @@ impl Gateway {
             Some(db) => snapshot
                 .session_id
                 .as_deref()
-                .and_then(|sid| db.list_handoffs(sid).ok()),
+                .and_then(|sid| db.list_model_transfers(sid).ok()),
             None => None,
         };
         let historical = match agent.state_db().await {
@@ -1683,6 +1656,21 @@ impl Gateway {
             for w in &posture.warnings {
                 tracing::warn!(platform = %posture.platform, "{w}");
             }
+        }
+
+        if let Some(agent) = self.agent.clone()
+            && let Some(db) = agent.state_db().await
+        {
+            let watcher = crate::platform_handoff::SessionHandoffWatcher::new(
+                db,
+                self.session_manager.clone(),
+                agent,
+                self.adapters.clone(),
+                self.cancel.clone(),
+            );
+            tokio::spawn(async move {
+                watcher.run().await;
+            });
         }
 
         if let Some(agent) = self.agent.as_ref()
@@ -2315,15 +2303,18 @@ impl Gateway {
                                     Err(error) => Some(error),
                                 }
                             }
-                            "model" => Some(self.handle_model_command(&msg, &origin_chat_id).await),
-                            "handoff" => {
+                            "model" => {
                                 if self.session_is_running(&session_key).await {
-                                    Some(
-                                        "Agent is busy. Wait for the current turn to finish, then retry /handoff."
-                                            .into(),
-                                    )
+                                    Some(edgecrab_core::MODEL_TRANSFER_BUSY_MESSAGE.into())
                                 } else {
-                                    Some(self.handle_handoff_command(&msg, &origin_chat_id).await)
+                                    Some(self.handle_model_command(&msg, &origin_chat_id).await)
+                                }
+                            }
+                            "transfer-model" | "transfer_model" => {
+                                if self.session_is_running(&session_key).await {
+                                    Some(edgecrab_core::MODEL_TRANSFER_BUSY_MESSAGE.into())
+                                } else {
+                                    Some(self.handle_transfer_model_command(&msg, &origin_chat_id).await)
                                 }
                             }
                             "provider" => {

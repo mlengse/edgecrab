@@ -762,31 +762,8 @@ async fn forward_stream_event_to_tui(
             )));
         }
 
-        StreamEvent::HandoffComplete {
-            from,
-            to,
-            brief,
-            compressed,
-        } => {
-            let mut lines = vec![
-                format!("↻ Handoff complete: {from} → {to}"),
-                String::new(),
-                "Task brief:".to_string(),
-                brief.clone(),
-            ];
-            if compressed {
-                lines.push(String::new());
-                lines.push(
-                    "Note: conversation was auto-compressed to fit the target model's context window."
-                        .to_string(),
-                );
-            }
-            lines.push(String::new());
-            lines.push(
-                "Goals, todos, and history are preserved. The next turn continues on the new model."
-                    .to_string(),
-            );
-            let _ = tx.send(AgentResponse::Notice(lines.join("\n")));
+        StreamEvent::ModelTransferComplete { .. } => {
+            // Confirmation is surfaced via BackgroundOpResult::ModelTransferDone in the TUI.
         }
     }
 
@@ -2730,13 +2707,15 @@ enum BackgroundOpResult {
     GatewayCommandDone { report: String },
     /// Gateway diagnostics ready — open the full-screen overlay.
     DiagnoseReady { report: String },
-    /// Provider swap succeeded — update model name and persist config.
-    ModelSwitchDone { model: String },
     /// Context compression finished — show summary message.
     CompressDone { msg: String },
-    /// Model handoff finished — update model + show brief.
-    HandoffDone {
-        outcome: edgecrab_core::HandoffOutcome,
+    /// Model transfer finished — update model + show brief.
+    ModelTransferDone {
+        outcome: edgecrab_core::ModelTransferOutcome,
+    },
+    /// CLI → platform session handoff finished — exit CLI.
+    SessionHandoffDone {
+        message: String,
     },
 }
 
@@ -12039,8 +12018,11 @@ impl App {
             CommandResult::ModelSwitch(model) => {
                 self.handle_model_switch(model);
             }
-            CommandResult::Handoff(target) => {
-                self.handle_handoff(target);
+            CommandResult::TransferModel(target) => {
+                self.handle_transfer_model(target);
+            }
+            CommandResult::SessionHandoff(platform) => {
+                self.handle_session_handoff(platform);
             }
             CommandResult::ModelSelector => {
                 self.refresh_model_selector_catalog();
@@ -12612,17 +12594,7 @@ impl App {
         &self,
         config: &edgecrab_core::AppConfig,
     ) -> Vec<&'static str> {
-        let mut platforms = Vec::new();
-        if config.gateway.platform_enabled("telegram") || config.gateway.telegram.enabled {
-            platforms.push("telegram");
-        }
-        if config.gateway.platform_enabled("discord") || config.gateway.discord.enabled {
-            platforms.push("discord");
-        }
-        if config.gateway.platform_enabled("slack") || config.gateway.slack.enabled {
-            platforms.push("slack");
-        }
-        platforms
+        config.gateway.home_channel_platforms()
     }
 
     fn set_home_channel_in_config(
@@ -12631,27 +12603,10 @@ impl App {
         platform: &str,
         channel: Option<String>,
     ) -> anyhow::Result<()> {
-        match platform {
-            "telegram" => {
-                config.gateway.telegram.enabled = true;
-                config.gateway.enable_platform("telegram");
-                config.gateway.telegram.home_channel = channel;
-            }
-            "discord" => {
-                config.gateway.discord.enabled = true;
-                config.gateway.enable_platform("discord");
-                config.gateway.discord.home_channel = channel;
-            }
-            "slack" => {
-                config.gateway.slack.enabled = true;
-                config.gateway.enable_platform("slack");
-                config.gateway.slack.home_channel = channel;
-            }
-            _ => anyhow::bail!(
-                "Unsupported platform '{platform}'. Supported platforms: telegram, discord, slack"
-            ),
-        }
-        Ok(())
+        config
+            .gateway
+            .set_home_channel(platform, channel)
+            .map_err(|err| anyhow::anyhow!(err))
     }
 
     fn handle_set_home_channel(&mut self, args: String) {
@@ -12684,7 +12639,10 @@ impl App {
             let enabled = self.configured_home_channel_platforms(&config);
             if enabled.len() != 1 {
                 self.push_output(
-                    "Ambiguous home-channel target. Use: /sethome <telegram|discord|slack> <channel|clear>",
+                    format!(
+                        "Ambiguous home-channel target. Use: /sethome <platform> <channel|clear>\nSupported: {}",
+                        edgecrab_core::HANDOFF_PLATFORM_HINT
+                    ),
                     OutputRole::System,
                 );
                 return;
@@ -13556,49 +13514,30 @@ impl App {
                             self.diagnose_panel.refresh_in_flight = false;
                             self.needs_redraw = true;
                         }
-                        BackgroundOpResult::ModelSwitchDone { model } => {
-                            self.model_name = model.clone();
-                            self.update_context_window();
-                            match persist_model_to_config(&model) {
-                                Ok(()) => self.push_output(
-                                    format!("Model switched to: {model} (saved as default for next run)"),
-                                    OutputRole::System,
-                                ),
-                                Err(e) => self.push_output(
-                                    format!("Model switched to: {model} (warning: failed to save default: {e})"),
-                                    OutputRole::System,
-                                ),
-                            }
-                        }
                         BackgroundOpResult::CompressDone { msg } => {
                             self.push_output(msg, OutputRole::System);
                         }
-                        BackgroundOpResult::HandoffDone { outcome } => {
+                        BackgroundOpResult::ModelTransferDone { outcome } => {
                             self.model_name = outcome.to_model.clone();
                             self.update_context_window();
+                            let confirmation =
+                                edgecrab_core::format_model_transfer_confirmation(&outcome);
                             match persist_model_to_config(&outcome.to_model) {
                                 Ok(()) => self.push_output(
-                                    format!(
-                                        "↻ Handoff complete: {} → {}\n\nTask brief:\n{}\n{}",
-                                        outcome.from_model,
-                                        outcome.to_model,
-                                        outcome.brief,
-                                        if outcome.compressed {
-                                            "\nNote: history was auto-compressed for the target context window."
-                                        } else {
-                                            ""
-                                        }
-                                    ),
+                                    format!("{confirmation}\n\nSaved as default model for next run."),
                                     OutputRole::System,
                                 ),
                                 Err(e) => self.push_output(
                                     format!(
-                                        "↻ Handoff complete: {} → {} (warning: failed to save default: {e})\n\nTask brief:\n{}",
-                                        outcome.from_model, outcome.to_model, outcome.brief
+                                        "{confirmation}\n\n(warning: failed to save default: {e})"
                                     ),
                                     OutputRole::System,
                                 ),
                             }
+                        }
+                        BackgroundOpResult::SessionHandoffDone { message } => {
+                            self.push_output(message, OutputRole::System);
+                            self.should_exit = true;
                         }
                     }
                 }
@@ -14459,48 +14398,62 @@ impl App {
     // Handlers (unchanged from before, just methods on the new App)
     // ────────────────────────────────────────────────────────────────
 
-    fn handle_model_switch(&mut self, model: String) {
+    fn session_blocks_model_transfer(&self) -> bool {
+        matches!(
+            self.display_state,
+            DisplayState::AwaitingFirstToken { .. }
+                | DisplayState::Thinking { .. }
+                | DisplayState::Streaming { .. }
+                | DisplayState::ToolExec { .. }
+                | DisplayState::WaitingForClarify
+                | DisplayState::WaitingForApproval { .. }
+                | DisplayState::SecretCapture { .. }
+        )
+    }
+
+    fn spawn_session_model_transfer(&mut self, target: String, label: impl Into<String>) {
         let Some(agent) = self.require_agent() else {
             return;
         };
-        let (provider_str, model_name) = match model.split_once('/') {
-            Some((p, m)) => (p, m),
-            None => {
-                self.push_output(
-                    format!("Invalid format: use 'provider/model-name' (e.g. copilot/gpt-4.1-mini). Got: '{model}'"),
-                    OutputRole::Error,
-                );
-                return;
-            }
-        };
-        let canonical = edgecrab_tools::vision_models::normalize_provider_name(provider_str);
-        let new_provider = match edgecrab_tools::create_provider_for_model(&canonical, model_name) {
-            Ok(p) => p,
-            Err(e) => {
-                self.push_output(
-                    format!("Failed to create provider '{provider_str}': {e}"),
-                    OutputRole::Error,
-                );
-                return;
-            }
-        };
-        let model_clone = model.clone();
+        if self.session_blocks_model_transfer() {
+            self.push_output(
+                edgecrab_core::MODEL_TRANSFER_BUSY_MESSAGE,
+                OutputRole::Error,
+            );
+            return;
+        }
         let tx = self.response_tx.clone();
         self.display_state = DisplayState::BgOp {
-            label: format!("Switching to {}…", model),
+            label: label.into(),
             frame: 0,
             started: Instant::now(),
         };
         self.needs_redraw = true;
         self.rt_handle.spawn(async move {
-            agent.swap_model(model_clone.clone(), new_provider).await;
-            let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::ModelSwitchDone {
-                model: model_clone,
-            }));
+            match agent.perform_model_transfer(&target, None).await {
+                Ok(outcome) => {
+                    let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::ModelTransferDone {
+                        outcome,
+                    }));
+                }
+                Err(err) => {
+                    let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::SystemMsg(format!(
+                        "Model transfer failed: {err}"
+                    ))));
+                }
+            }
         });
     }
 
-    fn handle_handoff(&mut self, target: String) {
+    fn handle_model_switch(&mut self, model: String) {
+        self.spawn_session_model_transfer(model, "Transferring model…");
+    }
+
+    fn handle_transfer_model(&mut self, target: String) {
+        self.spawn_session_model_transfer(target, "Transfer model…");
+    }
+
+    fn handle_session_handoff(&mut self, platform_raw: String) {
         let Some(agent) = self.require_agent() else {
             return;
         };
@@ -14515,32 +14468,114 @@ impl App {
                 | DisplayState::SecretCapture { .. }
         ) {
             self.push_output(
-                "Agent is busy. Wait for the current turn to finish, then retry /handoff.",
+                edgecrab_core::SESSION_HANDOFF_BUSY_MESSAGE,
                 OutputRole::Error,
             );
             return;
         }
+
+        let platform = platform_raw.trim().to_ascii_lowercase();
+        let config = self.load_runtime_config();
+        let parsed = edgecrab_core::handoff_platform_from_name(&platform);
+        let home = parsed.and_then(|p| {
+            edgecrab_core::resolve_gateway_home_channel(&config.gateway, p)
+        });
+        if parsed.is_none() {
+            self.push_output(
+                format!(
+                    "Unknown platform '{platform}'. Supported: {}.",
+                    edgecrab_core::HANDOFF_PLATFORM_HINT
+                ),
+                OutputRole::Error,
+            );
+            return;
+        }
+        if home.as_deref().unwrap_or("").trim().is_empty() {
+            self.push_output(
+                format!("No home channel configured for {platform}. Set one with /sethome first."),
+                OutputRole::Error,
+            );
+            return;
+        }
+
         let tx = self.response_tx.clone();
         self.display_state = DisplayState::BgOp {
-            label: format!("Handoff to {}…", target),
+            label: format!("Handoff to {platform}…"),
             frame: 0,
             started: Instant::now(),
         };
         self.needs_redraw = true;
         self.rt_handle.spawn(async move {
-            let result = agent.perform_handoff(&target, None).await;
-            match result {
-                Ok(outcome) => {
-                    let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::HandoffDone {
-                        outcome,
-                    }));
+            let session_id = match agent.ensure_persisted_session().await {
+                Ok(id) => id,
+                Err(err) => {
+                    let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::SystemMsg(format!(
+                        "Handoff failed: could not persist session: {err}"
+                    ))));
+                    return;
+                }
+            };
+            let Some(db) = agent.state_db().await else {
+                let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::SystemMsg(
+                    "Handoff failed: no state database configured.".into(),
+                )));
+                return;
+            };
+            let session_title = db
+                .get_session(&session_id)
+                .ok()
+                .flatten()
+                .and_then(|r| r.title)
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or_else(|| session_id[..session_id.len().min(8)].to_string());
+
+            match db.request_session_handoff(&session_id, &platform) {
+                Ok(true) => {}
+                Ok(false) => {
+                    let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::SystemMsg(
+                        "Session is already in flight for handoff. Wait, then retry.".into(),
+                    )));
+                    return;
                 }
                 Err(err) => {
                     let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::SystemMsg(format!(
                         "Handoff failed: {err}"
                     ))));
+                    return;
                 }
             }
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while std::time::Instant::now() < deadline {
+                match db.get_session_handoff_status(&session_id) {
+                    Ok(Some(status)) if status.state == "completed" => {
+                        let message = edgecrab_core::format_session_handoff_cli_success(
+                            &platform,
+                            &session_title,
+                        );
+                        let _ = tx.send(AgentResponse::BgOp(
+                            BackgroundOpResult::SessionHandoffDone { message },
+                        ));
+                        return;
+                    }
+                    Ok(Some(status)) if status.state == "failed" => {
+                        let err = status.error.unwrap_or_else(|| "unknown error".into());
+                        let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::SystemMsg(
+                            format!(
+                                "Handoff failed: {err}\nYour CLI session is intact — retry /handoff or /resume on the platform."
+                            ),
+                        )));
+                        return;
+                    }
+                    _ => {}
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            let _ = db.fail_session_handoff(&session_id, "timed out waiting for gateway");
+            let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::SystemMsg(
+                "Timed out waiting for the gateway. Is `edgecrab gateway` running?\nYour CLI session is intact."
+                    .into(),
+            )));
         });
     }
 
@@ -17160,12 +17195,26 @@ impl App {
     /// on the stored handle is safe.
     fn block_on_agent<F, T>(&self, future: F) -> T
     where
-        F: std::future::Future<Output = T>,
+        F: std::future::Future<Output = T> + Send + 'static,
+        T: Send + 'static,
     {
-        if tokio::runtime::Handle::try_current().is_ok() {
-            tokio::task::block_in_place(|| self.rt_handle.block_on(future))
-        } else {
-            self.rt_handle.block_on(future)
+        match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
+            Ok(tokio::runtime::RuntimeFlavor::MultiThread) => {
+                tokio::task::block_in_place(|| self.rt_handle.block_on(future))
+            }
+            Ok(_) => {
+                let (tx, rx) = std::sync::mpsc::sync_channel(1);
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_multi_thread()
+                        .enable_all()
+                        .worker_threads(1)
+                        .build()
+                        .expect("block_on_agent helper runtime");
+                    let _ = tx.send(rt.block_on(future));
+                });
+                rx.recv().expect("block_on_agent helper thread result")
+            }
+            Err(_) => self.rt_handle.block_on(future),
         }
     }
 
@@ -21023,25 +21072,10 @@ impl App {
         if let Some(session_id) = snap.session_id.as_deref()
             && let Some(db) = self.rt_handle.block_on(async { agent.state_db().await })
         {
-            match db.list_handoffs(session_id) {
-                Ok(handoffs) if !handoffs.is_empty() => {
-                    text.push_str("\n── Handoffs this session ───────────────\n");
-                    for (idx, h) in handoffs.iter().enumerate() {
-                        let brief_preview = if h.brief.len() > 120 {
-                            format!("{}…", &h.brief[..120])
-                        } else {
-                            h.brief.clone()
-                        };
-                        text.push_str(&format!(
-                            "  {}. {} → {}\n     {}\n",
-                            idx + 1,
-                            h.from_model,
-                            h.to_model,
-                            brief_preview.replace('\n', " ")
-                        ));
-                    }
+            match db.list_model_transfers(session_id) {
+                Ok(handoffs) => {
+                    text.push_str(&edgecrab_core::format_model_transfer_insights_section(&handoffs));
                 }
-                Ok(_) => {}
                 Err(e) => {
                     text.push_str(&format!("\n  (Handoff history unavailable: {e})\n"));
                 }

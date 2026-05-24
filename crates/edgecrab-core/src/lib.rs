@@ -17,7 +17,9 @@ pub mod context_references;
 pub mod conversation;
 pub mod goal_judge;
 pub mod goals;
-pub mod handoff;
+pub mod gateway_home;
+pub mod model_transfer;
+pub mod session_handoff;
 pub mod model_catalog;
 pub mod model_discovery;
 pub mod model_router;
@@ -43,10 +45,21 @@ pub use context_engine::{
     load_context_engine,
 };
 pub use context_references::{ContextRef, ExpansionResult, expand_context_refs};
-pub use handoff::{
-    HandoffBrief, HandoffError, HandoffOrchestrator, HandoffOutcome, HandoffTarget,
-    create_target_provider, format_handoff_user_message, generate_handoff_brief,
-    maybe_compress_for_handoff, resolve_handoff_target,
+pub use model_transfer::{
+    ModelTransferBrief, ModelTransferContext, ModelTransferError, ModelTransferOrchestrator,
+    ModelTransferOutcome, ModelTransferTarget, MODEL_TRANSFER_BUSY_MESSAGE, MODEL_TRANSFER_USAGE,
+    context_window_for_model, create_model_transfer_provider, format_model_transfer_confirmation,
+    format_model_transfer_insights_section, format_model_transfer_result,
+    format_model_transfer_user_message,
+    generate_model_transfer_brief, maybe_compress_for_model_transfer,
+    resolve_model_transfer_target,
+};
+pub use gateway_home::{
+    handoff_platform_from_name, resolve_gateway_home_channel, HANDOFF_PLATFORM_HINT,
+};
+pub use session_handoff::{
+    SessionHandoffState, SessionHandoffStatus, SESSION_HANDOFF_BUSY_MESSAGE, SESSION_HANDOFF_USAGE,
+    format_session_handoff_cli_success, format_session_handoff_synthetic_message,
 };
 pub use goals::{
     GoalContinuationDecision, GoalState, GoalStatus, GoalStatusChip, GoalStore,

@@ -1,60 +1,48 @@
 # 005 — Implementation Plan
 
-## Architecture (ASCII)
+## Feature A: `/handoff <platform>` (Hermes parity)
 
 ```
-   /handoff anthropic/claude-haiku-4
-        │
-        ▼
-   ┌──────────────────────────────────────────────────────┐
-   │  HandoffOrchestrator (edgecrab-core)                 │
-   │                                                      │
-   │  1. resolve_target(model_str)  -> ModelCatalogEntry  │
-   │  2. check_window(history, target.ctx_window)         │
-   │       if too big → compress_with_llm(...)            │
-   │  3. summarise_in_flight(history) -> HandoffBrief     │
-   │       (auxiliary 1-paragraph LLM call, cheapest      │
-   │        model on current provider)                    │
-   │  4. agent.set_provider(target.provider)              │
-   │     agent.set_model(target.model)                    │
-   │  5. push synthetic user message:                     │
-   │        "Continuing from previous session: <brief>"   │
-   │  6. emit StreamEvent::HandoffComplete                │
-   │  7. session_db: record handoff event                 │
-   └──────────────────────────────────────────────────────┘
+CLI: /handoff telegram
+  → validate home channel (AppConfig.gateway.*.home_channel)
+  → SessionDb::request_session_handoff(session_id, platform)
+  → poll get_session_handoff_status (60s)
+  → on completed: exit CLI + /resume hint
+
+Gateway: SessionHandoffWatcher (2s poll)
+  → list_pending_session_handoffs
+  → claim_session_handoff (pending → running)
+  → resolve adapter + home channel
+  → create_handoff_thread (optional)
+  → SessionManager::rebind_cli_session(key, cli_session_id)
+  → rebind_session_routing in SQLite
+  → agent.chat(synthetic_message) + adapter.send
+  → complete_session_handoff | fail_session_handoff
 ```
 
-## File Map
+**Schema v10:** `sessions.handoff_state`, `handoff_platform`, `handoff_error`
 
-| Action | Path |
-|--------|------|
-| **New module** | `crates/edgecrab-core/src/handoff.rs` — `HandoffOrchestrator`, `HandoffBrief` |
-| **Slash command** | `crates/edgecrab-cli/src/commands.rs` — `CommandResult::Handoff { target: String }` |
-| **Gateway dispatch** | `crates/edgecrab-gateway/src/run.rs` — same |
-| **Stream event** | `crates/edgecrab-core/src/agent.rs` — `StreamEvent::HandoffComplete { from, to, brief }` |
-| **Session DB schema** | new `handoffs` table (`session_id`, `from_model`, `to_model`, `brief`, `ts`) |
-| **Insights** | `crates/edgecrab-core/src/insights.rs` (if exists; else `/cost`) surfaces handoff history |
+## Feature B: `/transfer-model <provider/model>` (renamed from old `/handoff`)
 
-## DRY / SOLID Notes
+```
+/transfer-model copilot/gpt-5-mini
+  → ModelTransferOrchestrator::execute
+  → Agent::perform_model_transfer
+  → SessionDb::record_model_transfer
+  → StreamEvent::ModelTransferComplete
+```
 
-- **DRY:** auxiliary-call wrapper reused from compression/title-generator
-  if EdgeCrab has one; else introduce `AuxiliaryClient` trait now.
-- **SRP:** `HandoffOrchestrator` orchestrates only; window check uses
-  existing `model_catalog`; compression uses existing
-  `compression::compress_with_llm`.
-- **Cache safety:** the new provider gets a fresh `SystemPromptBlocks`
-  built once and cached (per `004-prompt-prefix-cache`).
+**Schema v9/v10:** `model_transfers` table (renamed from `handoffs`)
 
-## Failure Modes
+## SOLID boundaries
 
-| Failure | Handling |
-|---------|----------|
-| Target model unknown to catalog | Return error to user, no state change |
-| Target model has smaller window AND compression fails | Refuse swap, message user |
-| Auxiliary call for brief fails | Fall back to structural summary (last N user/assistant turns concatenated) |
-| New provider auth missing | Refuse swap, prompt for auth |
+| Type | Responsibility |
+|------|----------------|
+| `SessionHandoffWatcher` | Platform transfer only |
+| `ModelTransferOrchestrator` | Model pipeline only |
+| `SessionState::apply_model_transfer_outcome` | Post-transfer session mutation |
+| `SessionDb` | Both state machines + audit tables |
 
 ## Cross-References
 
-- [001-overview.md](001-overview.md) · [005-acceptance-criteria.md](005-acceptance-criteria.md)
-- Window check uses `model_catalog`: see `crates/edgecrab-core/src/model_catalog.rs`.
+- [005-acceptance-criteria.md](005-acceptance-criteria.md) · [proof/implementation-proof.md](proof/implementation-proof.md)

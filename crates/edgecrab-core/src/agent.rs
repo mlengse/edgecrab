@@ -484,6 +484,25 @@ pub struct SessionState {
     pub first_compression_done: bool,
 }
 
+impl SessionState {
+    /// Invalidate prompt cache and inject the handoff brief user message.
+    pub(crate) fn apply_model_transfer_outcome(&mut self, outcome: &crate::model_transfer::ModelTransferOutcome) {
+        self.cached_system_prompt = None;
+        self.cached_stable_prompt = None;
+        if outcome.compressed {
+            self.first_compression_done = true;
+        }
+        self.messages.push(Message::user(
+            &crate::model_transfer::format_model_transfer_user_message(
+                &outcome.from_model,
+                &outcome.to_model,
+                &outcome.brief,
+                outcome.compressed,
+            ),
+        ));
+    }
+}
+
 /// Lock-free iteration budget — prevents runaway tool loops.
 ///
 /// WHY AtomicU32: The budget is checked on every loop iteration and
@@ -949,14 +968,12 @@ impl Agent {
 
     /// Transfer the live session to another model with brief + window check.
     ///
-    /// WHY separate from `/model`: handoff adds transparency — brief generation,
-    /// auto-compression when the target window is smaller, cache-safe prompt
-    /// rebuild, and persistence for `/insights`.
-    pub async fn perform_handoff(
+    /// Single entry point for `/model` and `/transfer-model` in CLI and gateway.
+    pub async fn perform_model_transfer(
         &self,
         target_model: &str,
         events: Option<tokio::sync::mpsc::UnboundedSender<StreamEvent>>,
-    ) -> Result<crate::handoff::HandoffOutcome, crate::handoff::HandoffError> {
+    ) -> Result<crate::model_transfer::ModelTransferOutcome, crate::model_transfer::ModelTransferError> {
         let (compression_cfg, auxiliary_model, current_model, main_provider) = {
             let cfg = self.config.read().await;
             (
@@ -970,38 +987,42 @@ impl Agent {
         let (outcome, new_provider) = {
             let mut session = self.session.write().await;
             let system_prompt = session.cached_system_prompt.clone();
-            let (outcome, new_provider) = crate::handoff::HandoffOrchestrator::execute(
-                &current_model,
-                target_model,
-                &mut session.messages,
-                system_prompt.as_deref(),
-                &compression_cfg,
+            let mut ctx = crate::model_transfer::ModelTransferContext {
+                current_model: &current_model,
+                messages: &mut session.messages,
+                system_prompt: system_prompt.as_deref(),
+                compression_cfg: &compression_cfg,
                 main_provider,
-                auxiliary_model.as_deref(),
-            )
-            .await?;
+                auxiliary_model: auxiliary_model.as_deref(),
+            };
+            let (outcome, new_provider) =
+                crate::model_transfer::ModelTransferOrchestrator::execute(&mut ctx, target_model).await?;
 
-            session.cached_system_prompt = None;
-            session.cached_stable_prompt = None;
-            session.messages.push(Message::user(&crate::handoff::format_handoff_user_message(
-                &outcome.from_model,
-                &outcome.to_model,
-                &outcome.brief,
-            )));
+            session.apply_model_transfer_outcome(&outcome);
 
             (outcome, new_provider)
         };
 
         self.swap_model(outcome.to_model.clone(), new_provider).await;
 
+        if outcome.compressed
+            && let Some(session_id) = self.session.read().await.session_id.as_deref()
+        {
+            // FP17: compression discards prior read_file results — same reset as in-loop compression.
+            edgecrab_tools::read_tracker::reset_read_dedup(session_id);
+        }
+
         if let Some(db) = &self.state_db
             && let Some(session_id) = self.session.read().await.session_id.as_deref()
         {
+            if let Err(err) = db.update_session_model(session_id, &outcome.to_model) {
+                tracing::warn!(error = %err, "handoff session model DB update failed");
+            }
             let ts = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs_f64())
                 .unwrap_or(0.0);
-            if let Err(err) = db.record_handoff(
+            if let Err(err) = db.record_model_transfer(
                 session_id,
                 &outcome.from_model,
                 &outcome.to_model,
@@ -1013,7 +1034,7 @@ impl Agent {
         }
 
         if let Some(tx) = events {
-            let _ = tx.send(StreamEvent::HandoffComplete {
+            let _ = tx.send(StreamEvent::ModelTransferComplete {
                 from: outcome.from_model.clone(),
                 to: outcome.to_model.clone(),
                 brief: outcome.brief.clone(),
@@ -1281,6 +1302,11 @@ impl Agent {
         }
 
         Ok(session_id)
+    }
+
+    /// Ensure the session row exists in SQLite (for platform `/handoff`).
+    pub async fn ensure_persisted_session(&self) -> Result<String, AgentError> {
+        self.ensure_session_id().await
     }
 
     /// Set or replace the persistent top-level goal for the current session.
@@ -1988,7 +2014,7 @@ pub enum StreamEvent {
         message: String,
     },
     /// Model handoff completed — brief shown before the next turn.
-    HandoffComplete {
+    ModelTransferComplete {
         from: String,
         to: String,
         brief: String,
@@ -2094,8 +2120,8 @@ impl std::fmt::Debug for StreamEvent {
                 let preview = &message[..message.len().min(60)];
                 write!(f, "SteerApplied({preview:?}…)")
             }
-            Self::HandoffComplete { from, to, compressed, .. } => {
-                write!(f, "HandoffComplete({from:?} → {to:?}, compressed={compressed})")
+            Self::ModelTransferComplete { from, to, compressed, .. } => {
+                write!(f, "ModelTransferComplete({from:?} → {to:?}, compressed={compressed})")
             }
             Self::Footer(text) => {
                 let preview = &text[..text.len().min(60)];
@@ -3172,6 +3198,30 @@ def register(ctx):
         assert!(s.first_compression_done);
     }
 
+    #[test]
+    fn apply_model_transfer_outcome_clears_cache_and_injects_brief() {
+        let outcome = crate::model_transfer::ModelTransferOutcome {
+            from_model: "a/m1".into(),
+            to_model: "b/m2".into(),
+            brief: "Continue tests.".into(),
+            compressed: true,
+            from_context_window: 200_000,
+            target_context_window: 128_000,
+        };
+        let mut session = SessionState {
+            cached_system_prompt: Some("stable".into()),
+            cached_stable_prompt: Some("stable".into()),
+            messages: vec![Message::user("hello")],
+            ..SessionState::default()
+        };
+        session.apply_model_transfer_outcome(&outcome);
+        assert!(session.cached_system_prompt.is_none());
+        assert!(session.cached_stable_prompt.is_none());
+        assert!(session.first_compression_done);
+        assert_eq!(session.messages.len(), 2);
+        assert!(session.messages[1].text_content().contains("Continue tests."));
+    }
+
     #[tokio::test]
     async fn goal_set_before_first_chat_avoids_foreign_key_error() {
         let dir = tempfile::TempDir::new().expect("tempdir");
@@ -3216,5 +3266,109 @@ def register(ctx):
             .expect("goal set");
         let after = agent.session.read().await.cached_system_prompt.clone();
         assert_eq!(before, after, "cached system prompt must remain unchanged");
+    }
+
+    #[tokio::test]
+    async fn perform_model_transfer_clears_cached_prompt_and_injects_brief() {
+        use crate::goals::{GoalStore, InMemoryGoalStore};
+        use crate::model_transfer::{
+            ModelTransferContext, ModelTransferOrchestrator, resolve_model_transfer_target,
+        };
+
+        let provider: Arc<dyn LLMProvider> = Arc::new(edgequake_llm::MockProvider::new());
+        let goal_store = Arc::new(InMemoryGoalStore::new());
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let db = Arc::new(
+            edgecrab_state::SessionDb::open(&tmp.path().join("sessions.db")).expect("open db"),
+        );
+        let agent = AgentBuilder::new("anthropic/claude-opus-4.6")
+            .provider(provider.clone())
+            .goal_store(goal_store.clone())
+            .state_db(db)
+            .build()
+            .expect("build");
+
+        agent.goal_set("finish session handoff tests").await.expect("goal");
+        agent.chat("implement session handoff").await.expect("chat");
+        let session_id = agent.session.read().await.session_id.clone().expect("sid");
+
+        {
+            let mut session = agent.session.write().await;
+            session.cached_system_prompt = Some("stable block".into());
+            session.cached_stable_prompt = Some("stable".into());
+        }
+
+        let target = resolve_model_transfer_target("anthropic/claude-haiku-4.5").expect("catalog");
+        let mut messages = agent.messages().await;
+        let cfg = agent.config.read().await.compression.clone();
+        let mut ctx = ModelTransferContext {
+            current_model: "anthropic/claude-opus-4.6",
+            messages: &mut messages,
+            system_prompt: Some("stable block"),
+            compression_cfg: &cfg,
+            main_provider: provider.clone(),
+            auxiliary_model: None,
+        };
+        let (outcome, new_provider) =
+            ModelTransferOrchestrator::execute_with_provider(&mut ctx, &target, provider)
+                .await
+                .expect("handoff");
+
+        {
+            let mut session = agent.session.write().await;
+            session.messages = messages;
+            session.apply_model_transfer_outcome(&outcome);
+        }
+        agent.swap_model(outcome.to_model.clone(), new_provider).await;
+
+        let session = agent.session.read().await;
+        assert!(session.cached_system_prompt.is_none());
+        assert!(session.cached_stable_prompt.is_none());
+        assert!(
+            session.messages.last().is_some_and(|m| {
+                m.role == Role::User
+                    && m.text_content()
+                        .starts_with("Continuing from previous session")
+            }),
+            "handoff brief should be injected as user message"
+        );
+        assert_eq!(agent.model().await, "anthropic/claude-haiku-4.5");
+
+        let goal = goal_store.as_ref().active(&session_id).expect("goal load");
+        assert!(
+            goal.goal_text.as_deref().is_some_and(|g| g.contains("handoff")),
+            "standing goal must survive model handoff"
+        );
+    }
+
+    #[tokio::test]
+    async fn perform_model_transfer_persists_audit_trail() {
+        let provider: Arc<dyn LLMProvider> = Arc::new(edgequake_llm::MockProvider::new());
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let db = Arc::new(
+            edgecrab_state::SessionDb::open(&tmp.path().join("sessions.db")).expect("open db"),
+        );
+        let agent = AgentBuilder::new("anthropic/claude-opus-4.6")
+            .provider(provider)
+            .state_db(db.clone())
+            .build()
+            .expect("build");
+
+        agent.chat("work on model transfer unification").await.expect("chat");
+        let session_id = agent.session.read().await.session_id.clone().expect("sid");
+
+        let outcome = agent
+            .perform_model_transfer("anthropic/claude-haiku-4.5", None)
+            .await
+            .expect("transfer");
+
+        assert_eq!(outcome.to_model, "anthropic/claude-haiku-4.5");
+        assert_eq!(agent.model().await, "anthropic/claude-haiku-4.5");
+
+        let records = db.list_model_transfers(&session_id).expect("list transfers");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].from_model, "anthropic/claude-opus-4.6");
+        assert_eq!(records[0].to_model, "anthropic/claude-haiku-4.5");
+        assert!(!records[0].brief.trim().is_empty());
     }
 }

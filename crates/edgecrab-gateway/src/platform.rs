@@ -373,6 +373,16 @@ pub trait PlatformAdapter: Send + Sync + 'static {
     ) -> anyhow::Result<()> {
         self.send_document(path, caption, metadata).await
     }
+
+    /// Create a fresh thread/topic for CLI→platform session handoff.
+    async fn create_handoff_thread(
+        &self,
+        parent_chat_id: &str,
+        name: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let _ = (parent_chat_id, name);
+        Ok(None)
+    }
 }
 
 /// Build the `*** ATTACHED IMAGES ***` injection block for image attachments.

@@ -1519,14 +1519,8 @@ impl Agent {
                     // triggers the note (both pathways compact context).
                     if !session.first_compression_done {
                         session.first_compression_done = true;
-                        const COMPRESSION_NOTE: &str = concat!(
-                            "\n\n[Note: Earlier conversation turns have been compacted into a ",
-                            "handoff summary to stay within the context window. The current ",
-                            "session state already reflects that earlier work — build on it ",
-                            "rather than re-doing completed steps.]"
-                        );
                         if let Some(ref mut sys) = session.cached_system_prompt {
-                            sys.push_str(COMPRESSION_NOTE);
+                            sys.push_str(crate::compression::FIRST_COMPRESSION_NOTE);
                             tracing::debug!(
                                 "FP33: appended compression note to cached system prompt"
                             );

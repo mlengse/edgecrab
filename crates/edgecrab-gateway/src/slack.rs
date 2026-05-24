@@ -896,6 +896,32 @@ impl PlatformAdapter for SlackAdapter {
         Ok(message_id.to_string())
     }
 
+    async fn create_handoff_thread(
+        &self,
+        parent_chat_id: &str,
+        name: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let label = name.trim();
+        let label = if label.is_empty() {
+            "session"
+        } else {
+            &label[..label.len().min(80)]
+        };
+        let seed_text = format!(":thread: EdgeCrab handoff — *{label}*");
+        match self.post_message(parent_chat_id, &seed_text, None).await {
+            Ok(Some(ts)) => Ok(Some(ts)),
+            Ok(None) => Ok(None),
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    channel = %parent_chat_id,
+                    "Slack handoff seed message failed; falling back to home channel"
+                );
+                Ok(None)
+            }
+        }
+    }
+
     async fn send_photo(
         &self,
         path: &str,

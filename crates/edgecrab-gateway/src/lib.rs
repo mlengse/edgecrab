@@ -41,6 +41,7 @@ pub mod interactions;
 pub mod matrix;
 pub mod mattermost;
 pub mod mirror;
+pub mod platform_handoff;
 pub mod pairing;
 pub mod platform;
 pub mod proxy;
