@@ -17048,12 +17048,28 @@ impl App {
         self.push_output(format!("Session title set to: {title}"), OutputRole::System);
     }
 
+    /// Run an agent future from sync TUI code without nesting runtimes.
+    ///
+    /// When called from `#[tokio::main]` (before `spawn_blocking`), plain `block_on`
+    /// panics; `block_in_place` is required. From the blocking TUI thread, `block_on`
+    /// on the stored handle is safe.
+    fn block_on_agent<F, T>(&self, future: F) -> T
+    where
+        F: std::future::Future<Output = T>,
+    {
+        if tokio::runtime::Handle::try_current().is_ok() {
+            tokio::task::block_in_place(|| self.rt_handle.block_on(future))
+        } else {
+            self.rt_handle.block_on(future)
+        }
+    }
+
     fn refresh_goal_status_chip(&mut self) {
         let Some(agent) = self.agent.clone() else {
             self.goal_status_chip = None;
             return;
         };
-        self.goal_status_chip = self.rt_handle.block_on(async move {
+        self.goal_status_chip = self.block_on_agent(async move {
             agent
                 .goal_state()
                 .await
@@ -21492,7 +21508,7 @@ impl App {
             .map(|cfg| cfg.lsp)
             .unwrap_or_default();
         let current_lsp = if let Some(agent) = self.agent.as_ref() {
-            self.rt_handle.block_on({
+            self.block_on_agent({
                 let agent = Arc::clone(agent);
                 async move { agent.lsp_config().await }
             })
@@ -21523,8 +21539,7 @@ impl App {
 
         if let Some(agent) = self.agent.as_ref() {
             let agent = Arc::clone(agent);
-            self.rt_handle
-                .block_on(async move { agent.set_lsp_enabled(next).await });
+            self.block_on_agent(async move { agent.set_lsp_enabled(next).await });
         }
 
         match edgecrab_core::AppConfig::persist_lsp_enabled(next) {
