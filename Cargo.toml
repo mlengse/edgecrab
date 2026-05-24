@@ -68,7 +68,7 @@ regex = "1"
 url = "2"
 
 # LLM backend
-edgequake-llm = { version = "0.6.14", features = ["bedrock"] }
+edgequake-llm = { git = "https://github.com/raphaelmansuy/edgequake-llm.git", tag = "v0.6.23", features = ["bedrock"] }
 
 # Image processing (vision tool: resize/compress before base64 encoding)
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }

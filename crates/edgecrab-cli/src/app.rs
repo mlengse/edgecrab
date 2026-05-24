@@ -20892,11 +20892,17 @@ impl App {
             snap.context_pressure_tokens()
         ));
         text.push_str(&format!("  Input tokens:   {}\n", snap.input_tokens));
+        if snap.cache_read_tokens > 0 {
+            text.push_str(&format!("  Cache read:     {}\n", snap.cache_read_tokens));
+        }
+        if snap.cache_write_tokens > 0 {
+            text.push_str(&format!(
+                "  Cache write:    {}\n",
+                snap.cache_write_tokens
+            ));
+        }
         text.push_str(&format!("  Output tokens:  {}\n", snap.output_tokens));
         text.push_str(&format!("  Total tokens:   {}\n", snap.total_tokens()));
-        if snap.cache_read_tokens > 0 {
-            text.push_str(&format!("  Cache hit:      {}\n", snap.cache_read_tokens));
-        }
         if snap.reasoning_tokens > 0 {
             text.push_str(&format!("  Reasoning:      {}\n", snap.reasoning_tokens));
         }

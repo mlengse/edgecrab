@@ -66,6 +66,44 @@ pub struct AppConfig {
     pub moa: MoaConfig,
     pub reasoning_effort: Option<String>,
     pub context: ContextConfig,
+    pub cache: CacheConfig,
+}
+
+/// Cross-session Anthropic prompt prefix cache (stable/dynamic system split).
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CacheConfig {
+    pub prompt_prefix: PromptPrefixCacheConfig,
+}
+
+/// Controls the 1-hour cross-session prefix cache tier on Anthropic providers.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct PromptPrefixCacheConfig {
+    /// When true, stable system blocks use `cache_control` with [`ttl`](Self::ttl).
+    pub enabled: bool,
+    /// Cache TTL tier: `"5m"` (default) or `"1h"` (cross-session, requires extended-cache beta).
+    pub ttl: String,
+}
+
+impl Default for PromptPrefixCacheConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ttl: "1h".into(),
+        }
+    }
+}
+
+impl PromptPrefixCacheConfig {
+    /// Normalized TTL passed to edgequake-llm (`5m` or `1h`; unknown values → `5m`).
+    pub fn normalized_ttl(&self) -> &'static str {
+        match self.ttl.as_str() {
+            "1h" => "1h",
+            "5m" => "5m",
+            _ => "5m",
+        }
+    }
 }
 
 /// Configuration for the pluggable context engine.

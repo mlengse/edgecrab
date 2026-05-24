@@ -256,7 +256,7 @@ These agent flags are top-level `config.yaml` keys and also support env override
 8. **Skills guidance** — `SKILLS_GUIDANCE` constant (encourage saving skills)
 9. **Skills summary** — compact skill index from `~/.edgecrab/skills/`
 
-**Prompt caching policy:** The system prompt is assembled once per session and cached in `SessionState.cached_system_prompt`. Do NOT rebuild or mutate it mid-conversation — this would invalidate Anthropic's prompt cache, dramatically increasing costs. The ONLY exception is manual `/compress` or automatic compression events.
+**Prompt caching policy:** The system prompt is assembled once per session via `PromptBuilder::build_blocks()` and cached in `SessionState.cached_system_prompt` + `cached_stable_prompt`. The **stable** zone (identity, tool guidance, behavioral constants) must never include timestamps, session IDs, context files, memory, or skills — those belong in the **dynamic** zone so Anthropic's cross-session prefix cache can hit. Do NOT rebuild or mutate the cached system prompt mid-conversation (invalidates cache breakpoints). The ONLY exception is manual `/compress` or automatic compression events. Config: `cache.prompt_prefix.enabled` and `cache.prompt_prefix.ttl` (`"5m"` or `"1h"`; default `1h`). Goals, file-mutation footers, and steering inject into `messages`, never into the cached system prompt.
 
 **Injection scanning:** All context files (AGENTS.md, SOUL.md, .edgecrab.md, etc.) are scanned for prompt injection patterns before injection. Blocked files are replaced with a `[BLOCKED: ...]` placeholder.
 

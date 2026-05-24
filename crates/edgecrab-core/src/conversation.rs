@@ -59,7 +59,7 @@ use edgecrab_types::trajectory::{
 use edgecrab_types::{
     AgentError, Content, Cost, Message, Role, ToolError, ToolErrorResponse, Trajectory, Usage,
 };
-use edgequake_llm::traits::{StreamChunk, StreamUsage};
+use edgequake_llm::traits::{CacheControl, StreamChunk, StreamUsage};
 use edgequake_llm::{CachePromptConfig, LLMProvider, apply_cache_control};
 use futures::StreamExt;
 use tokio_util::sync::CancellationToken;
@@ -1590,8 +1590,11 @@ impl Agent {
             // WHY cache config here: Anthropic prompt caching requires stable
             // cache_control breakpoints on the system prompt and last N messages.
             // We derive the config from the user's prompt_caching setting.
-            let cache_cfg =
-                prompt_cache_config_for(&effective_provider, config.model_config.prompt_caching);
+            let cache_cfg = prompt_cache_config_for(
+                &effective_provider,
+                config.model_config.prompt_caching,
+                &config.cache.prompt_prefix,
+            );
             // When cached_stable_prompt is set (built via build_blocks()) AND
             // Anthropic prompt caching is active, use the two-block path so the
             // stable zone (8K-12K tokens of binary constants) is cached across
@@ -2478,6 +2481,16 @@ fn split_dynamic_from_stable<'a>(combined: &'a str, stable: &'a str) -> &'a str 
     combined[stable.len()..].trim_start_matches('\n')
 }
 
+/// Cache marker for the stable system prefix (cross-session 1h tier when configured).
+fn stable_cache_control(cache_config: Option<&CachePromptConfig>) -> Option<CacheControl> {
+    let ttl = cache_config.and_then(|c| c.cache_ttl.as_deref());
+    Some(match ttl {
+        Some("1h") => CacheControl::ephemeral_ttl("1h"),
+        Some("5m") => CacheControl::ephemeral_ttl("5m"),
+        _ => CacheControl::ephemeral(),
+    })
+}
+
 /// Build edgequake-llm `ChatMessage`s using the stable/dynamic system prompt split.
 ///
 /// ## Cache strategy
@@ -2499,8 +2512,6 @@ pub fn build_chat_messages_blocks(
     messages: &[Message],
     cache_config: Option<&CachePromptConfig>,
 ) -> Vec<edgequake_llm::ChatMessage> {
-    use edgequake_llm::traits::CacheControl;
-
     let mut out = Vec::with_capacity(messages.len() + 2);
 
     // Stable system block — mark as cacheable so Anthropic can amortise the
@@ -2508,7 +2519,7 @@ pub fn build_chat_messages_blocks(
     // all sessions that share the same model/toolset configuration.
     if !stable.is_empty() {
         let mut sys = edgequake_llm::ChatMessage::system(stable);
-        sys.cache_control = Some(CacheControl::ephemeral());
+        sys.cache_control = stable_cache_control(cache_config);
         out.push(sys);
     }
 
@@ -2586,9 +2597,18 @@ fn provider_supports_prompt_caching(provider_name: &str) -> bool {
 fn prompt_cache_config_for(
     provider: &Arc<dyn LLMProvider>,
     prompt_caching_enabled: bool,
+    prefix_cfg: &crate::config::PromptPrefixCacheConfig,
 ) -> Option<CachePromptConfig> {
-    (prompt_caching_enabled && provider_supports_prompt_caching(provider.name()))
-        .then(CachePromptConfig::default)
+    if !(prompt_caching_enabled
+        && prefix_cfg.enabled
+        && provider_supports_prompt_caching(provider.name()))
+    {
+        return None;
+    }
+    Some(CachePromptConfig {
+        cache_ttl: Some(prefix_cfg.normalized_ttl().to_string()),
+        ..Default::default()
+    })
 }
 
 fn augment_provider_error(provider: &Arc<dyn LLMProvider>, error: String) -> String {
@@ -6569,11 +6589,22 @@ def register(ctx):
     #[test]
     fn prompt_cache_config_is_provider_aware() {
         let provider: Arc<dyn LLMProvider> = Arc::new(edgequake_llm::MockProvider::new());
+        let prefix = crate::config::PromptPrefixCacheConfig::default();
         assert!(
-            prompt_cache_config_for(&provider, true).is_none(),
+            prompt_cache_config_for(&provider, true, &prefix).is_none(),
             "non-Anthropic providers should not receive Anthropic cache markers"
         );
         assert!(provider_supports_prompt_caching("anthropic"));
+    }
+
+    #[test]
+    fn stable_cache_control_uses_1h_ttl_from_config() {
+        let cfg = CachePromptConfig {
+            cache_ttl: Some("1h".to_string()),
+            ..Default::default()
+        };
+        let cc = stable_cache_control(Some(&cfg)).expect("cache marker");
+        assert_eq!(cc.ttl.as_deref(), Some("1h"));
     }
 
     #[test]

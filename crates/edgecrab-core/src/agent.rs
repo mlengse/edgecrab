@@ -224,6 +224,8 @@ pub struct AgentConfig {
     pub max_write_payload_kib: Option<u32>,
     /// Per-turn file-mutation footers (success log + failure advisory).
     pub file_mutation_verifier: bool,
+    /// Cross-session Anthropic prompt prefix cache (stable/dynamic split + TTL).
+    pub cache: crate::config::CacheConfig,
 }
 
 impl Default for AgentConfig {
@@ -283,6 +285,7 @@ impl Default for AgentConfig {
             result_spill_preview_lines: 80,
             max_write_payload_kib: None,
             file_mutation_verifier: true,
+            cache: crate::config::CacheConfig::default(),
         }
     }
 }
@@ -2127,6 +2130,7 @@ impl AgentBuilder {
                 result_spill_preview_lines: config.tools.result_spill_preview_lines,
                 max_write_payload_kib: config.tools.file.max_write_payload_kib,
                 file_mutation_verifier: config.display.file_mutation_verifier,
+                cache: config.cache.clone(),
                 ..Default::default()
             },
             provider: None,

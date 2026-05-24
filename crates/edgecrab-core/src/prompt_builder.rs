@@ -944,6 +944,7 @@ of {total} chars — {omitted} chars omitted. Use file tools to read the full fi
 /// ## Usage
 /// Call [`PromptBuilder::build_blocks`] to get the split.
 /// Call [`PromptBlocks::combined`] for providers that use a flat string.
+#[non_exhaustive]
 pub struct PromptBlocks {
     /// Stable, cacheable prefix — binary constants + tool-gated guidance.
     pub stable: String,
@@ -1297,16 +1298,14 @@ impl PromptBuilder {
         // DYNAMIC ZONE — volatile per-session content
         // ════════════════════════════════════════════════════════════════
 
-        // D1. Date/time stamp — includes session ID and model when available.
-        // WHY volatile: the timestamp changes with every new session.  Placing it
-        // here (after all stable constants) maximises the cacheable prefix length.
-        // WHY: The session ID lets the model self-reference its session in error
-        // messages and lets operators correlate logs. Model + provider help the model
-        // reason about its own capabilities.
-        // Ported from hermes-agent _build_system_prompt() timestamp block.
+        // D1. Date stamp — includes session ID and model when available.
+        // WHY date-only (not minute-precision): Hermes keeps the volatile zone
+        // byte-stable for the full day so compression/resume paths do not
+        // invalidate prefix-cache KV on every rebuild.  Exact wall-clock time is
+        // available via tools when the model needs it.
         {
-            let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z");
-            let mut ts = format!("Current date/time: {now}");
+            let now = chrono::Local::now().format("%A, %B %d, %Y");
+            let mut ts = format!("Conversation started: {now}");
             if let Some(ref sid) = self.session_id
                 && !sid.is_empty()
             {
@@ -2435,7 +2434,7 @@ mod tests {
         let builder = PromptBuilder::new(Platform::Cli);
         let prompt = builder.build(None, None, &[], None);
         assert!(prompt.contains("EdgeCrab"));
-        assert!(prompt.contains("Current date/time"));
+        assert!(prompt.contains("Conversation started"));
     }
 
     #[test]
@@ -2511,7 +2510,7 @@ mod tests {
         // Empty string should not contribute blank lines
         let prompt_without_datetime = prompt
             .lines()
-            .filter(|l| !l.starts_with("Current date/time"))
+            .filter(|l| !l.starts_with("Conversation started"))
             .collect::<Vec<_>>()
             .join("\n");
         // Should not have triple newlines from empty section
@@ -3813,7 +3812,7 @@ Run `${CLAUDE_SKILL_DIR}/scripts/helper.py --session ${CLAUDE_SESSION_ID}`.\n",
 
         // Find position of the timestamp block (always present).
         let ts_pos = prompt
-            .find("Current date/time:")
+            .find("Conversation started:")
             .expect("timestamp must be present");
 
         // All of these stable behavioral constants must appear BEFORE the timestamp.
@@ -3848,7 +3847,7 @@ timestamp (offset {ts_pos}) so it can be Anthropic-cache-eligible"
 
         // Stable zone must NOT contain the timestamp.
         assert!(
-            !blocks.stable.contains("Current date/time:"),
+            !blocks.stable.contains("Conversation started:"),
             "stable zone must not contain the timestamp"
         );
         // Stable zone must NOT contain the session ID.
@@ -3858,7 +3857,7 @@ timestamp (offset {ts_pos}) so it can be Anthropic-cache-eligible"
         );
         // Dynamic zone MUST contain the timestamp.
         assert!(
-            blocks.dynamic.contains("Current date/time:"),
+            blocks.dynamic.contains("Conversation started:"),
             "dynamic zone must contain the timestamp"
         );
         // Dynamic zone must contain the session ID.
@@ -3894,7 +3893,7 @@ timestamp (offset {ts_pos}) so it can be Anthropic-cache-eligible"
         // the two code paths but all content must be present.
         for marker in &[
             "persistent memory across sessions",
-            "Current date/time:",
+            "Conversation started:",
             "combined-test-session",
             "some note",
             "<available_skills>",
@@ -4137,5 +4136,40 @@ timestamp (offset {ts_pos}) so it can be Anthropic-cache-eligible"
             result, small,
             "text below threshold must be returned unchanged"
         );
+    }
+
+    /// Stable-block hash must not change when only volatile inputs differ.
+    #[test]
+    fn stable_hash_invariant_under_session_and_cwd() {
+        use std::collections::hash_map::DefaultHasher;
+        use std::hash::{Hash, Hasher};
+        use std::path::Path;
+
+        fn hash_stable(builder: &PromptBuilder, cwd: Option<&Path>) -> u64 {
+            let blocks = builder.build_blocks(None, cwd, &[], None);
+            let mut hasher = DefaultHasher::new();
+            blocks.stable.hash(&mut hasher);
+            hasher.finish()
+        }
+
+        let base = || {
+            PromptBuilder::new(Platform::Cli)
+                .skip_context_files(true)
+                .available_tools(vec!["memory_write".to_string(), "write_file".to_string()])
+        };
+
+        let h0 = hash_stable(&base().session_id(Some("session-a".into())), None);
+        let h1 = hash_stable(&base().session_id(Some("session-b".into())), None);
+        let h2 = hash_stable(
+            &base().model_name(Some("anthropic/claude-opus-4.6".into())),
+            Some(Path::new("/tmp/project-a")),
+        );
+        let h3 = hash_stable(
+            &base().model_name(Some("anthropic/claude-opus-4.6".into())),
+            Some(Path::new("/tmp/project-b")),
+        );
+
+        assert_eq!(h0, h1, "session_id must not affect stable hash");
+        assert_eq!(h2, h3, "cwd must not affect stable hash when context files skipped");
     }
 }
