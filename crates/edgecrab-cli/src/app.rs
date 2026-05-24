@@ -12436,6 +12436,9 @@ impl App {
             CommandResult::VoiceMode(args) => {
                 self.handle_voice_mode(args);
             }
+            CommandResult::LspMode(args) => {
+                self.handle_lsp_mode(args);
+            }
             CommandResult::McpToken(args) => {
                 self.handle_mcp_token(args);
             }
@@ -21482,6 +21485,67 @@ impl App {
     //
     // EdgeCrab now supports deterministic local microphone capture in the TUI
     // using controlled recorder backends plus the existing STT/TTS tools.
+
+    fn handle_lsp_mode(&mut self, args: String) {
+        let normalized = args.trim().to_ascii_lowercase();
+        let loaded_lsp = edgecrab_core::AppConfig::load()
+            .map(|cfg| cfg.lsp)
+            .unwrap_or_default();
+        let current_lsp = if let Some(agent) = self.agent.as_ref() {
+            self.rt_handle.block_on({
+                let agent = Arc::clone(agent);
+                async move { agent.lsp_config().await }
+            })
+        } else {
+            loaded_lsp
+        };
+
+        let next = match normalized.as_str() {
+            "" | "status" => {
+                self.push_output(
+                    edgecrab_core::AppConfig::lsp_status_summary(&current_lsp),
+                    OutputRole::System,
+                );
+                return;
+            }
+            "on" | "enable" | "enabled" => true,
+            "off" | "disable" | "disabled" => false,
+            "toggle" => !current_lsp.enabled,
+            _ => {
+                self.push_output(
+                    "Usage: /lsp [on|off|status|toggle]\n\
+                     Controls the LSP layer and post-write diagnostics on write_file, patch, and apply_patch.",
+                    OutputRole::System,
+                );
+                return;
+            }
+        };
+
+        if let Some(agent) = self.agent.as_ref() {
+            let agent = Arc::clone(agent);
+            self.rt_handle
+                .block_on(async move { agent.set_lsp_enabled(next).await });
+        }
+
+        match edgecrab_core::AppConfig::persist_lsp_enabled(next) {
+            Ok(()) => self.push_output(
+                if next {
+                    "LSP enabled. write_file, patch, and apply_patch will attach post-write \
+                     diagnostics (diagnostics + lsp_diagnostics) when a language server is available."
+                } else {
+                    "LSP disabled. File mutations succeed without post-write diagnostics until /lsp on."
+                },
+                OutputRole::System,
+            ),
+            Err(err) => self.push_output(
+                format!(
+                    "LSP {} for this session, but config save failed: {err}",
+                    if next { "enabled" } else { "disabled" }
+                ),
+                OutputRole::Error,
+            ),
+        }
+    }
 
     fn handle_voice_mode(&mut self, args: String) {
         let trimmed = args.trim();

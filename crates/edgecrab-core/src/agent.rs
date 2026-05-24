@@ -1637,6 +1637,17 @@ impl Agent {
         config.moa = moa.sanitized();
     }
 
+    /// Current LSP configuration (post-write diagnostics gate + language servers).
+    pub async fn lsp_config(&self) -> crate::config::LspConfig {
+        self.config.read().await.lsp.clone()
+    }
+
+    /// Enable or disable the LSP layer for future tool calls in this session.
+    pub async fn set_lsp_enabled(&self, enabled: bool) {
+        let mut config = self.config.write().await;
+        config.lsp.enabled = enabled;
+    }
+
     /// Update the enabled/disabled toolset filters for future turns.
     pub async fn set_toolset_filters(&self, enabled: Vec<String>, disabled: Vec<String>) {
         let mut config = self.config.write().await;

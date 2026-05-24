@@ -452,3 +452,40 @@ async fn write_file_delta_filters_preexisting_diagnostics() {
         "delta filter should drop unchanged diagnostics on rewrite: {second}"
     );
 }
+
+#[tokio::test]
+#[cfg_attr(
+    windows,
+    ignore = "integration test spawns cargo run as mock LSP server which is not reliable on Windows CI"
+)]
+async fn write_file_skips_diagnostics_when_lsp_disabled() {
+    let workspace = TempDir::new().expect("workspace");
+    let home = TempDir::new().expect("home");
+    std::fs::write(
+        workspace.path().join("Cargo.toml"),
+        "[package]\nname='mock'\nversion='0.1.0'\n",
+    )
+    .expect("cargo");
+
+    let registry = ToolRegistry::new();
+    let mut ctx = make_ctx(&workspace, &home);
+    ctx.config.lsp_enabled = false;
+    ctx.lsp_gate = Some(Arc::new(EdgecrabLspGate));
+
+    let value = dispatch_json(
+        &registry,
+        &ctx,
+        "write_file",
+        json!({
+            "path": "main.rs",
+            "content": "fn main() { let x: UndefinedType = 1; }\n"
+        }),
+    )
+    .await;
+
+    assert_eq!(value["ok"], true);
+    assert!(
+        value.get("diagnostics").is_none(),
+        "lsp.enabled=false must skip post-write diagnostics: {value}"
+    );
+}

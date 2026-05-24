@@ -26,6 +26,12 @@
 - [x] Python via `pylsp` or `pyright` (configurable).
 - [x] TypeScript/JavaScript via `tsserver`.
 
+## Surfacing / Toggle
+
+- [x] `/lsp on|off|status|toggle` in CLI and gateway updates session + `config.yaml`.
+- [x] `EDGECRAB_LSP_ENABLED` env override on config load.
+- [x] `/lsp status` documents post-write diagnostics behaviour.
+
 ## Code Quality
 
 - [x] `cargo clippy --workspace -- -D warnings`.

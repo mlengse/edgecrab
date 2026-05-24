@@ -234,6 +234,8 @@ pub enum CommandResult {
     ReloadMcp,
     /// Toggle voice mode — TTS readback of agent responses (on/off/tts/status).
     VoiceMode(String),
+    /// Toggle LSP layer and post-write diagnostics on file mutations (on/off/status).
+    LspMode(String),
     /// Manage MCP OAuth Bearer tokens (set/remove/list).
     McpToken(String),
     /// Manage browser CDP connection (connect/disconnect/status).
@@ -1324,6 +1326,13 @@ impl CommandRegistry {
             handler: |args| CommandResult::VoiceMode(args.trim().to_string()),
         });
 
+        self.register(Command {
+            name: "lsp",
+            aliases: &[],
+            description: "Toggle LSP and post-write diagnostics on write_file/patch (on/off/status/toggle)",
+            handler: |args| CommandResult::LspMode(args.trim().to_string()),
+        });
+
         // ── Browser ──────────────────────────────────────────────────
 
         self.register(Command {
@@ -1989,6 +1998,19 @@ mod tests {
             Some(CommandResult::VoiceMode(s)) => assert!(s.contains("status")),
             _ => panic!("expected VoiceMode"),
         }
+    }
+
+    #[test]
+    fn dispatch_lsp_toggle() {
+        let reg = CommandRegistry::new();
+        match reg.dispatch("/lsp status") {
+            Some(CommandResult::LspMode(s)) => assert_eq!(s, "status"),
+            other => panic!("expected LspMode, got {other:?}"),
+        }
+        assert!(matches!(
+            reg.dispatch("/lsp off"),
+            Some(CommandResult::LspMode(s)) if s == "off"
+        ));
     }
 
     #[test]

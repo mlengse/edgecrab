@@ -1182,6 +1182,60 @@ impl Gateway {
         }
     }
 
+    async fn handle_lsp_command(&self, msg: &IncomingMessage, origin_chat_id: &str) -> String {
+        let args = msg.get_command_args().trim().to_ascii_lowercase();
+        match self.resolve_command_session_agent(msg, origin_chat_id).await {
+            Ok(agent) => {
+                let current = agent.lsp_config().await;
+                match args.as_str() {
+                    "" | "status" => edgecrab_core::AppConfig::lsp_status_summary(&current),
+                    "on" | "enable" => {
+                        agent.set_lsp_enabled(true).await;
+                        match edgecrab_core::AppConfig::persist_lsp_enabled(true) {
+                            Ok(()) => {
+                                "LSP enabled. Post-write diagnostics active on write_file, patch, and apply_patch.".into()
+                            }
+                            Err(err) => format!(
+                                "LSP enabled for this session, but config save failed: {err}"
+                            ),
+                        }
+                    }
+                    "off" | "disable" => {
+                        agent.set_lsp_enabled(false).await;
+                        match edgecrab_core::AppConfig::persist_lsp_enabled(false) {
+                            Ok(()) => {
+                                "LSP disabled. File mutations will not attach post-write diagnostics.".into()
+                            }
+                            Err(err) => format!(
+                                "LSP disabled for this session, but config save failed: {err}"
+                            ),
+                        }
+                    }
+                    "toggle" => {
+                        let next = !current.enabled;
+                        agent.set_lsp_enabled(next).await;
+                        match edgecrab_core::AppConfig::persist_lsp_enabled(next) {
+                            Ok(()) => format!(
+                                "LSP {}. Post-write diagnostics are {}.",
+                                if next { "enabled" } else { "disabled" },
+                                if next { "on" } else { "off" }
+                            ),
+                            Err(err) => format!(
+                                "LSP toggled for this session, but config save failed: {err}"
+                            ),
+                        }
+                    }
+                    _ => {
+                        "Usage: /lsp [on|off|status|toggle]\n\
+                         Controls LSP and post-write diagnostics on file mutations."
+                            .into()
+                    }
+                }
+            }
+            Err(error) => error,
+        }
+    }
+
     async fn session_is_running(&self, session_key: &str) -> bool {
         self.running_sessions.lock().await.contains_key(session_key)
     }
@@ -2253,6 +2307,9 @@ impl Gateway {
                             }
                             "voice" => {
                                 Some(self.handle_voice_command(&msg, &origin_chat_id).await)
+                            }
+                            "lsp" => {
+                                Some(self.handle_lsp_command(&msg, &origin_chat_id).await)
                             }
                             "commands" => {
                                 let page = msg

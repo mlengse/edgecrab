@@ -136,6 +136,35 @@ impl AppConfig {
         serde_yml::from_value(raw).map_err(|e| AgentError::Config(format!("{path:?}: {e}")))
     }
 
+    /// Update `lsp.enabled` and persist to `~/.edgecrab/config.yaml`.
+    pub fn persist_lsp_enabled(enabled: bool) -> Result<(), AgentError> {
+        let mut config = Self::load()?;
+        config.lsp.enabled = enabled;
+        config.save()
+    }
+
+    /// Human-readable summary for `/lsp status`.
+    pub fn lsp_status_summary(lsp: &LspConfig) -> String {
+        let post_write = if lsp.enabled {
+            "on (write_file, patch, apply_patch attach diagnostics + lsp_diagnostics)"
+        } else {
+            "off"
+        };
+        format!(
+            "LSP layer: {}\n\
+             Post-write semantic diagnostics: {}\n\
+             Diagnostic timeout: {} ms\n\
+             Configured language servers: {}\n\
+             \n\
+             Toggle: /lsp on | /lsp off | /lsp toggle\n\
+             Or set `lsp.enabled` in config.yaml (env: EDGECRAB_LSP_ENABLED=0|1)",
+            if lsp.enabled { "enabled" } else { "disabled" },
+            post_write,
+            lsp.timeout_ms,
+            lsp.servers.len()
+        )
+    }
+
     /// Persist the current config to the default config path.
     pub fn save(&self) -> Result<(), AgentError> {
         let home = ensure_edgecrab_home()?;
@@ -205,6 +234,9 @@ impl AppConfig {
         }
         if let Ok(val) = std::env::var("EDGECRAB_SKIP_MEMORY") {
             self.skip_memory = parse_bool_env(&val);
+        }
+        if let Ok(val) = std::env::var("EDGECRAB_LSP_ENABLED") {
+            self.lsp.enabled = parse_bool_env(&val);
         }
         if let Ok(val) = std::env::var("EDGECRAB_TOOL_RESULT_SPILL") {
             self.tools.result_spill = parse_bool_env(&val);
@@ -2277,6 +2309,33 @@ model:
         // Everything else should be defaults
         assert!(cfg.model.streaming);
         assert_eq!(cfg.tools.tool_delay, 1.0);
+    }
+
+    #[test]
+    fn persist_lsp_enabled_round_trip_via_save_to() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("config.yaml");
+
+        let mut config = AppConfig::default();
+        config.lsp.enabled = true;
+        config.save_to(&path).expect("save initial");
+
+        config.lsp.enabled = false;
+        config.save_to(&path).expect("save off");
+        let loaded = AppConfig::load_from(&path).expect("load off");
+        assert!(!loaded.lsp.enabled);
+
+        config.lsp.enabled = true;
+        config.save_to(&path).expect("save on");
+        let loaded = AppConfig::load_from(&path).expect("load on");
+        assert!(loaded.lsp.enabled);
+    }
+
+    #[test]
+    fn lsp_status_summary_mentions_post_write() {
+        let summary = AppConfig::lsp_status_summary(&LspConfig::default());
+        assert!(summary.contains("Post-write"));
+        assert!(summary.contains("/lsp"));
     }
 
     #[test]

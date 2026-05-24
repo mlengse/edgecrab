@@ -259,6 +259,29 @@ mod tests {
         assert!(value.get("diagnostics").is_none());
     }
 
+    #[tokio::test]
+    async fn write_hook_skips_attach_when_lsp_disabled() {
+        let dir = TempDir::new().expect("tmpdir");
+        let path = dir.path().join("main.rs");
+        tokio::fs::write(&path, "fn main() {}\n").await.expect("write");
+        let mut ctx = ToolContext::test_context();
+        ctx.cwd = dir.path().to_path_buf();
+        ctx.config.lsp_enabled = false;
+        ctx.lsp_gate = Some(Arc::new(MockLspGate {
+            diagnostics: vec![ToolDiagnostic {
+                severity: "error".into(),
+                line: 1,
+                message: "should not appear".into(),
+                code: None,
+            }],
+        }));
+
+        let hook = LspWriteHook::capture_before(&ctx, &path).await;
+        let mut value = json!({"ok": true});
+        hook.attach_after(&ctx, &path, &mut value, "fn main() {}\n").await;
+        assert!(value.get("diagnostics").is_none());
+    }
+
     #[test]
     fn truncate_caps_long_blocks() {
         let long = "x".repeat(5000);

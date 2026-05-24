@@ -672,6 +672,15 @@ pub const BUILTIN_SLASH_COMMANDS: &[SlashCommandSpec] = &[
         gateway: true,
     },
     SlashCommandSpec {
+        name: "lsp",
+        aliases: &[],
+        description: "Toggle LSP and post-write diagnostics on file mutations",
+        category: "Tools",
+        args_hint: "[on|off|status|toggle]",
+        cli: true,
+        gateway: true,
+    },
+    SlashCommandSpec {
         name: "browser",
         aliases: &[],
         description: "Manage the browser CDP connection",
