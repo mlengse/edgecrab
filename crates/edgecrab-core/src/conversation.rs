@@ -344,6 +344,7 @@ fn build_tool_context(
     todo_store: Option<Arc<edgecrab_tools::TodoStore>>,
     injected_messages: Option<Arc<tokio::sync::Mutex<Vec<Message>>>>,
     mutation_turn: Option<Arc<edgecrab_tools::MutationTurnState>>,
+    lsp_gate: Option<Arc<dyn edgecrab_tools::LspGate>>,
 ) -> ToolContext {
     ToolContext {
         task_id: uuid::Uuid::new_v4().to_string(),
@@ -388,6 +389,7 @@ fn build_tool_context(
         tool_progress_tx,
         watch_notification_tx: None,
         mutation_turn,
+        lsp_gate,
     }
 }
 
@@ -565,6 +567,18 @@ struct DispatchContext {
     engine_tool_names: Arc<std::collections::HashSet<String>>,
     /// Per-turn file mutation log + failure verifier (reset each user message).
     mutation_turn: Arc<edgecrab_tools::MutationTurnState>,
+    /// Post-write LSP gate for file mutation tools.
+    lsp_gate: Option<Arc<dyn edgecrab_tools::LspGate>>,
+}
+
+fn post_write_lsp_gate(
+    app_config_ref: &edgecrab_tools::AppConfigRef,
+) -> Option<Arc<dyn edgecrab_tools::LspGate>> {
+    if app_config_ref.lsp_enabled {
+        Some(Arc::new(edgecrab_lsp::EdgecrabLspGate))
+    } else {
+        None
+    }
 }
 
 impl Agent {
@@ -658,6 +672,7 @@ impl Agent {
         let expanded_enabled = tool_policy.expanded_enabled.clone();
         let expanded_disabled = tool_policy.expanded_disabled.clone();
         let app_config_ref = config.to_app_config_ref(gateway_running, &tool_policy);
+        let lsp_gate = post_write_lsp_gate(&app_config_ref);
 
         // Apply config-based env passthrough so it is available to every
         // PersistentShell::spawn() call within this session.
@@ -699,6 +714,7 @@ impl Agent {
                     Some(self.todo_store.clone()),
                     None, // schema resolution never injects conversation messages
                     None, // mutation_turn not needed for schema resolution
+                    None, // lsp_gate not needed for schema resolution
                 );
 
                 // "all" sentinel / genuinely empty → pass None (no filtering).
@@ -1359,6 +1375,7 @@ impl Agent {
                         Some(self.todo_store.clone()),
                         None,
                         None,
+                        None,
                     );
                     let enabled_filter = if config.enabled_toolsets.is_empty()
                         || edgecrab_tools::toolsets::contains_all_sentinel(&config.enabled_toolsets)
@@ -1880,6 +1897,7 @@ impl Agent {
                 context_engine: engine_for_dispatch.clone(),
                 engine_tool_names: engine_tool_names.clone(),
                 mutation_turn: Arc::clone(&mutation_turn),
+                lsp_gate: lsp_gate.clone(),
             };
             let action = match process_response(
                 &response,
@@ -4094,6 +4112,7 @@ async fn process_response(
                 let context_engine = dctx.context_engine.clone();
                 let engine_tool_names = dctx.engine_tool_names.clone();
                 let mutation_turn = Arc::clone(&dctx.mutation_turn);
+                let lsp_gate = dctx.lsp_gate.clone();
 
                 parallel_tasks.spawn(async move {
                     let started = std::time::Instant::now();
@@ -4121,6 +4140,7 @@ async fn process_response(
                         context_engine,
                         engine_tool_names,
                         mutation_turn,
+                        lsp_gate,
                     };
                     let result = dispatch_single_tool(&tc_id, &tc_name, &tc_args, &inner).await;
                     let duration_ms = started.elapsed().as_millis() as u64;
@@ -4643,6 +4663,7 @@ async fn dispatch_single_tool(
         dctx.todo_store.clone(),
         Some(injected_messages.clone()),
         Some(Arc::clone(&dctx.mutation_turn)),
+        dctx.lsp_gate.clone(),
     );
 
     let args: serde_json::Value = match serde_json::from_str(args_json) {
@@ -4902,6 +4923,7 @@ async fn run_learning_reflection_bg(ctx: BackgroundReflectionCtx) {
         context_engine: None,
         engine_tool_names: Arc::new(std::collections::HashSet::new()),
         mutation_turn: Arc::new(edgecrab_tools::MutationTurnState::new()),
+        lsp_gate: post_write_lsp_gate(&ctx.app_config_ref),
     };
 
     // Work on local session clone — we don't need results propagated back.
@@ -7202,6 +7224,7 @@ def register(ctx):
             context_engine: None,
             engine_tool_names: Arc::new(std::collections::HashSet::new()),
             mutation_turn: Arc::new(edgecrab_tools::MutationTurnState::new()),
+            lsp_gate: None,
         }
     }
 

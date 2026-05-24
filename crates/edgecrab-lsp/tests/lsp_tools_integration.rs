@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use edgecrab_lsp as _;
+use edgecrab_lsp::EdgecrabLspGate;
 use edgecrab_tools::config_ref::LspServerConfigRef;
 use edgecrab_tools::{ToolContext, ToolRegistry};
 use edgecrab_types::Platform;
@@ -53,6 +53,7 @@ fn make_ctx(workspace: &TempDir, home: &TempDir) -> ToolContext {
         tool_progress_tx: None,
         watch_notification_tx: None,
         mutation_turn: None,
+        lsp_gate: None,
     };
     ctx.config.edgecrab_home = home.path().to_path_buf();
     ctx.config.lsp_servers = HashMap::from([(
@@ -365,4 +366,52 @@ async fn lsp_mutation_tools_apply_workspace_edits() {
     )
     .await;
     assert_eq!(range_formatted["formatted"], true);
+}
+
+#[tokio::test]
+#[cfg_attr(
+    windows,
+    ignore = "integration test spawns cargo run as mock LSP server which is not reliable on Windows CI"
+)]
+async fn write_file_result_includes_lsp_diagnostics() {
+    let workspace = TempDir::new().expect("workspace");
+    let home = TempDir::new().expect("home");
+    std::fs::write(
+        workspace.path().join("Cargo.toml"),
+        "[package]\nname='mock'\nversion='0.1.0'\n",
+    )
+    .expect("cargo");
+
+    let registry = ToolRegistry::new();
+    let mut ctx = make_ctx(&workspace, &home);
+    ctx.config.lsp_enabled = true;
+    ctx.config.lsp_post_write_timeout_ms = 3_000;
+    ctx.lsp_gate = Some(Arc::new(EdgecrabLspGate));
+
+    let value = dispatch_json(
+        &registry,
+        &ctx,
+        "write_file",
+        json!({
+            "path": "main.rs",
+            "content": "fn main() { let x: UndefinedType = 1; }\n"
+        }),
+    )
+    .await;
+
+    assert_eq!(value["ok"], true);
+    let diags = value["diagnostics"]
+        .as_array()
+        .expect("diagnostics present");
+    assert!(
+        !diags.is_empty(),
+        "mock LSP should return at least one diagnostic: {value}"
+    );
+    assert_eq!(diags[0]["severity"], "error");
+    assert!(
+        value["lsp_diagnostics"]
+            .as_str()
+            .is_some_and(|s| s.contains("mock type mismatch")),
+        "Hermes-compatible lsp_diagnostics block expected: {value}"
+    );
 }

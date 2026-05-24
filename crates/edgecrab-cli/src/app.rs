@@ -20315,6 +20315,7 @@ impl App {
             tool_progress_tx: None,
             watch_notification_tx: None,
             mutation_turn: None,
+            lsp_gate: None,
         }
     }
 

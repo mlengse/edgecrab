@@ -332,6 +332,8 @@ pub struct ToolContext {
     /// Set by `execute_loop` at turn start; tools record successful writes here
     /// and the conversation loop records failures after dispatch.
     pub mutation_turn: Option<Arc<crate::mutations::MutationTurnState>>,
+    /// Post-write LSP diagnostic gate (injected when `lsp.enabled`).
+    pub lsp_gate: Option<Arc<dyn crate::lsp_gate::LspGate>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -415,6 +417,7 @@ impl ToolContext {
             tool_progress_tx: None,
             watch_notification_tx: None,
             mutation_turn: None,
+            lsp_gate: None,
         }
     }
 

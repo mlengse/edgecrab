@@ -211,7 +211,7 @@ async fn execute_replace_patch(args: ReplaceArgs, ctx: &ToolContext) -> Result<S
         lines_added: after_lines.saturating_sub(before_lines) as u32,
         lines_removed: before_lines.saturating_sub(after_lines) as u32,
     });
-    let result = serde_json::json!({
+    let mut result = serde_json::json!({
         "ok": true,
         "replacements": count,
         "before_bytes": before_bytes,
@@ -220,6 +220,7 @@ async fn execute_replace_patch(args: ReplaceArgs, ctx: &ToolContext) -> Result<S
         "after_lines": after_lines,
         "path": args.path,
     });
+    crate::lsp_gate::attach_post_write_diagnostics(ctx, &resolved, &mut result).await;
     Ok(result.to_string())
 }
 
@@ -889,12 +890,24 @@ async fn execute_v4a_patch(patch_text: &str, ctx: &ToolContext) -> Result<String
             });
         }
         // R18: Structured JSON result (FP57).
-        let result = serde_json::json!({
+        let mut result = serde_json::json!({
             "ok": true,
             "modified": files_modified,
             "created": files_created,
             "deleted": files_deleted,
         });
+        if let Some(first) = files_created.first() {
+            let path = ctx.cwd.join(first);
+            crate::lsp_gate::attach_post_write_diagnostics(ctx, &path, &mut result).await;
+        } else if let Some(first) = files_modified.first() {
+            let path = ctx.cwd.join(
+                first
+                    .split(" → ")
+                    .next()
+                    .unwrap_or(first.as_str()),
+            );
+            crate::lsp_gate::attach_post_write_diagnostics(ctx, &path, &mut result).await;
+        }
         Ok(result.to_string())
     } else {
         restore_backups(&backups).await;

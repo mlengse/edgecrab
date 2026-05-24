@@ -373,6 +373,7 @@ impl AgentConfig {
             path_restrictions: self.path_restrictions.clone(),
             lsp_enabled: self.lsp.enabled,
             lsp_file_size_limit_bytes: self.lsp.file_size_limit_bytes,
+            lsp_post_write_timeout_ms: self.lsp.timeout_ms,
             lsp_servers: self.lsp_server_refs(),
             delegation_enabled: self.delegation_enabled,
             delegation_model: self.delegation_model.clone(),
@@ -1580,6 +1581,7 @@ impl Agent {
             tool_progress_tx: None,
             watch_notification_tx: None,
             mutation_turn: None,
+            lsp_gate: None,
         };
         registry.tool_inventory(&ctx)
     }

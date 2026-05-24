@@ -148,6 +148,7 @@ async fn browser_advantage_tools_dispatch_through_registry_with_edge_case_valida
         tool_progress_tx: None,
         watch_notification_tx: None,
         mutation_turn: None,
+        lsp_gate: None,
     };
 
     let wait_for_err = registry

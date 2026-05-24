@@ -49,6 +49,7 @@ fn live_tool_context(provider: Arc<dyn edgequake_llm::LLMProvider>) -> ToolConte
         tool_progress_tx: None,
         watch_notification_tx: None,
         mutation_turn: None,
+        lsp_gate: None,
     }
 }
 

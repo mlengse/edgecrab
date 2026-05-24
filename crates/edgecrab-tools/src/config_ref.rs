@@ -73,6 +73,8 @@ pub struct AppConfigRef {
     pub lsp_file_size_limit_bytes: u64,
     /// Named language-server configurations keyed by logical language/server id.
     pub lsp_servers: HashMap<String, LspServerConfigRef>,
+    /// Post-write diagnostic pull budget in milliseconds (default 1500).
+    pub lsp_post_write_timeout_ms: u64,
     /// EdgeCrab home directory (memory, skills, sessions storage root).
     ///
     /// WHY renamed from workspace_root: memory and skills tools write to
@@ -228,6 +230,7 @@ impl Default for AppConfigRef {
             lsp_enabled: true,
             lsp_file_size_limit_bytes: 10_000_000,
             lsp_servers: HashMap::new(),
+            lsp_post_write_timeout_ms: 1_500,
             edgecrab_home: resolve_edgecrab_home(),
             delegation_enabled: true,
             delegation_model: None,

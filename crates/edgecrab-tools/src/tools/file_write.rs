@@ -296,14 +296,15 @@ impl ToolHandler for WriteFileTool {
             // without a redundant read_file round-trip.
             let action = if file_exists { "overwrite" } else { "create" };
             let lines = new_lines;
-            Ok(serde_json::json!({
+            let mut payload = serde_json::json!({
                 "ok": true,
                 "action": action,
                 "bytes": bytes_written,
                 "lines": lines,
                 "path": args.path,
-            })
-            .to_string())
+            });
+            crate::lsp_gate::attach_post_write_diagnostics(ctx, &resolved, &mut payload).await;
+            Ok(payload.to_string())
         }
     }
 }

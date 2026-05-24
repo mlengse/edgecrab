@@ -754,6 +754,8 @@ impl Default for ToolsConfig {
 pub struct LspConfig {
     pub enabled: bool,
     pub file_size_limit_bytes: u64,
+    /// Post-write diagnostic fetch budget for file mutation tools.
+    pub timeout_ms: u64,
     pub servers: HashMap<String, LspServerConfig>,
 }
 
@@ -762,6 +764,7 @@ impl Default for LspConfig {
         Self {
             enabled: true,
             file_size_limit_bytes: 10_000_000,
+            timeout_ms: 1_500,
             servers: default_lsp_servers(),
         }
     }
