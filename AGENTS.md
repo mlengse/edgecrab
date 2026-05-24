@@ -175,11 +175,17 @@ Each ReAct iteration appends a synthetic **user-role** goal block immediately be
 
 | Command | Effect |
 |---------|--------|
-| `/goal <text>` | Replace the top-level goal (clears subgoals) |
-| `/goal show` | Display active goal + subgoals |
-| `/goal clear` | Wipe goals for the current session only |
-| `/subgoal <text>` | Push a subgoal onto the stack |
-| `/done` | Mark the most recently pushed incomplete subgoal done |
+| `/goal <text>` | Set standing goal + kick off Ralph loop (20-turn budget default) |
+| `/goal status` | Show goal status, turn budget, subgoal count |
+| `/goal pause` / `/goal resume` | Pause or resume the auto-continuation loop |
+| `/goal clear` | Wipe goal + subgoals for the current session |
+| `/subgoal` | List subgoals |
+| `/subgoal <text>` | Add a criterion |
+| `/subgoal remove <N>` | Remove subgoal N (1-based) |
+| `/subgoal clear` | Drop all subgoals, keep top-level goal |
+| `/done` | Mark the most recently pushed incomplete subgoal done `[x]` |
+
+Config: `goals.max_turns` (default 20), `auxiliary.goal_judge.model` for a cheap judge model.
 
 ```rust
 // Core API (also wired to CLI + gateway slash commands)

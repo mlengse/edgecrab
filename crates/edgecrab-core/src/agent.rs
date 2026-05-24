@@ -192,6 +192,8 @@ pub struct AgentConfig {
     pub auxiliary: crate::config::AuxiliaryConfig,
     /// Shadow judge configuration (completion oracle).
     pub shadow_judge: crate::config::ShadowJudgeConfig,
+    /// Persistent goals / Ralph loop configuration.
+    pub goals: crate::config::GoalsConfig,
     /// Default Mixture-of-Agents roster and aggregator.
     pub moa: crate::config::MoaConfig,
     /// Voice output configuration projected from AppConfig.
@@ -265,6 +267,7 @@ impl Default for AgentConfig {
             compression: crate::config::CompressionConfig::default(),
             auxiliary: crate::config::AuxiliaryConfig::default(),
             shadow_judge: crate::config::ShadowJudgeConfig::default(),
+            goals: crate::config::GoalsConfig::default(),
             moa: crate::config::MoaConfig::default(),
             tts: crate::config::TtsConfig::default(),
             stt: crate::config::SttConfig::default(),
@@ -1199,11 +1202,57 @@ impl Agent {
     /// Set or replace the persistent top-level goal for the current session.
     pub async fn goal_set(&self, text: &str) -> Result<String, AgentError> {
         let session_id = self.ensure_session_id().await?;
-        self.goal_store.set_goal(&session_id, text)?;
-        Ok(format!("🎯 Goal set: {}", text.trim()))
+        let max_turns = self.config.read().await.goals.max_turns.max(1);
+        self.goal_store.set_goal(&session_id, text, max_turns)?;
+        Ok(format!(
+            "⊙ Goal set ({max_turns}-turn budget): {}\n\
+             After each turn, a judge model checks if the goal is done. \
+             EdgeCrab keeps working until it is, you pause/clear it, or the budget is exhausted.",
+            text.trim()
+        ))
     }
 
-    /// Display the active goal and subgoals for the current session.
+    /// Display status for the active goal (Hermes-compatible `/goal status`).
+    pub async fn goal_status(&self) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let state = self.goal_store.active(&session_id)?;
+        if state.is_empty() {
+            return Ok(crate::goals::status_line(&state));
+        }
+        if state.subgoals.is_empty() {
+            return Ok(crate::goals::status_line(&state));
+        }
+        Ok(format!(
+            "{}\n{}",
+            crate::goals::status_line(&state),
+            crate::goals::render_subgoals_list(&state)
+        ))
+    }
+
+    /// Raw goal state for UI surfaces (status bar chip, etc.).
+    pub async fn goal_state(&self) -> Result<crate::goals::GoalState, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        self.goal_store.active(&session_id)
+    }
+
+    /// Resume a paused goal loop and return an optional auto-continuation prompt.
+    pub async fn goal_resume_with_kickoff(&self) -> Result<(String, Option<String>), AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let state = self.goal_store.active(&session_id)?;
+        if state.is_empty() {
+            return Ok(("No goal to resume.".into(), None));
+        }
+        self.goal_store.resume(&session_id, true)?;
+        let refreshed = self.goal_store.active(&session_id)?;
+        let continuation = crate::goals::next_continuation_prompt(&refreshed);
+        let msg = format!(
+            "▶ Goal resumed: {}",
+            refreshed.goal_text.as_deref().unwrap_or("")
+        );
+        Ok((msg, continuation))
+    }
+
+    /// Display the active goal block (injection preview).
     pub async fn goal_show(&self) -> Result<String, AgentError> {
         let session_id = self.ensure_session_id().await?;
         let state = self.goal_store.active(&session_id)?;
@@ -1216,8 +1265,41 @@ impl Agent {
     /// Clear all goals for the current session.
     pub async fn goal_clear(&self) -> Result<String, AgentError> {
         let session_id = self.ensure_session_id().await?;
+        let had = !self.goal_store.active(&session_id)?.is_empty();
         self.goal_store.clear(&session_id)?;
-        Ok("🎯 Goals cleared for this session.".into())
+        Ok(if had {
+            "✓ Goal cleared.".into()
+        } else {
+            "No active goal.".into()
+        })
+    }
+
+    /// Pause the Ralph loop for the current session.
+    pub async fn goal_pause(&self) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let state = self.goal_store.active(&session_id)?;
+        if state.is_empty() {
+            return Ok("No goal set.".into());
+        }
+        self.goal_store.pause(&session_id, "user-paused")?;
+        Ok(format!(
+            "⏸ Goal paused: {}",
+            state.goal_text.as_deref().unwrap_or("")
+        ))
+    }
+
+    /// Resume a paused goal loop.
+    pub async fn goal_resume(&self) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let state = self.goal_store.active(&session_id)?;
+        if state.is_empty() {
+            return Ok("No goal to resume.".into());
+        }
+        self.goal_store.resume(&session_id, true)?;
+        Ok(format!(
+            "▶ Goal resumed: {}",
+            state.goal_text.as_deref().unwrap_or("")
+        ))
     }
 
     /// Push a subgoal onto the current goal stack.
@@ -1227,6 +1309,36 @@ impl Agent {
         Ok(format!("📌 Subgoal added: {}", text.trim()))
     }
 
+    /// List subgoals for the active goal.
+    pub async fn subgoal_list(&self) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let state = self.goal_store.active(&session_id)?;
+        if !state.has_goal() {
+            return Ok("No active goal. Set one with /goal <text>.".into());
+        }
+        Ok(format!(
+            "{}\n{}",
+            crate::goals::status_line(&state),
+            crate::goals::render_subgoals_list(&state)
+        ))
+    }
+
+    /// Remove a subgoal by 1-based index.
+    pub async fn subgoal_remove(&self, index_1based: usize) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let removed = self
+            .goal_store
+            .remove_subgoal(&session_id, index_1based)?;
+        Ok(format!("Removed subgoal #{index_1based}: {removed}"))
+    }
+
+    /// Clear all subgoals while keeping the top-level goal.
+    pub async fn subgoal_clear(&self) -> Result<String, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let prev = self.goal_store.clear_subgoals(&session_id)?;
+        Ok(format!("Cleared {prev} subgoal(s)."))
+    }
+
     /// Mark the most recently pushed incomplete subgoal as done.
     pub async fn subgoal_done(&self) -> Result<String, AgentError> {
         let session_id = self.ensure_session_id().await?;
@@ -1234,6 +1346,37 @@ impl Agent {
             Some(sub) => Ok(format!("✅ Subgoal done: {}", sub.text)),
             None => Ok("No incomplete subgoals to mark done.".into()),
         }
+    }
+
+    /// True when the session has an active Ralph-loop goal.
+    pub async fn goal_is_active(&self) -> Result<bool, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let state = self.goal_store.active(&session_id)?;
+        Ok(state.status == crate::goals::GoalStatus::Active && state.has_goal())
+    }
+
+    /// Run the goal judge after a completed turn and return continuation decision.
+    pub async fn goal_evaluate_after_turn(
+        &self,
+        last_response: &str,
+        interrupted: bool,
+    ) -> Result<crate::goals::GoalContinuationDecision, AgentError> {
+        let session_id = self.ensure_session_id().await?;
+        let cfg = self.config.read().await.clone();
+        let provider = self.provider.read().await.clone();
+        let model = cfg.model.clone();
+        crate::goals::evaluate_goal_after_turn(
+            self.goal_store.clone(),
+            &session_id,
+            last_response,
+            interrupted,
+            &cfg.goals,
+            &cfg.auxiliary.goal_judge,
+            cfg.auxiliary.model.as_deref(),
+            provider,
+            &model,
+        )
+        .await
     }
 
     /// Access the goal store (for tests and gateway wiring).
@@ -1947,6 +2090,7 @@ impl AgentBuilder {
                 compression: config.compression.clone(),
                 auxiliary: config.auxiliary.clone(),
                 shadow_judge: config.shadow_judge.clone(),
+                goals: config.goals.clone(),
                 moa: config.moa.clone(),
                 tts: config.tts.clone(),
                 stt: config.stt.clone(),

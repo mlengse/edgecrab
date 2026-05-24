@@ -8,12 +8,14 @@
 use edgecrab_lsp as _;
 
 pub mod agent;
+pub mod auxiliary_model;
 pub mod completion_assessor;
 pub mod compression;
 pub mod config;
 pub mod context_engine;
 pub mod context_references;
 pub mod conversation;
+pub mod goal_judge;
 pub mod goals;
 pub mod model_catalog;
 pub mod model_discovery;
@@ -32,8 +34,8 @@ pub use agent::{
 pub use completion_assessor::{CompletionContext, CompletionPolicy, DefaultCompletionPolicy};
 pub use compression::{PRUNED_TOOL_PLACEHOLDER, SUMMARY_PREFIX};
 pub use config::{
-    AppConfig, CliOverrides, SmartRoutingYaml, ToolProgressMode, edgecrab_home,
-    ensure_edgecrab_home, gateway_image_cache_dir, gateway_media_dir,
+    AppConfig, CliOverrides, GoalJudgeConfig, GoalsConfig, SmartRoutingYaml, ToolProgressMode,
+    edgecrab_home, ensure_edgecrab_home, gateway_image_cache_dir, gateway_media_dir,
 };
 pub use context_engine::{
     BuiltinCompressorEngine, ContextEngine, ContextEngineSessionCtx, MAX_ENGINE_TOOLS,
@@ -41,8 +43,12 @@ pub use context_engine::{
 };
 pub use context_references::{ContextRef, ExpansionResult, expand_context_refs};
 pub use goals::{
-    GoalState, GoalStore, InMemoryGoalStore, SqliteGoalStore, SubGoal, goal_store_for_db,
-    render_goal_block,
+    GoalContinuationDecision, GoalState, GoalStatus, GoalStatusChip, GoalStore,
+    InMemoryGoalStore, SqliteGoalStore, SubGoal, compact_status_chip,
+    drain_goal_continuations_from_queue, evaluate_goal_after_turn, goal_flash_from_decision,
+    goal_store_for_db, is_goal_continuation_text, looks_like_slash_command,
+    next_continuation_prompt, prompt_queue_has_real_user_message, render_goal_block,
+    render_subgoals_list, status_line,
 };
 pub use model_catalog::{
     CatalogData, ModelCatalog, ModelEntry, ModelTier, PricingPair, ProviderEntry,

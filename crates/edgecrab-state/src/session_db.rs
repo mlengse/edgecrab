@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use edgecrab_types::{AgentError, Message, Role};
 
 /// Schema version — incremented on breaking schema changes.
-const SCHEMA_VERSION: u32 = 7;
+const SCHEMA_VERSION: u32 = 8;
 
 // Write-contention constants
 const WRITE_MAX_RETRIES: u32 = 15;
@@ -196,6 +196,13 @@ pub struct StoredSubGoal {
 pub struct StoredGoalState {
     pub goal_text: Option<String>,
     pub subgoals: Vec<StoredSubGoal>,
+    pub status: String,
+    pub turns_used: u32,
+    pub max_turns: u32,
+    pub paused_reason: Option<String>,
+    pub last_verdict: Option<String>,
+    pub last_reason: Option<String>,
+    pub consecutive_parse_failures: u32,
 }
 
 // ── SessionDb ─────────────────────────────────────────────────────────
@@ -264,6 +271,9 @@ impl SessionDb {
                 if v < 7 {
                     Self::migrate_to_v7(conn)?;
                 }
+                if v < 8 {
+                    Self::migrate_to_v8(conn)?;
+                }
                 conn.execute(
                     "UPDATE schema_version SET version = ?1",
                     params![SCHEMA_VERSION],
@@ -293,6 +303,20 @@ impl SessionDb {
                 ON session_subgoals(session_id, position);",
         )
         .map_err(|e| AgentError::Database(format!("migrate v7: {e}")))?;
+        Ok(())
+    }
+
+    fn migrate_to_v8(conn: &Connection) -> Result<(), AgentError> {
+        conn.execute_batch(
+            "ALTER TABLE session_goals ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+             ALTER TABLE session_goals ADD COLUMN turns_used INTEGER NOT NULL DEFAULT 0;
+             ALTER TABLE session_goals ADD COLUMN max_turns INTEGER NOT NULL DEFAULT 20;
+             ALTER TABLE session_goals ADD COLUMN paused_reason TEXT;
+             ALTER TABLE session_goals ADD COLUMN last_verdict TEXT;
+             ALTER TABLE session_goals ADD COLUMN last_reason TEXT;
+             ALTER TABLE session_goals ADD COLUMN consecutive_parse_failures INTEGER NOT NULL DEFAULT 0;",
+        )
+        .map_err(|e| AgentError::Database(format!("migrate v8: {e}")))?;
         Ok(())
     }
 
@@ -1605,17 +1629,53 @@ impl SessionDb {
         if session_id.trim().is_empty() {
             return Ok(StoredGoalState::default());
         }
+        type GoalRow = (
+            String,
+            String,
+            i64,
+            i64,
+            Option<String>,
+            Option<String>,
+            Option<String>,
+            i64,
+        );
         let conn = self
             .conn
             .lock()
             .map_err(|_| AgentError::Database("database lock poisoned".into()))?;
-        let goal_text: Option<String> = conn
-            .query_row(
-                "SELECT goal_text FROM session_goals WHERE session_id = ?1",
-                params![session_id],
-                |row| row.get(0),
-            )
-            .ok();
+        let goal_row: Option<GoalRow> = conn
+                .query_row(
+                    "SELECT goal_text, status, turns_used, max_turns, paused_reason,
+                        last_verdict, last_reason, consecutive_parse_failures
+                 FROM session_goals WHERE session_id = ?1",
+                    params![session_id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                            row.get(6)?,
+                            row.get(7)?,
+                        ))
+                    },
+                )
+                .ok();
+        let Some((
+            goal_text,
+            status,
+            turns_used,
+            max_turns,
+            paused_reason,
+            last_verdict,
+            last_reason,
+            consecutive_parse_failures,
+        )) = goal_row
+        else {
+            return Ok(StoredGoalState::default());
+        };
         let mut stmt = conn
             .prepare(
                 "SELECT id, text, done FROM session_subgoals
@@ -1634,12 +1694,19 @@ impl SessionDb {
             .filter_map(|r| r.ok())
             .collect();
         Ok(StoredGoalState {
-            goal_text,
+            goal_text: Some(goal_text),
             subgoals,
+            status,
+            turns_used: turns_used.max(0) as u32,
+            max_turns: max_turns.max(1) as u32,
+            paused_reason,
+            last_verdict,
+            last_reason,
+            consecutive_parse_failures: consecutive_parse_failures.max(0) as u32,
         })
     }
 
-    pub fn goals_set(&self, session_id: &str, text: &str) -> Result<(), AgentError> {
+    pub fn goals_set(&self, session_id: &str, text: &str, max_turns: u32) -> Result<(), AgentError> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
             return Err(AgentError::Config("goal text must not be empty".into()));
@@ -1650,11 +1717,23 @@ impl SessionDb {
             ));
         }
         let now = chrono::Utc::now().timestamp() as f64;
+        let budget = max_turns.max(1) as i64;
         self.execute_write(|conn| {
             conn.execute(
-                "INSERT OR REPLACE INTO session_goals (session_id, goal_text, created_at)
-                 VALUES (?1, ?2, ?3)",
-                params![session_id, trimmed, now],
+                "INSERT INTO session_goals (
+                    session_id, goal_text, created_at, status, turns_used, max_turns,
+                    paused_reason, last_verdict, last_reason, consecutive_parse_failures
+                 ) VALUES (?1, ?2, ?3, 'active', 0, ?4, NULL, NULL, NULL, 0)
+                 ON CONFLICT(session_id) DO UPDATE SET
+                    goal_text = excluded.goal_text,
+                    status = 'active',
+                    turns_used = 0,
+                    max_turns = excluded.max_turns,
+                    paused_reason = NULL,
+                    last_verdict = NULL,
+                    last_reason = NULL,
+                    consecutive_parse_failures = 0",
+                params![session_id, trimmed, now, budget],
             )?;
             conn.execute(
                 "DELETE FROM session_subgoals WHERE session_id = ?1",
@@ -1742,6 +1821,150 @@ impl SessionDb {
                 text,
                 done: true,
             }))
+        })
+    }
+
+    pub fn goals_clear_subgoals(&self, session_id: &str) -> Result<u32, AgentError> {
+        if session_id.trim().is_empty() {
+            return Ok(0);
+        }
+        self.execute_write_with_result(|conn| {
+            let has_goal: bool = conn
+                .query_row(
+                    "SELECT 1 FROM session_goals WHERE session_id = ?1",
+                    params![session_id],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+            if !has_goal {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+                    Some("set a top-level goal with /goal before managing subgoals".into()),
+                ));
+            }
+            let count: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM session_subgoals WHERE session_id = ?1",
+                params![session_id],
+                |row| row.get(0),
+            )?;
+            conn.execute(
+                "DELETE FROM session_subgoals WHERE session_id = ?1",
+                params![session_id],
+            )?;
+            Ok(count.max(0) as u32)
+        })
+    }
+
+    pub fn goals_remove_subgoal(
+        &self,
+        session_id: &str,
+        index_1based: usize,
+    ) -> Result<String, AgentError> {
+        if session_id.trim().is_empty() {
+            return Err(AgentError::Config("session_id is required".into()));
+        }
+        self.execute_write_with_result(|conn| {
+            let has_goal: bool = conn
+                .query_row(
+                    "SELECT 1 FROM session_goals WHERE session_id = ?1",
+                    params![session_id],
+                    |_| Ok(true),
+                )
+                .unwrap_or(false);
+            if !has_goal {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+                    Some("set a top-level goal with /goal before managing subgoals".into()),
+                ));
+            }
+            let mut stmt = conn.prepare(
+                "SELECT id, text FROM session_subgoals
+                 WHERE session_id = ?1 ORDER BY position ASC",
+            )?;
+            let rows: Vec<(i64, String)> = stmt
+                .query_map(params![session_id], |row| Ok((row.get(0)?, row.get(1)?)))?
+                .filter_map(|r| r.ok())
+                .collect();
+            if index_1based == 0 || index_1based > rows.len() {
+                return Err(rusqlite::Error::SqliteFailure(
+                    rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CONSTRAINT),
+                    Some(format!("index out of range (1..{})", rows.len())),
+                ));
+            }
+            let (id, text) = rows[index_1based - 1].clone();
+            conn.execute("DELETE FROM session_subgoals WHERE id = ?1", params![id])?;
+            Ok(text)
+        })
+    }
+
+    pub fn goals_pause(&self, session_id: &str, reason: &str) -> Result<(), AgentError> {
+        if session_id.trim().is_empty() {
+            return Ok(());
+        }
+        self.execute_write(|conn| {
+            conn.execute(
+                "UPDATE session_goals SET status = 'paused', paused_reason = ?2
+                 WHERE session_id = ?1",
+                params![session_id, reason],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn goals_resume(&self, session_id: &str, reset_budget: bool) -> Result<(), AgentError> {
+        if session_id.trim().is_empty() {
+            return Ok(());
+        }
+        self.execute_write(|conn| {
+            if reset_budget {
+                conn.execute(
+                    "UPDATE session_goals
+                     SET status = 'active', paused_reason = NULL, turns_used = 0
+                     WHERE session_id = ?1",
+                    params![session_id],
+                )?;
+            } else {
+                conn.execute(
+                    "UPDATE session_goals SET status = 'active', paused_reason = NULL
+                     WHERE session_id = ?1",
+                    params![session_id],
+                )?;
+            }
+            Ok(())
+        })
+    }
+
+    pub fn goals_save_loop_state(
+        &self,
+        session_id: &str,
+        state: &StoredGoalState,
+    ) -> Result<(), AgentError> {
+        if session_id.trim().is_empty() {
+            return Ok(());
+        }
+        self.execute_write(|conn| {
+            conn.execute(
+                "UPDATE session_goals SET
+                    status = ?2,
+                    turns_used = ?3,
+                    max_turns = ?4,
+                    paused_reason = ?5,
+                    last_verdict = ?6,
+                    last_reason = ?7,
+                    consecutive_parse_failures = ?8
+                 WHERE session_id = ?1",
+                params![
+                    session_id,
+                    state.status,
+                    state.turns_used as i64,
+                    state.max_turns as i64,
+                    state.paused_reason,
+                    state.last_verdict,
+                    state.last_reason,
+                    state.consecutive_parse_failures as i64,
+                ],
+            )?;
+            Ok(())
         })
     }
 }
@@ -1920,8 +2143,8 @@ mod tests {
         let db = test_db();
         db.save_session(&sample_session("goal-a")).expect("save a");
         db.save_session(&sample_session("goal-b")).expect("save b");
-        db.goals_set("goal-a", "Goal A").expect("set a");
-        db.goals_set("goal-b", "Goal B").expect("set b");
+        db.goals_set("goal-a", "Goal A", 20).expect("set a");
+        db.goals_set("goal-b", "Goal B", 20).expect("set b");
         db.goals_push_subgoal("goal-a", "step 1").expect("push");
         assert_eq!(
             db.goals_active("goal-a")
@@ -1950,7 +2173,7 @@ mod tests {
     fn goals_complete_subgoal_marks_latest_undone() {
         let db = test_db();
         db.save_session(&sample_session("goal-s")).expect("save");
-        db.goals_set("goal-s", "Ship").expect("set");
+        db.goals_set("goal-s", "Ship", 20).expect("set");
         db.goals_push_subgoal("goal-s", "one").expect("push");
         db.goals_push_subgoal("goal-s", "two").expect("push");
         let done = db
@@ -1967,7 +2190,7 @@ mod tests {
     fn goals_set_requires_session_row_without_stub() {
         let db = test_db();
         let err = db
-            .goals_set("orphan-session", "No parent row")
+            .goals_set("orphan-session", "No parent row", 20)
             .expect_err("FK should fail without sessions row");
         assert!(
             err.to_string().contains("FOREIGN KEY")
@@ -1981,7 +2204,7 @@ mod tests {
         let db = test_db();
         db.ensure_session_row("fresh-session", "cli", None, Some("mock/test"))
             .expect("stub session");
-        db.goals_set("fresh-session", "Demo goal")
+        db.goals_set("fresh-session", "Demo goal", 20)
             .expect("goal after stub");
         assert_eq!(
             db.goals_active("fresh-session")
@@ -1997,7 +2220,7 @@ mod tests {
         let db = test_db();
         db.ensure_session_row("persist-goals", "cli", None, Some("mock/test"))
             .expect("stub");
-        db.goals_set("persist-goals", "Keep me across saves")
+        db.goals_set("persist-goals", "Keep me across saves", 20)
             .expect("set goal");
         let session = sample_session("persist-goals");
         let messages = vec![Message::user("hello"), Message::assistant("world")];

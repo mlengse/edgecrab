@@ -6,6 +6,7 @@
 use std::sync::Arc;
 
 use edgecrab_core::agent::AgentBuilder;
+use edgecrab_core::is_goal_continuation_text;
 use edgequake_llm::LLMProvider;
 
 const COPILOT_SPEC: &str = "vscode-copilot/gpt-5-mini";
@@ -111,8 +112,7 @@ async fn copilot_demo_flow() {
         .goal_set(DEMO_GOAL)
         .await
         .expect("goal before chat — FK fix");
-    agent
-        .subgoal_push("summarize sample_task.md")
+    agent.subgoal_push("summarize sample_task.md")
         .await
         .expect("subgoal");
 
@@ -133,5 +133,38 @@ async fn copilot_demo_flow() {
     assert!(
         lower.contains("async") || lower.contains("sample_task") || lower.contains("refactor"),
         "model should reflect injected goal context; got: {reply}"
+    );
+
+    let decision = agent
+        .goal_evaluate_after_turn(&reply, false)
+        .await
+        .expect("goal evaluate");
+    eprintln!(
+        "Goal judge: verdict={} continue={} msg={}",
+        decision.verdict, decision.should_continue, decision.message
+    );
+    assert!(
+        decision.verdict == "done" || decision.verdict == "continue",
+        "unexpected verdict: {}",
+        decision.verdict
+    );
+
+    agent.subgoal_clear().await.expect("subgoal clear");
+    agent.subgoal_push("extra criterion").await.expect("push");
+    agent.subgoal_remove(1).await.expect("remove");
+    agent.goal_clear().await.expect("goal clear");
+
+    agent.goal_set(DEMO_GOAL).await.expect("re-set for resume test");
+    agent.goal_pause().await.expect("pause");
+    let (resume_msg, kickoff) = agent
+        .goal_resume_with_kickoff()
+        .await
+        .expect("resume with kickoff");
+    assert!(resume_msg.contains("resumed"));
+    assert!(
+        kickoff
+            .as_deref()
+            .is_some_and(is_goal_continuation_text),
+        "resume should yield continuation prompt"
     );
 }

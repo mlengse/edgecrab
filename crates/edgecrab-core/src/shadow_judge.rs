@@ -168,33 +168,13 @@ pub fn resolve_shadow_provider_and_model(
     main_provider: Arc<dyn LLMProvider>,
     main_model: &str,
 ) -> (Arc<dyn LLMProvider>, String) {
-    let candidate = shadow_cfg
-        .model
-        .as_deref()
-        .or(auxiliary_model)
-        .map(str::trim)
-        .filter(|s| !s.is_empty());
-
-    let Some(raw_model) = candidate else {
-        return (main_provider, main_model.to_string());
-    };
-
-    if let Some((provider_name, model_name)) = raw_model.split_once('/') {
-        let canonical = edgecrab_tools::vision_models::normalize_provider_name(provider_name);
-        match edgecrab_tools::create_provider_for_model(&canonical, model_name) {
-            Ok(p) => return (p, raw_model.to_string()),
-            Err(e) => {
-                tracing::warn!(
-                    error = %e,
-                    raw_model,
-                    "shadow judge: failed to create configured provider, using main provider"
-                );
-            }
-        }
-    }
-
-    // Bare model name — reuse main provider credentials.
-    (main_provider, raw_model.to_string())
+    crate::auxiliary_model::resolve_side_task_provider_and_model(
+        shadow_cfg.model.as_deref(),
+        auxiliary_model,
+        main_provider,
+        main_model,
+        "shadow judge",
+    )
 }
 
 // ─── Private helpers ─────────────────────────────────────────────────────────

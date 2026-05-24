@@ -5,7 +5,7 @@ use std::sync::Arc;
 use edgecrab_state::{SessionDb, StoredGoalState, StoredSubGoal};
 use edgecrab_types::AgentError;
 
-use super::{GoalState, GoalStore, SubGoal};
+use super::{GoalState, GoalStatus, GoalStore, SubGoal};
 
 fn map_state(stored: StoredGoalState) -> GoalState {
     GoalState {
@@ -19,6 +19,13 @@ fn map_state(stored: StoredGoalState) -> GoalState {
                 done: s.done,
             })
             .collect(),
+        status: GoalStatus::parse(&stored.status),
+        turns_used: stored.turns_used,
+        max_turns: stored.max_turns,
+        paused_reason: stored.paused_reason,
+        last_verdict: stored.last_verdict,
+        last_reason: stored.last_reason,
+        consecutive_parse_failures: stored.consecutive_parse_failures,
     }
 }
 
@@ -45,8 +52,8 @@ impl GoalStore for SqliteGoalStore {
         Ok(map_state(self.db.goals_active(session_id)?))
     }
 
-    fn set_goal(&self, session_id: &str, text: &str) -> Result<(), AgentError> {
-        self.db.goals_set(session_id, text)
+    fn set_goal(&self, session_id: &str, text: &str, max_turns: u32) -> Result<(), AgentError> {
+        self.db.goals_set(session_id, text, max_turns)
     }
 
     fn clear(&self, session_id: &str) -> Result<(), AgentError> {
@@ -68,5 +75,58 @@ impl GoalStore for SqliteGoalStore {
             .db
             .goals_complete_subgoal(session_id)?
             .map(map_subgoal))
+    }
+
+    fn clear_subgoals(&self, session_id: &str) -> Result<u32, AgentError> {
+        match self.db.goals_clear_subgoals(session_id) {
+            Ok(count) => Ok(count),
+            Err(AgentError::Database(msg)) if msg.contains("top-level goal") => {
+                Err(AgentError::Config(msg))
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn remove_subgoal(&self, session_id: &str, index_1based: usize) -> Result<String, AgentError> {
+        match self.db.goals_remove_subgoal(session_id, index_1based) {
+            Ok(text) => Ok(text),
+            Err(AgentError::Database(msg))
+                if msg.contains("top-level goal") || msg.contains("index out of range") =>
+            {
+                Err(AgentError::Config(msg))
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn pause(&self, session_id: &str, reason: &str) -> Result<(), AgentError> {
+        self.db.goals_pause(session_id, reason)
+    }
+
+    fn resume(&self, session_id: &str, reset_budget: bool) -> Result<(), AgentError> {
+        self.db.goals_resume(session_id, reset_budget)
+    }
+
+    fn save_loop_state(&self, session_id: &str, state: &GoalState) -> Result<(), AgentError> {
+        let stored = StoredGoalState {
+            goal_text: state.goal_text.clone(),
+            subgoals: state
+                .subgoals
+                .iter()
+                .map(|s| StoredSubGoal {
+                    id: s.id,
+                    text: s.text.clone(),
+                    done: s.done,
+                })
+                .collect(),
+            status: state.status.as_str().to_string(),
+            turns_used: state.turns_used,
+            max_turns: state.max_turns,
+            paused_reason: state.paused_reason.clone(),
+            last_verdict: state.last_verdict.clone(),
+            last_reason: state.last_reason.clone(),
+            consecutive_parse_failures: state.consecutive_parse_failures,
+        };
+        self.db.goals_save_loop_state(session_id, &stored)
     }
 }

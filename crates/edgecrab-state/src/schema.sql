@@ -87,7 +87,14 @@ CREATE INDEX IF NOT EXISTS idx_sessions_title ON sessions(title);
 CREATE TABLE IF NOT EXISTS session_goals (
     session_id TEXT PRIMARY KEY REFERENCES sessions(id) ON DELETE CASCADE,
     goal_text TEXT NOT NULL,
-    created_at REAL NOT NULL
+    created_at REAL NOT NULL,
+    status TEXT NOT NULL DEFAULT 'active',
+    turns_used INTEGER NOT NULL DEFAULT 0,
+    max_turns INTEGER NOT NULL DEFAULT 20,
+    paused_reason TEXT,
+    last_verdict TEXT,
+    last_reason TEXT,
+    consecutive_parse_failures INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS session_subgoals (

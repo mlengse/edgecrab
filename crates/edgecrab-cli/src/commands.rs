@@ -141,10 +141,10 @@ pub enum CommandResult {
     SessionPrune(u32),
     /// Queue a prompt to run after the current one completes
     QueuePrompt(String),
-    /// Set or manage the persistent session goal (`/goal`, `/goal show`, `/goal clear`).
+    /// Set or manage the persistent session goal (`/goal`, `/goal status`, etc.).
     GoalCommand(String),
-    /// Push a subgoal onto the current goal stack.
-    SubgoalPush(String),
+    /// Manage subgoals on the active goal (`/subgoal`, `/subgoal remove N`, etc.).
+    SubgoalCommand(String),
     /// Mark the most recent incomplete subgoal done.
     SubgoalDone,
     /// Run a prompt in the background
@@ -1135,23 +1135,15 @@ impl CommandRegistry {
         self.register(Command {
             name: "goal",
             aliases: &[],
-            description: "Set, show, or clear the persistent session goal",
+            description: "Set, pause, resume, or clear the persistent Ralph-loop goal",
             handler: |args| CommandResult::GoalCommand(args.trim().to_string()),
         });
 
         self.register(Command {
             name: "subgoal",
             aliases: &[],
-            description: "Push a subgoal onto the current goal stack",
-            handler: |args| {
-                if args.trim().is_empty() {
-                    CommandResult::Output(
-                        "Usage: /subgoal <text>\nExample: /subgoal write unit tests".into(),
-                    )
-                } else {
-                    CommandResult::SubgoalPush(args.trim().to_string())
-                }
-            },
+            description: "Add, list, remove, or clear subgoals on the active goal",
+            handler: |args| CommandResult::SubgoalCommand(args.trim().to_string()),
         });
 
         self.register(Command {

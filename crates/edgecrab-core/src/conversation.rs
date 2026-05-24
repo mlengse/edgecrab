@@ -6256,7 +6256,7 @@ def register(ctx):
             .clone()
             .expect("session id");
         goal_store
-            .set_goal(&sid, "Refactor payment service")
+            .set_goal(&sid, "Refactor payment service", 20)
             .expect("set goal");
 
         agent.chat("continue").await.expect("second turn");
@@ -6295,7 +6295,7 @@ def register(ctx):
             .clone()
             .expect("session id");
         goal_store
-            .set_goal(&sid, "Stay on mission")
+            .set_goal(&sid, "Stay on mission", 20)
             .expect("set goal");
         agent.force_compress().await;
 

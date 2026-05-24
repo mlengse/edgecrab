@@ -2,7 +2,7 @@
 
 > **Why this crate?** Reasoning + tools alone don't make an agent. You need a loop that knows  
 > when to call a tool, when to stop, how to compress a 200-message history without losing  
-> context, and which of 14 LLM providers to route to. `edgecrab-core` is that loop — the  
+> context, and which of 16 LLM providers to route to. `edgecrab-core` is that loop — the  
 > orchestration brain that turns raw LLM calls and tool results into coherent, goal-directed  
 > behaviour.
 
@@ -18,7 +18,7 @@ Part of [EdgeCrab](https://www.edgecrab.com) — the Rust SuperAgent.
 | `conversation.rs` | `execute_loop()` — the ReAct tool-call loop (max 90 iterations) |
 | `prompt_builder.rs` | System prompt assembly from ~12 sources (identity, memory, skills, AGENTS.md …) |
 | `compression.rs` | Context compression: structural fallback + LLM-based summarisation |
-| `model_catalog.rs` | 13 providers × 200+ models — single source of truth, user-overridable YAML |
+| `model_catalog.rs` | 16 providers × 200+ models — single source of truth, user-overridable YAML |
 | `model_router.rs` | Provider factory + smart routing |
 | `pricing.rs` | Token cost calculation per provider |
 | `sub_agent_runner.rs` | Sub-agent delegation runner |

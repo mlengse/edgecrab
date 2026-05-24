@@ -24,9 +24,17 @@ cargo test -p edgecrab-state ensure_session_row -- --nocapture
 cargo test -p edgecrab-state goals_survive -- --nocapture
 cargo test -p edgecrab-core execute_loop_injects_goal -- --nocapture
 
+echo ">> Ralph loop parity tests (Hermes-mapped)..."
+cargo test -p edgecrab-core --test goals_ralph_loop -- --nocapture
+
+echo ">> Goal UX unit tests (chip + flash)..."
+cargo test -p edgecrab-core compact_status_chip -- --nocapture
+cargo test -p edgecrab-core goal_flash_from_decision -- --nocapture
+
 echo ">> Demo integration test (mock)..."
 cargo test -p edgecrab-core --test demo_persistent_goals mock_demo_flow -- --nocapture
 
+echo ">> Copilot E2E (gpt-5-mini)..."
 if cargo test -p edgecrab-core --test demo_persistent_goals copilot_demo_flow -- --ignored --nocapture; then
   echo ">> Copilot E2E: PASSED"
 else
