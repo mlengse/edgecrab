@@ -1,0 +1,41 @@
+{
+  "manifest_version": 3,
+  "name": "Raindrop.io Exporter",
+  "version": "2.0.0",
+  "description": "Export all Raindrop.io bookmarks to JSON, HTML, Markdown, and a full offline SPA. Resilient: checkpoints every page, resumes from interruptions.",
+  "author": "Raindrop Exporter",
+  "icons": {
+    "16": "icons/icon16.png",
+    "48": "icons/icon48.png",
+    "128": "icons/icon128.png"
+  },
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icons/icon16.png",
+      "48": "icons/icon48.png",
+      "128": "icons/icon128.png"
+    },
+    "default_title": "Raindrop.io Exporter"
+  },
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  },
+  "permissions": [
+    "downloads",
+    "activeTab",
+    "scripting",
+    "storage",
+    "alarms",
+    "sessions"
+  ],
+  "host_permissions": [
+    "https://api.raindrop.io/*",
+    "https://app.raindrop.io/*"
+  ]
+}

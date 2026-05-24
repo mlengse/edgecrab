@@ -11,6 +11,7 @@ const API_KEY_VARS: &[&str] = &[
     "OPENAI_API_KEY",
     "OPENROUTER_API_KEY",
     "GOOGLE_API_KEY",
+    "NVIDIA_API_KEY",
     "MISTRAL_API_KEY",
     "DEEPSEEK_API_KEY",
     "GROQ_API_KEY",

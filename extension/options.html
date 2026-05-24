@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Raindrop Exporter — Settings</title>
+  <style>
+    :root {
+      --accent: #6366f1;
+      --bg: #f8fafc;
+      --card: #fff;
+      --text: #1e293b;
+      --muted: #64748b;
+      --border: #e2e8f0;
+      --success: #22c55e;
+      --error: #ef4444;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui,-apple-system,sans-serif; font-size: 14px; background: var(--bg); color: var(--text); }
+    .container { max-width: 540px; margin: 40px auto; padding: 0 20px; }
+    h1 { font-size: 22px; margin-bottom: 6px; }
+    .subtitle { color: var(--muted); margin-bottom: 28px; font-size: 13px; }
+    .card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 20px; margin-bottom: 20px; }
+    .card h2 { font-size: 15px; margin-bottom: 16px; border-bottom: 1px solid var(--border); padding-bottom: 8px; }
+    .field { margin-bottom: 14px; }
+    .field label { display: block; font-weight: 600; margin-bottom: 4px; }
+    .field .hint { font-size: 12px; color: var(--muted); margin-top: 3px; }
+    input[type=text], input[type=number], select {
+      width: 100%;
+      padding: 8px 10px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid var(--border);
+    }
+    .toggle-row:last-child { border-bottom: none; }
+    .toggle-row label { font-weight: normal; cursor: pointer; }
+    input[type=checkbox] { width: 16px; height: 16px; cursor: pointer; accent-color: var(--accent); }
+    .btn {
+      padding: 9px 20px;
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 7px;
+      cursor: pointer;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .btn:hover { background: #4f46e5; }
+    .status { margin-top: 10px; font-size: 13px; min-height: 20px; }
+    .status.ok { color: var(--success); }
+    .status.err { color: var(--error); }
+  </style>
+</head>
+<body>
+<div class="container">
+  <h1>🔖 Raindrop Exporter Settings</h1>
+  <p class="subtitle">Configure your export preferences.</p>
+
+  <!-- Token -->
+  <div class="card">
+    <h2>API Token</h2>
+    <div class="field">
+      <label for="tokenInput">Raindrop.io Test Token</label>
+      <input type="text" id="tokenInput" placeholder="Paste your token from app.raindrop.io/settings/integrations">
+      <div class="hint">Your token is stored locally on this device and never sent anywhere except the Raindrop.io API.</div>
+    </div>
+    <div class="toggle-row">
+      <label for="rememberToken">Remember token across sessions</label>
+      <input type="checkbox" id="rememberToken" checked>
+    </div>
+  </div>
+
+  <!-- Export options -->
+  <div class="card">
+    <h2>Export Options</h2>
+    <div class="toggle-row">
+      <label for="inclUnsorted">Include Unsorted bookmarks</label>
+      <input type="checkbox" id="inclUnsorted" checked>
+    </div>
+    <div class="toggle-row">
+      <label for="inclTrash">Include Trash</label>
+      <input type="checkbox" id="inclTrash">
+    </div>
+    <div class="toggle-row">
+      <label for="richHtml">Generate rich HTML gallery (in addition to Netscape format)</label>
+      <input type="checkbox" id="richHtml" checked>
+    </div>
+    <div class="field" style="margin-top:12px">
+      <label for="perPage">Items per API page (max 50)</label>
+      <input type="number" id="perPage" min="1" max="50" value="50">
+    </div>
+  </div>
+
+  <!-- Save -->
+  <button class="btn" id="btnSave">Save Settings</button>
+  <div class="status" id="saveStatus"></div>
+</div>
+
+<script type="module" src="options.js"></script>
+</body>
+</html>

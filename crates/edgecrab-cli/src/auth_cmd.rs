@@ -60,6 +60,13 @@ const PROVIDER_AUTH_SPECS: &[ProviderAuthSpec] = &[
         interactive_login: false,
     },
     ProviderAuthSpec {
+        canonical: "nvidia",
+        aliases: &["nim", "nvidia-nim"],
+        env_vars: &["NVIDIA_API_KEY"],
+        description: "NVIDIA NIM API key",
+        interactive_login: false,
+    },
+    ProviderAuthSpec {
         canonical: "xai",
         aliases: &[],
         env_vars: &["XAI_API_KEY"],

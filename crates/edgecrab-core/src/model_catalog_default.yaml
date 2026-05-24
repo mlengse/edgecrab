@@ -507,6 +507,27 @@ providers:
         tier: standard
         pricing: { input: 0.30, output: 0.90 }
 
+  # ─── NVIDIA NIM ─────────────────────────────────────────────────
+  nvidia:
+    label: "NVIDIA NIM"
+    default_model: "nvidia/llama-3.3-nemotron-super-49b-v1"
+    models:
+      - model: "nvidia/llama-3.3-nemotron-super-49b-v1"
+        context: 131072
+        tier: reasoning
+      - model: "nvidia/nemotron-3-super-120b-a12b"
+        context: 1000000
+        tier: reasoning
+      - model: "meta/llama-3.3-70b-instruct"
+        context: 131072
+        tier: standard
+      - model: "meta/llama-4-maverick-17b-128e-instruct"
+        context: 1000000
+        tier: standard
+      - model: "deepseek-ai/deepseek-v4-flash"
+        context: 64000
+        tier: reasoning
+
   # ─── Groq ────────────────────────────────────────────────────────
   groq:
     label: "Groq"

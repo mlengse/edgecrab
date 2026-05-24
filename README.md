@@ -31,7 +31,7 @@ hermes-agent soul  +  OpenClaw vision  =  EdgeCrab
 | Binary              | ~49 MB stripped release build  | Python venv + uv |
 | Runtime bootstrap   | None                           | Python + uv      |
 | Memory              | Workload-dependent native process | ~80–150 MB    |
-| LLM providers       | 15 built-in                    | varies           |
+| LLM providers       | 16 built-in                    | varies           |
 | Messaging platforms | 17 gateways                    | 7 platforms      |
 | Tests               | 1629 passing (Rust)            | —                |
 | Migrate from hermes | `edgecrab migrate`             | N/A              |
@@ -81,7 +81,7 @@ hermes-agent soul  +  OpenClaw vision  =  EdgeCrab
     - [Checkpoints \& Rollback](#checkpoints--rollback)
     - [Profiles \& Worktrees](#profiles--worktrees)
     - [Vision, TTS \& Transcription](#vision-tts--transcription)
-  - [15 LLM Providers](#15-llm-providers)
+  - [16 LLM Providers](#16-llm-providers)
   - [6 Terminal Backends](#6-terminal-backends)
   - [MCP Server Integration](#mcp-server-integration)
   - [ACP / VS Code Copilot Integration](#acp--vs-code-copilot-integration)
@@ -816,9 +816,9 @@ Transcription: Whisper (local), Groq Whisper, OpenAI Whisper.
 
 ---
 
-## 15 LLM Providers
+## 16 LLM Providers
 
-EdgeCrab ships with 15 LLM providers out of the box (13 cloud, 2 local). Over 200 models are compiled in, with user override via `~/.edgecrab/models.yaml`.
+EdgeCrab ships with 16 LLM providers out of the box (14 cloud, 2 local). Over 200 models are compiled in, with user override via `~/.edgecrab/models.yaml`.
 
 | Provider      | Env Var                          | Notable Models                                    |
 | ------------- | -------------------------------- | ------------------------------------------------- |
@@ -827,6 +827,7 @@ EdgeCrab ships with 15 LLM providers out of the box (13 cloud, 2 local). Over 20
 | `anthropic`   | `ANTHROPIC_API_KEY`              | Claude Opus 4.6, Sonnet 4.6, Haiku 4.5            |
 | `google`      | `GOOGLE_API_KEY`                 | Gemini 2.5 Pro, Gemini 2.5 Flash                  |
 | `vertexai`    | `GOOGLE_APPLICATION_CREDENTIALS` | Gemini via Google Cloud                           |
+| `nvidia`      | `NVIDIA_API_KEY`                 | NVIDIA NIM (Nemotron, Llama, DeepSeek families)  |
 | `xai`         | `XAI_API_KEY`                    | Grok 3, Grok 4                                    |
 | `deepseek`    | `DEEPSEEK_API_KEY`               | DeepSeek V3, DeepSeek R1                          |
 | `mistral`     | `MISTRAL_API_KEY`                | Mistral Large, Mistral Small                      |

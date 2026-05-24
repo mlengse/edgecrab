@@ -447,9 +447,12 @@ fn check_provider_keys() -> Vec<Check> {
         ("ANTHROPIC_API_KEY", "Anthropic"),
         ("ANTHROPIC_AUTH_TOKEN", "Anthropic-compatible"),
         ("GOOGLE_API_KEY", "Google Gemini"),
+        ("NVIDIA_API_KEY", "NVIDIA NIM"),
         ("OPENROUTER_API_KEY", "OpenRouter"),
         ("XAI_API_KEY", "xAI Grok"),
         ("MISTRAL_API_KEY", "Mistral AI"),
+        ("DEEPSEEK_API_KEY", "DeepSeek"),
+        ("GROQ_API_KEY", "Groq"),
     ];
 
     let found: Vec<_> = providers

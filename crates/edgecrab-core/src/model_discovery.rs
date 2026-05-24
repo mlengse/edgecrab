@@ -71,6 +71,13 @@ struct OllamaDiscovery;
 struct LMStudioDiscovery;
 struct GeminiDiscovery;
 struct CopilotDiscovery;
+struct OpenAICompatibleDiscovery {
+    canonical: &'static str,
+    aliases: &'static [&'static str],
+    base_url_envs: &'static [&'static str],
+    api_key_envs: &'static [&'static str],
+    default_base_url: &'static str,
+}
 
 #[cfg(feature = "bedrock-model-discovery")]
 struct BedrockDiscovery;
@@ -80,6 +87,48 @@ static OLLAMA_DISCOVERY: OllamaDiscovery = OllamaDiscovery;
 static LMSTUDIO_DISCOVERY: LMStudioDiscovery = LMStudioDiscovery;
 static GEMINI_DISCOVERY: GeminiDiscovery = GeminiDiscovery;
 static COPILOT_DISCOVERY: CopilotDiscovery = CopilotDiscovery;
+static OPENAI_DISCOVERY: OpenAICompatibleDiscovery = OpenAICompatibleDiscovery {
+    canonical: "openai",
+    aliases: &[],
+    base_url_envs: &["OPENAI_BASE_URL"],
+    api_key_envs: &["OPENAI_API_KEY"],
+    default_base_url: "https://api.openai.com",
+};
+static XAI_DISCOVERY: OpenAICompatibleDiscovery = OpenAICompatibleDiscovery {
+    canonical: "xai",
+    aliases: &["grok"],
+    base_url_envs: &["XAI_BASE_URL"],
+    api_key_envs: &["XAI_API_KEY"],
+    default_base_url: "https://api.x.ai",
+};
+static MISTRAL_DISCOVERY: OpenAICompatibleDiscovery = OpenAICompatibleDiscovery {
+    canonical: "mistral",
+    aliases: &["mistral-ai", "mistralai"],
+    base_url_envs: &["MISTRAL_BASE_URL"],
+    api_key_envs: &["MISTRAL_API_KEY"],
+    default_base_url: "https://api.mistral.ai",
+};
+static GROQ_DISCOVERY: OpenAICompatibleDiscovery = OpenAICompatibleDiscovery {
+    canonical: "groq",
+    aliases: &[],
+    base_url_envs: &["GROQ_BASE_URL"],
+    api_key_envs: &["GROQ_API_KEY"],
+    default_base_url: "https://api.groq.com/openai",
+};
+static DEEPSEEK_DISCOVERY: OpenAICompatibleDiscovery = OpenAICompatibleDiscovery {
+    canonical: "deepseek",
+    aliases: &[],
+    base_url_envs: &["DEEPSEEK_BASE_URL"],
+    api_key_envs: &["DEEPSEEK_API_KEY"],
+    default_base_url: "https://api.deepseek.com",
+};
+static NVIDIA_DISCOVERY: OpenAICompatibleDiscovery = OpenAICompatibleDiscovery {
+    canonical: "nvidia",
+    aliases: &["nvidia-nim", "nim"],
+    base_url_envs: &["NVIDIA_BASE_URL"],
+    api_key_envs: &["NVIDIA_API_KEY"],
+    default_base_url: "https://integrate.api.nvidia.com/v1",
+};
 
 #[cfg(feature = "bedrock-model-discovery")]
 static BEDROCK_DISCOVERY: BedrockDiscovery = BedrockDiscovery;
@@ -95,10 +144,16 @@ fn adapters() -> Vec<&'static dyn ModelDiscoveryAdapter> {
     #[allow(unused_mut)]
     let mut adapters: Vec<&'static dyn ModelDiscoveryAdapter> = vec![
         &OPENROUTER_DISCOVERY,
+        &OPENAI_DISCOVERY,
         &OLLAMA_DISCOVERY,
         &LMSTUDIO_DISCOVERY,
         &GEMINI_DISCOVERY,
         &COPILOT_DISCOVERY,
+        &XAI_DISCOVERY,
+        &MISTRAL_DISCOVERY,
+        &GROQ_DISCOVERY,
+        &DEEPSEEK_DISCOVERY,
+        &NVIDIA_DISCOVERY,
     ];
     #[cfg(feature = "bedrock-model-discovery")]
     {
@@ -114,6 +169,8 @@ pub fn normalize_discovery_provider(provider: &str) -> String {
         "copilot" | "vscode-copilot" | "vscode" => "copilot".to_string(),
         "lm-studio" | "lm_studio" => "lmstudio".to_string(),
         "open-router" => "openrouter".to_string(),
+        "grok" => "xai".to_string(),
+        "nvidia-nim" | "nim" => "nvidia".to_string(),
         "aws-bedrock" | "aws_bedrock" | "aws bedrock" => "bedrock".to_string(),
         other => other.to_string(),
     };
@@ -275,6 +332,15 @@ pub fn merge_grouped_catalog_with_dynamic(
 fn dedupe_sort(models: &mut Vec<String>) {
     models.sort();
     models.dedup();
+}
+
+fn first_non_empty_env(names: &[&str]) -> Option<String> {
+    names.iter().find_map(|name| {
+        std::env::var(name)
+            .ok()
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+    })
 }
 
 fn cache_path() -> PathBuf {
@@ -445,6 +511,36 @@ async fn fetch_openai_compatible_models(
 
     let payload = request.send().await?.error_for_status()?.text().await?;
     parse_openai_models_payload(&payload)
+}
+
+#[async_trait]
+impl ModelDiscoveryAdapter for OpenAICompatibleDiscovery {
+    fn canonical_name(&self) -> &'static str {
+        self.canonical
+    }
+
+    fn aliases(&self) -> &'static [&'static str] {
+        self.aliases
+    }
+
+    fn cache_ttl(&self) -> Duration {
+        Duration::from_secs(REMOTE_CACHE_TTL_SECS)
+    }
+
+    async fn fetch_models(&self) -> anyhow::Result<Vec<String>> {
+        let api_key = first_non_empty_env(self.api_key_envs);
+        if !self.api_key_envs.is_empty() && api_key.is_none() {
+            anyhow::bail!(
+                "{} discovery skipped: missing {}",
+                self.canonical,
+                self.api_key_envs.join(" or ")
+            );
+        }
+
+        let base_url = first_non_empty_env(self.base_url_envs)
+            .unwrap_or_else(|| self.default_base_url.to_string());
+        fetch_openai_compatible_models(&base_url, api_key.as_deref()).await
+    }
 }
 
 #[async_trait]
@@ -625,6 +721,8 @@ mod tests {
         assert_eq!(normalize_discovery_provider("gemini"), "google");
         assert_eq!(normalize_discovery_provider("vscode-copilot"), "copilot");
         assert_eq!(normalize_discovery_provider("lm-studio"), "lmstudio");
+        assert_eq!(normalize_discovery_provider("grok"), "xai");
+        assert_eq!(normalize_discovery_provider("nvidia-nim"), "nvidia");
         assert_eq!(normalize_discovery_provider("aws-bedrock"), "bedrock");
     }
 
@@ -632,10 +730,16 @@ mod tests {
     fn live_discovery_provider_list_is_stable() {
         let providers = live_discovery_providers();
         assert!(providers.contains(&"openrouter".to_string()));
+        assert!(providers.contains(&"openai".to_string()));
         assert!(providers.contains(&"ollama".to_string()));
         assert!(providers.contains(&"lmstudio".to_string()));
         assert!(providers.contains(&"google".to_string()));
         assert!(providers.contains(&"copilot".to_string()));
+        assert!(providers.contains(&"xai".to_string()));
+        assert!(providers.contains(&"mistral".to_string()));
+        assert!(providers.contains(&"groq".to_string()));
+        assert!(providers.contains(&"deepseek".to_string()));
+        assert!(providers.contains(&"nvidia".to_string()));
     }
 
     #[test]

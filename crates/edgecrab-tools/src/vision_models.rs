@@ -20,6 +20,8 @@ pub fn normalize_provider_name(provider: &str) -> String {
         "claude" => "anthropic".to_string(),
         "copilot" | "vscode" => "vscode-copilot".to_string(),
         "google" => "gemini".to_string(),
+        "grok" => "xai".to_string(),
+        "nvidia-nim" | "nim" => "nvidia".to_string(),
         "open-router" => "openrouter".to_string(),
         "vertex" | "vertex-ai" => "vertexai".to_string(),
         "azure-openai" | "azure_openai" | "azureopenai" => "azure".to_string(),
@@ -169,6 +171,8 @@ mod tests {
     fn provider_aliases_normalize() {
         assert_eq!(normalize_provider_name("copilot"), "vscode-copilot");
         assert_eq!(normalize_provider_name("google"), "gemini");
+        assert_eq!(normalize_provider_name("grok"), "xai");
+        assert_eq!(normalize_provider_name("nvidia-nim"), "nvidia");
         assert_eq!(normalize_provider_name("vertex-ai"), "vertexai");
         assert_eq!(normalize_provider_name("aws-bedrock"), "bedrock");
     }

@@ -44,6 +44,7 @@ const PROVIDER_ENV_MAP: &[(&str, &str, &str)] = &[
         "Anthropic (Claude 4.5/4.6)",
     ),
     ("GOOGLE_API_KEY", "gemini", "Google Gemini (2.5/3.x)"),
+    ("NVIDIA_API_KEY", "nvidia", "NVIDIA NIM"),
     ("XAI_API_KEY", "xai", "xAI (Grok 3/4)"),
     ("DEEPSEEK_API_KEY", "deepseek", "DeepSeek (V3, R1)"),
     (
@@ -1166,6 +1167,7 @@ fn choose_provider_interactively() -> anyhow::Result<String> {
                 "GOOGLE_API_KEY" => "starts with AIza...",
                 "OPENROUTER_API_KEY" => "starts with sk-or-v1-...  (get one free at openrouter.ai)",
                 "GITHUB_TOKEN" => "starts with ghp_ or gho_",
+                "NVIDIA_API_KEY" => "starts with nvapi-...  (get one at build.nvidia.com)",
                 "XAI_API_KEY" => "get one at console.x.ai",
                 _ => "",
             };
