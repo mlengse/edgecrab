@@ -12445,21 +12445,15 @@ impl App {
             }
             CommandResult::ShowComputer(args) => {
                 let config = self.load_runtime_config();
-                let sub = args.trim().to_ascii_lowercase();
-                let cmd = config.computer_use.cua_driver_cmd.clone();
-                let body = match sub.as_str() {
-                    "" | "status" => {
-                        format!(
-                            "computer_use.enabled: {}\nkeep_last_n_screenshots: {}\nconfirm_destructive: {}\ncua_driver_cmd: {cmd}\n\n{}",
-                            config.computer_use.enabled,
-                            config.computer_use.keep_last_n_screenshots,
-                            config.computer_use.confirm_destructive,
-                            edgecrab_tools::permissions_status(&cmd),
-                        )
-                    }
-                    "permissions" => edgecrab_tools::permissions_status(&cmd),
-                    other => format!("Unknown /computer subcommand '{other}'. Use: status | permissions"),
-                };
+                let body = edgecrab_tools::format_computer_command(
+                    &args,
+                    &edgecrab_tools::ComputerUseStatusConfig {
+                        enabled: config.computer_use.enabled,
+                        keep_last_n_screenshots: config.computer_use.keep_last_n_screenshots,
+                        confirm_destructive: config.computer_use.confirm_destructive,
+                        cua_driver_cmd: config.computer_use.cua_driver_cmd.clone(),
+                    },
+                );
                 self.push_output(body, OutputRole::System);
             }
             CommandResult::RollbackCheckpoint(args) => {

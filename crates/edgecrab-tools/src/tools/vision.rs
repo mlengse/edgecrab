@@ -503,6 +503,124 @@ fn resolve_vision_targets(
     resolved
 }
 
+/// Result of a programmatic vision analysis call.
+#[derive(Debug, Clone)]
+pub struct VisionAnalysisResult {
+    pub analysis: String,
+    pub provider: String,
+    pub model: String,
+    pub source: String,
+}
+
+/// Analyze a local image file using the same backend resolution as `vision_analyze`.
+pub async fn analyze_local_image(
+    ctx: &ToolContext,
+    path: &Path,
+    prompt: &str,
+) -> Result<VisionAnalysisResult, ToolError> {
+    if ctx.cancel.is_cancelled() {
+        return Err(ToolError::Other("Cancelled".into()));
+    }
+
+    let provider = ctx
+        .provider
+        .as_ref()
+        .ok_or_else(|| ToolError::Unavailable {
+            tool: "vision_analyze".into(),
+            reason: "No LLM provider available for vision analysis".into(),
+        })?
+        .clone();
+
+    let images_dir = ctx.config.tui_images_dir();
+    let image_cache_dir = ctx.config.gateway_image_cache_dir();
+    let gateway_media_dir = ctx.config.gateway_media_dir();
+    let computer_use_cache = ctx.config.edgecrab_home.join("cache").join("computer_use");
+    let path_policy = ctx.config.file_path_policy(&ctx.cwd);
+    let trusted = [
+        images_dir.as_path(),
+        image_cache_dir.as_path(),
+        gateway_media_dir.as_path(),
+        computer_use_cache.as_path(),
+    ];
+    let canonical = jail_read_path_multi(
+        path.to_string_lossy().as_ref(),
+        &path_policy,
+        &trusted,
+    )
+    .map_err(|e| ToolError::ExecutionFailed {
+        tool: "vision_analyze".into(),
+        message: e.to_string(),
+    })?;
+
+    let (image_bytes, mime_type) = read_local_image(&canonical).await?;
+    let (image_bytes, mime_type) = auto_resize_if_needed(image_bytes, mime_type).await;
+
+    use base64::Engine as _;
+    let b64 = base64::engine::general_purpose::STANDARD.encode(&image_bytes);
+    let image_data = edgequake_llm::ImageData::new(b64, mime_type);
+
+    let message = ChatMessage::user_with_images(prompt, vec![image_data]);
+    let messages = vec![message];
+    let options = CompletionOptions {
+        temperature: Some(0.1),
+        max_tokens: Some(4096),
+        ..Default::default()
+    };
+
+    let mut failures = Vec::new();
+    let mut analysis = None;
+    for (target, candidate_provider) in resolve_vision_targets(ctx, provider) {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(VISION_TIMEOUT_SECS),
+            candidate_provider.chat(&messages, Some(&options)),
+        )
+        .await
+        {
+            Ok(Ok(response)) if !response.content.trim().is_empty() => {
+                analysis = Some((
+                    target,
+                    response.content.trim().to_string(),
+                ));
+                break;
+            }
+            Ok(Ok(_)) => {
+                failures.push(format!(
+                    "{} {} returned an empty response",
+                    target.source, target.model
+                ));
+            }
+            Ok(Err(err)) => {
+                failures.push(format!(
+                    "{} {} failed: {}",
+                    target.source, target.model, err
+                ));
+            }
+            Err(_) => {
+                failures.push(format!(
+                    "{} {} timed out after {}s",
+                    target.source, target.model, VISION_TIMEOUT_SECS
+                ));
+            }
+        }
+    }
+
+    let (target, analysis_text) = analysis.ok_or_else(|| ToolError::ExecutionFailed {
+        tool: "vision_analyze".into(),
+        message: if failures.is_empty() {
+            "No vision-capable backend is configured.".into()
+        } else {
+            format!("No vision backend succeeded:\n- {}", failures.join("\n- "))
+        },
+    })?;
+
+    Ok(VisionAnalysisResult {
+        analysis: analysis_text,
+        provider: target.provider,
+        model: target.model,
+        source: target.source.to_string(),
+    })
+}
+
 // ─── vision_analyze ───────────────────────────────────────────────────
 
 pub struct VisionAnalyzeTool;

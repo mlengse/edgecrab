@@ -33,7 +33,8 @@ edgecrab-tools/src/tools/computer_use/
 | `toolsets.rs` | `COMPUTER_USE` toolset (opt-in, not in core) |
 | `conversation.rs` | parse `_multimodal` tool JSON → `Message` with `Content::Parts`; screenshot prune hook |
 | `compression.rs` | strip image parts from old `computer_use` tool messages (> N captures) |
-| `commands.rs` + catalog | `/computer status\|permissions` |
+| `commands.rs` + catalog | `/computer status\|permissions` (CLI + gateway) |
+| `vision_routing.rs` | aux vision routing for non-vision main models (#24015) |
 | `approval_runtime` | destructive actions respect yolo + approval_tx |
 
 ## Multimodal strategy (Rust constraint)
@@ -41,7 +42,7 @@ edgecrab-tools/src/tools/computer_use/
 `edgequake-llm` tool role = string content only. Mitigations (Hermes-aligned):
 
 1. **SOM/AX text** — element index list always in tool text (works text-only).
-2. **Vision routing** — non-vision main model → `vision_analyze` pre-pass (like Hermes #24015).
+2. **Vision routing** — implemented: `vision_routing.rs` + `aux_vision.rs` + shared `analyze_local_image`.
 3. **Vision main model** — store PNG under `~/.edgecrab/cache/computer_use/`; attach
    `Content::Parts` on `Message::tool_result`; `build_chat_messages` promotes image
    parts to `ChatMessage.images` on a synthetic follow-up user line tagged

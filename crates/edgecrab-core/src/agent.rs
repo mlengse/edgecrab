@@ -415,6 +415,7 @@ impl AgentConfig {
             computer_use_keep_last_n_screenshots: self.computer_use_keep_last_n_screenshots,
             computer_use_confirm_destructive: self.computer_use_confirm_destructive,
             computer_use_cua_cmd: self.computer_use_cua_cmd.clone(),
+            active_model: self.model.clone(),
             terminal_backend: self.terminal_backend.clone(),
             terminal_docker: self.terminal_docker.clone(),
             terminal_ssh: self.terminal_ssh.clone(),

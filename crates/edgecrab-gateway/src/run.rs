@@ -244,6 +244,19 @@ fn gateway_help_text() -> String {
     text
 }
 
+fn handle_computer_command(msg: &IncomingMessage) -> String {
+    let config = edgecrab_core::AppConfig::load().unwrap_or_default();
+    edgecrab_tools::format_computer_command(
+        msg.get_command_args(),
+        &edgecrab_tools::ComputerUseStatusConfig {
+            enabled: config.computer_use.enabled,
+            keep_last_n_screenshots: config.computer_use.keep_last_n_screenshots,
+            confirm_destructive: config.computer_use.confirm_destructive,
+            cua_driver_cmd: config.computer_use.cua_driver_cmd.clone(),
+        },
+    )
+}
+
 fn format_gateway_insights(
     snapshot: &edgecrab_core::SessionSnapshot,
     historical: Option<&edgecrab_state::InsightsReport>,
@@ -2374,6 +2387,9 @@ impl Gateway {
                             }
                             "lsp" => {
                                 Some(self.handle_lsp_command(&msg, &origin_chat_id).await)
+                            }
+                            "computer" => {
+                                Some(handle_computer_command(&msg))
                             }
                             "commands" => {
                                 let page = msg

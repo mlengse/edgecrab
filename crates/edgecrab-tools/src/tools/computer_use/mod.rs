@@ -3,6 +3,7 @@
 //! Mirrors Hermes `tools/computer_use/`. macOS + cua-driver required for live use;
 //! `EDGECRAB_COMPUTER_USE_BACKEND=noop` forces the test stub.
 
+mod aux_vision;
 mod backend;
 mod cua_backend;
 mod dispatch;
@@ -12,6 +13,8 @@ mod permissions;
 mod response;
 mod safety;
 mod schema;
+mod status;
+mod vision_routing;
 
 #[cfg(test)]
 mod tests;
@@ -28,6 +31,7 @@ use crate::registry::{ToolContext, ToolHandler};
 
 pub use permissions::{check_requirements, permissions_status};
 pub use response::parse_multimodal_tool_output;
+pub use status::{ComputerUseStatusConfig, format_computer_command};
 
 static BACKEND: OnceLock<Mutex<Box<dyn backend::ComputerUseBackend>>> = OnceLock::new();
 
@@ -138,6 +142,7 @@ impl ToolHandler for ComputerUseTool {
             &action_owned,
             &args_owned,
             &home,
+            Some(ctx),
         )
         .await
         .map_err(|e| ToolError::ExecutionFailed {

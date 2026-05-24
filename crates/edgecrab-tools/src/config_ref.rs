@@ -147,6 +147,8 @@ pub struct AppConfigRef {
     pub computer_use_confirm_destructive: bool,
     /// cua-driver command (`computer_use.cua_driver_cmd`).
     pub computer_use_cua_cmd: String,
+    /// Active session model in `provider/model` form.
+    pub active_model: String,
     /// Skills to preload into the system prompt (from -s/--skill flags).
     pub preloaded_skills: Vec<String>,
 
@@ -268,6 +270,7 @@ impl Default for AppConfigRef {
             computer_use_keep_last_n_screenshots: 3,
             computer_use_confirm_destructive: true,
             computer_use_cua_cmd: "cua-driver".into(),
+            active_model: String::new(),
             preloaded_skills: Vec::new(),
             terminal_env_passthrough: Vec::new(),
             terminal_backend: BackendKind::Local,

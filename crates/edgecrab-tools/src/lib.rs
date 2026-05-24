@@ -81,6 +81,7 @@ pub use toolsets::{
     resolve_active_toolsets, resolve_alias,
 };
 pub use tools::computer_use::permissions_status;
+pub use tools::computer_use::{ComputerUseStatusConfig, format_computer_command};
 
 #[cfg(test)]
 pub(crate) mod test_support {

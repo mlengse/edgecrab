@@ -597,7 +597,7 @@ pub const BUILTIN_SLASH_COMMANDS: &[SlashCommandSpec] = &[
         category: "Advanced",
         args_hint: "[status|permissions]",
         cli: true,
-        gateway: false,
+        gateway: true,
     },
     SlashCommandSpec {
         name: "rollback",

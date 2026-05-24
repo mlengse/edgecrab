@@ -188,3 +188,33 @@ async fn blocked_key_returns_error_json() {
         .expect("execute");
     assert!(out.contains("blocked key combo"));
 }
+
+#[test]
+fn format_computer_status_includes_enabled_flag() {
+    use crate::tools::computer_use::{ComputerUseStatusConfig, format_computer_command};
+
+    let body = format_computer_command(
+        "status",
+        &ComputerUseStatusConfig {
+            enabled: true,
+            keep_last_n_screenshots: 3,
+            confirm_destructive: true,
+            cua_driver_cmd: "cua-driver".into(),
+        },
+    );
+    assert!(body.contains("computer_use.enabled: true"));
+    assert!(body.contains("keep_last_n_screenshots: 3"));
+}
+
+#[test]
+fn vision_routing_text_only_model_uses_aux() {
+    use crate::tools::computer_use::vision_routing::should_route_capture_to_aux_vision;
+    use crate::AppConfigRef;
+
+    let cfg = AppConfigRef::default();
+    assert!(should_route_capture_to_aux_vision(
+        "openai",
+        "gpt-3.5-turbo",
+        &cfg
+    ));
+}

@@ -3,13 +3,15 @@
 use serde_json::json;
 
 use super::backend::ComputerUseBackend;
-use super::response::{action_response, capture_response, max_elements_from_args};
+use super::response::{action_response, finalize_capture_response, max_elements_from_args};
+use crate::registry::ToolContext;
 
 pub async fn dispatch_action(
     backend: &mut dyn ComputerUseBackend,
     action: &str,
     args: &serde_json::Value,
     edgecrab_home: &std::path::Path,
+    tool_ctx: Option<&ToolContext>,
 ) -> Result<String, String> {
     let capture_after = args.get("capture_after").and_then(|v| v.as_bool()) == Some(true);
 
@@ -22,7 +24,13 @@ pub async fn dispatch_action(
                 let cap = backend
                     .capture(mode, args.get("app").and_then(|v| v.as_str()))
                     .await?;
-                capture_response(&cap, max_elements_from_args(args), edgecrab_home)
+                finalize_capture_response(
+                    &cap,
+                    max_elements_from_args(args),
+                    edgecrab_home,
+                    tool_ctx,
+                )
+                .await
             }
         }
         "wait" => {
@@ -41,7 +49,7 @@ pub async fn dispatch_action(
             let res = backend
                 .focus_app(app, args.get("raise_window").and_then(|v| v.as_bool()) == Some(true))
                 .await?;
-            maybe_follow_capture(backend, res, capture_after, edgecrab_home).await
+            maybe_follow_capture(backend, res, capture_after, edgecrab_home, tool_ctx).await
         }
         "click" | "double_click" | "right_click" | "middle_click" => {
             let (button, click_count) = match action {
@@ -72,7 +80,7 @@ pub async fn dispatch_action(
                     mods.as_deref(),
                 )
                 .await?;
-            maybe_follow_capture(backend, res, capture_after, edgecrab_home).await
+            maybe_follow_capture(backend, res, capture_after, edgecrab_home, tool_ctx).await
         }
         "drag" => {
             let has_el = args.get("from_element").is_some() && args.get("to_element").is_some();
@@ -94,7 +102,7 @@ pub async fn dispatch_action(
                         modifiers(args).as_deref(),
                     )
                     .await?;
-                maybe_follow_capture(backend, res, capture_after, edgecrab_home).await
+                maybe_follow_capture(backend, res, capture_after, edgecrab_home, tool_ctx).await
             }
         }
         "scroll" => {
@@ -109,19 +117,19 @@ pub async fn dispatch_action(
                     modifiers(args).as_deref(),
                 )
                 .await?;
-            maybe_follow_capture(backend, res, capture_after, edgecrab_home).await
+            maybe_follow_capture(backend, res, capture_after, edgecrab_home, tool_ctx).await
         }
         "type" => {
             let res = backend
                 .type_text(args.get("text").and_then(|v| v.as_str()).unwrap_or(""))
                 .await?;
-            maybe_follow_capture(backend, res, capture_after, edgecrab_home).await
+            maybe_follow_capture(backend, res, capture_after, edgecrab_home, tool_ctx).await
         }
         "key" => {
             let res = backend
                 .key(args.get("keys").and_then(|v| v.as_str()).unwrap_or(""))
                 .await?;
-            maybe_follow_capture(backend, res, capture_after, edgecrab_home).await
+            maybe_follow_capture(backend, res, capture_after, edgecrab_home, tool_ctx).await
         }
         "set_value" => {
             let value = args
@@ -134,7 +142,7 @@ pub async fn dispatch_action(
                     args.get("element").and_then(|v| v.as_u64()).map(|v| v as u32),
                 )
                 .await?;
-            maybe_follow_capture(backend, res, capture_after, edgecrab_home).await
+            maybe_follow_capture(backend, res, capture_after, edgecrab_home, tool_ctx).await
         }
         other => Err(format!("unknown action {other:?}")),
     }
@@ -145,12 +153,19 @@ async fn maybe_follow_capture(
     res: super::backend::ActionResult,
     do_capture: bool,
     edgecrab_home: &std::path::Path,
+    tool_ctx: Option<&ToolContext>,
 ) -> Result<String, String> {
     if !do_capture || !res.ok {
         return Ok(action_response(&res));
     }
     let cap = backend.capture("som", None).await?;
-    let resp = capture_response(&cap, super::schema::DEFAULT_MAX_ELEMENTS, edgecrab_home)?;
+    let resp = finalize_capture_response(
+        &cap,
+        super::schema::DEFAULT_MAX_ELEMENTS,
+        edgecrab_home,
+        tool_ctx,
+    )
+    .await?;
     let first_line = resp.lines().next().unwrap_or("");
     if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(first_line)
         && value.get("_multimodal") == Some(&json!(true))
