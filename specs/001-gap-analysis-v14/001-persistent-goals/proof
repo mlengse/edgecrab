@@ -45,17 +45,24 @@
 
 ---
 
-## Test Log (2026-05-24)
+## Test Log (2026-05-24, updated)
 
 ```
-cargo test -p edgecrab-core goal
-  12 passed (goals::*, agent::*, conversation::*)
+./demo/persistent-goals/run.sh
+  FK fix tests + mock demo + Copilot gpt-5-mini E2E — ALL PASSED
 
-cargo test -p edgecrab-state goals_
-  2 passed
+Copilot reply (live): "Refactor demo/persistent-goals/sample_task.md to async/await"
+```
 
-cargo test --workspace
-  exit 0 (full suite, no regressions)
+### Post-release bugfixes (same day)
+
+| Bug | Root cause | Fix |
+|-----|------------|-----|
+| `FOREIGN KEY constraint failed` on `/goal` before first chat | `session_goals` FK to `sessions(id)` but no row until first turn | `SessionDb::ensure_session_row()` + call from `Agent::ensure_session_id()` |
+| Goals wiped after first chat turn | `INSERT OR REPLACE INTO sessions` = DELETE+INSERT → CASCADE deleted goals | `upsert_session_header()` with `ON CONFLICT DO UPDATE` |
+
+```
+cargo test --workspace → exit 0
 ```
 
 ---
@@ -103,5 +110,8 @@ reference implementation is **missing from the repo**. EdgeCrab is ahead of that
 **Rust-specific advantages:** Compile-time `GoalStore` trait, no GIL, shared `SessionDb` WAL across
 CLI + gateway processes, `#![deny(clippy::unwrap_used)]` on goal paths.
 
-**Rating:** Feature complete per acceptance criteria (except live Anthropic cache billing spot-check).
-Recommended follow-ups: session handoff carry-over (005), optional `pinned` flag if Kanban (007) needs it.
+**Rating:** Feature complete per acceptance criteria after FK + CASCADE fixes. Demo harness at `demo/persistent-goals/run.sh` proves mock + live Copilot paths.
+
+**Ship readiness:** Ready for TUI use — `/goal` before any message now works; goals survive chat persistence.
+
+**What we got wrong initially:** Two SQLite foot-guns that a spec-only implementation would miss without interactive testing: (1) FK ordering, (2) REPLACE semantics. Both are fixed with tests locked in.

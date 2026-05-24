@@ -1168,14 +1168,32 @@ impl Agent {
     }
 
     async fn ensure_session_id(&self) -> Result<String, AgentError> {
-        let mut session = self.session.write().await;
-        if session.session_id.is_none() {
-            session.session_id = Some(uuid::Uuid::new_v4().to_string());
+        let session_id = {
+            let mut session = self.session.write().await;
+            if session.session_id.is_none() {
+                session.session_id = Some(uuid::Uuid::new_v4().to_string());
+            }
+            session
+                .session_id
+                .clone()
+                .expect("session_id initialized above")
+        };
+
+        if let Some(db) = &self.state_db {
+            let config = self.config.read().await;
+            let (source, user_id) = match &config.origin_chat {
+                Some(origin) => (origin.platform.clone(), Some(origin.chat_id.clone())),
+                None => (config.platform.to_string(), None),
+            };
+            db.ensure_session_row(
+                &session_id,
+                &source,
+                user_id.as_deref(),
+                Some(config.model.as_str()),
+            )?;
         }
-        Ok(session
-            .session_id
-            .clone()
-            .expect("session_id initialized above"))
+
+        Ok(session_id)
     }
 
     /// Set or replace the persistent top-level goal for the current session.
@@ -2893,6 +2911,30 @@ def register(ctx):
             ..SessionState::default()
         };
         assert!(s.first_compression_done);
+    }
+
+    #[tokio::test]
+    async fn goal_set_before_first_chat_avoids_foreign_key_error() {
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let db_path = dir.path().join("state.db");
+        let db = Arc::new(
+            edgecrab_state::SessionDb::open(&db_path).expect("open db"),
+        );
+        let provider: Arc<dyn LLMProvider> = Arc::new(edgequake_llm::MockProvider::new());
+        let agent = AgentBuilder::new("mock")
+            .provider(provider)
+            .state_db(db)
+            .build()
+            .expect("build");
+
+        let msg = agent
+            .goal_set("Refactor demo module in ./demo")
+            .await
+            .expect("goal set before any chat turn");
+        assert!(msg.contains("Goal set"));
+
+        let shown = agent.goal_show().await.expect("show");
+        assert!(shown.contains("Refactor demo module"));
     }
 
     #[tokio::test]

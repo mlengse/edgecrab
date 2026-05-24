@@ -96,5 +96,10 @@ coverage/
 # ── Stray / one-off files ─────────────────────────────────────────────────────
 video_script.py
 *.profdata
-demo/
+# Demo workspace — track persistent-goals harness only; ignore local sandboxes
+demo/*
+!demo/README.md
+!demo/persistent-goals/
+demo/.edgecrab-home/
+demo/**/*.db
 .edgecrab-artifacts/

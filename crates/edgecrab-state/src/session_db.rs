@@ -298,36 +298,67 @@ impl SessionDb {
 
     pub fn save_session(&self, session: &SessionRecord) -> Result<(), AgentError> {
         self.execute_write(|conn| {
-            conn.execute(
-                "INSERT OR REPLACE INTO sessions
-                 (id, source, user_id, model, system_prompt, parent_session_id,
-                  started_at, ended_at, end_reason, message_count, tool_call_count,
-                  input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                  reasoning_tokens, estimated_cost_usd, title)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
-                params![
-                    session.id,
-                    session.source,
-                    session.user_id,
-                    session.model,
-                    session.system_prompt,
-                    session.parent_session_id,
-                    session.started_at,
-                    session.ended_at,
-                    session.end_reason,
-                    session.message_count,
-                    session.tool_call_count,
-                    session.input_tokens,
-                    session.output_tokens,
-                    session.cache_read_tokens,
-                    session.cache_write_tokens,
-                    session.reasoning_tokens,
-                    session.estimated_cost_usd,
-                    session.title,
-                ],
-            )?;
+            Self::upsert_session_header(conn, session, session.message_count)?;
             Ok(())
         })
+    }
+
+    /// Upsert a session header without deleting the row.
+    ///
+    /// WHY not INSERT OR REPLACE: SQLite implements REPLACE as DELETE + INSERT,
+    /// which fires ON DELETE CASCADE on `session_goals` / `session_subgoals`.
+    fn upsert_session_header(
+        conn: &Connection,
+        session: &SessionRecord,
+        message_count: i64,
+    ) -> Result<(), rusqlite::Error> {
+        conn.execute(
+            "INSERT INTO sessions
+             (id, source, user_id, model, system_prompt, parent_session_id,
+              started_at, ended_at, end_reason, message_count, tool_call_count,
+              input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
+              reasoning_tokens, estimated_cost_usd, title)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)
+             ON CONFLICT(id) DO UPDATE SET
+              source = excluded.source,
+              user_id = excluded.user_id,
+              model = excluded.model,
+              system_prompt = excluded.system_prompt,
+              parent_session_id = excluded.parent_session_id,
+              started_at = sessions.started_at,
+              ended_at = excluded.ended_at,
+              end_reason = excluded.end_reason,
+              message_count = excluded.message_count,
+              tool_call_count = excluded.tool_call_count,
+              input_tokens = excluded.input_tokens,
+              output_tokens = excluded.output_tokens,
+              cache_read_tokens = excluded.cache_read_tokens,
+              cache_write_tokens = excluded.cache_write_tokens,
+              reasoning_tokens = excluded.reasoning_tokens,
+              estimated_cost_usd = excluded.estimated_cost_usd,
+              title = excluded.title",
+            params![
+                session.id,
+                session.source,
+                session.user_id,
+                session.model,
+                session.system_prompt,
+                session.parent_session_id,
+                session.started_at,
+                session.ended_at,
+                session.end_reason,
+                message_count,
+                session.tool_call_count,
+                session.input_tokens,
+                session.output_tokens,
+                session.cache_read_tokens,
+                session.cache_write_tokens,
+                session.reasoning_tokens,
+                session.estimated_cost_usd,
+                session.title,
+            ],
+        )?;
+        Ok(())
     }
 
     /// Atomically replace the session header and full message list in one
@@ -340,34 +371,7 @@ impl SessionDb {
     ) -> Result<(), AgentError> {
         let message_count = messages.len() as i64;
         self.execute_write(|conn| {
-            conn.execute(
-                "INSERT OR REPLACE INTO sessions
-                 (id, source, user_id, model, system_prompt, parent_session_id,
-                  started_at, ended_at, end_reason, message_count, tool_call_count,
-                  input_tokens, output_tokens, cache_read_tokens, cache_write_tokens,
-                  reasoning_tokens, estimated_cost_usd, title)
-                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
-                params![
-                    session.id,
-                    session.source,
-                    session.user_id,
-                    session.model,
-                    session.system_prompt,
-                    session.parent_session_id,
-                    session.started_at,
-                    session.ended_at,
-                    session.end_reason,
-                    message_count,
-                    session.tool_call_count,
-                    session.input_tokens,
-                    session.output_tokens,
-                    session.cache_read_tokens,
-                    session.cache_write_tokens,
-                    session.reasoning_tokens,
-                    session.estimated_cost_usd,
-                    session.title,
-                ],
-            )?;
+            Self::upsert_session_header(conn, session, message_count)?;
             conn.execute(
                 "DELETE FROM messages WHERE session_id = ?1",
                 params![session.id],
@@ -1566,6 +1570,37 @@ impl SessionDb {
 
     // ── Persistent goals ───────────────────────────────────────────────
 
+    /// Ensure a minimal `sessions` row exists so FK-dependent goal rows can attach.
+    ///
+    /// Slash commands like `/goal` can run before the first chat turn persists
+    /// the session header; without this stub, `session_goals` inserts fail with
+    /// `FOREIGN KEY constraint failed`.
+    pub fn ensure_session_row(
+        &self,
+        session_id: &str,
+        source: &str,
+        user_id: Option<&str>,
+        model: Option<&str>,
+    ) -> Result<(), AgentError> {
+        if session_id.trim().is_empty() {
+            return Err(AgentError::Config(
+                "session_id is required for session persistence".into(),
+            ));
+        }
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs_f64();
+        self.execute_write(|conn| {
+            conn.execute(
+                "INSERT OR IGNORE INTO sessions (id, source, user_id, model, started_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![session_id, source, user_id, model, now],
+            )?;
+            Ok(())
+        })
+    }
+
     pub fn goals_active(&self, session_id: &str) -> Result<StoredGoalState, AgentError> {
         if session_id.trim().is_empty() {
             return Ok(StoredGoalState::default());
@@ -1926,6 +1961,55 @@ mod tests {
         let state = db.goals_active("goal-s").expect("active");
         assert!(!state.subgoals[0].done);
         assert!(state.subgoals[1].done);
+    }
+
+    #[test]
+    fn goals_set_requires_session_row_without_stub() {
+        let db = test_db();
+        let err = db
+            .goals_set("orphan-session", "No parent row")
+            .expect_err("FK should fail without sessions row");
+        assert!(
+            err.to_string().contains("FOREIGN KEY")
+                || err.to_string().contains("constraint"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn ensure_session_row_allows_goals_before_first_chat() {
+        let db = test_db();
+        db.ensure_session_row("fresh-session", "cli", None, Some("mock/test"))
+            .expect("stub session");
+        db.goals_set("fresh-session", "Demo goal")
+            .expect("goal after stub");
+        assert_eq!(
+            db.goals_active("fresh-session")
+                .expect("active")
+                .goal_text
+                .as_deref(),
+            Some("Demo goal")
+        );
+    }
+
+    #[test]
+    fn goals_survive_save_session_with_messages() {
+        let db = test_db();
+        db.ensure_session_row("persist-goals", "cli", None, Some("mock/test"))
+            .expect("stub");
+        db.goals_set("persist-goals", "Keep me across saves")
+            .expect("set goal");
+        let session = sample_session("persist-goals");
+        let messages = vec![Message::user("hello"), Message::assistant("world")];
+        db.save_session_with_messages(&session, &messages, 42.0)
+            .expect("save turn");
+        assert_eq!(
+            db.goals_active("persist-goals")
+                .expect("active")
+                .goal_text
+                .as_deref(),
+            Some("Keep me across saves")
+        );
     }
 
     #[test]
