@@ -6,6 +6,9 @@ use serde_json::json;
 
 use edgecrab_types::{ToolError, ToolSchema};
 
+use crate::artifact_spill::{
+    SpillConfig, web_search_inline_threshold, web_search_spilled_json, write_artifact_proactive,
+};
 use crate::registry::{ToolContext, ToolHandler};
 use crate::tools::web::search::backend_settings::MAX_SEARCH_RESULTS;
 use crate::tools::web::search::chain::BackendChain;
@@ -119,14 +122,41 @@ impl ToolHandler for WebSearchTool {
             None
         };
 
-        Ok(success_payload(
+        let payload = success_payload(
             &args.query,
             &used_backend,
             fallback_from.as_deref(),
             note.as_deref(),
             &results,
-        )
-        .to_string())
+        );
+
+        let spill_config = SpillConfig::from(&ctx.config);
+        let inline_threshold = web_search_inline_threshold(&spill_config);
+        let json_str = payload.to_string();
+        if json_str.len() > inline_threshold {
+            if let Some(written) = write_artifact_proactive(
+                "web_search",
+                &json_str,
+                &ctx.session_id,
+                &ctx.cwd,
+                &spill_config,
+                None,
+            ) {
+                return Ok(
+                    web_search_spilled_json(
+                        &args.query,
+                        &used_backend,
+                        fallback_from.as_deref(),
+                        note.as_deref(),
+                        &results,
+                        &written,
+                    )
+                    .to_string(),
+                );
+            }
+        }
+
+        Ok(json_str)
     }
 }
 

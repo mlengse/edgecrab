@@ -16,6 +16,7 @@
 #![allow(clippy::result_large_err)]
 
 pub mod approval_runtime;
+pub mod artifact_spill;
 mod command_interaction;
 pub mod config_ref;
 pub mod edit_contract;
@@ -54,6 +55,10 @@ pub(crate) fn safe_truncate(s: &str, max_bytes: usize) -> &str {
     &s[..boundary]
 }
 
+pub use artifact_spill::{
+    SpillConfig, SpillOutcome, SpillSequence, SpillWritten, WEB_EXTRACT_INLINE_BYTES,
+    WEB_SEARCH_INLINE_BYTES,
+};
 pub use config_ref::AppConfigRef;
 pub use execution_fs::{ExecutionFilesystemView, describe_execution_filesystem};
 pub use lsp_gate::{

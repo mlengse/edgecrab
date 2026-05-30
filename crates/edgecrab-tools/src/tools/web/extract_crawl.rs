@@ -51,6 +51,7 @@ use std::sync::OnceLock;
 use edgecrab_types::{ToolError, ToolSchema};
 use reqwest::Url;
 
+use crate::artifact_spill::apply_web_extract_content_spill;
 use crate::registry::{ToolContext, ToolHandler};
 use crate::tools::browser::{browser_is_available, render_page_text};
 use crate::tools::pdf_to_markdown::{extract_pdf_markdown_from_bytes, looks_like_pdf};
@@ -1026,7 +1027,7 @@ struct ExtractBatchEntry {
     url: String,
     success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<ExtractedDocument>,
+    result: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     /// Backend that was used (or attempted first) for this URL.
@@ -1320,12 +1321,16 @@ impl ToolHandler for WebExtractTool {
                 None
             };
 
+            let doc_value = serde_json::to_value(&document)
+                .map_err(|e| ToolError::Other(format!("serialize extract document: {e}")))?;
+            let doc_value = apply_web_extract_content_spill(doc_value, ctx, None);
+
             return Ok(json!({
                 "success": true,
                 "backend": used_name,
                 "fallback_from": fallback_from,
-                "result": document.clone(),
-                "results": [document],
+                "result": doc_value.clone(),
+                "results": [doc_value],
             })
             .to_string());
         }
@@ -1354,10 +1359,13 @@ impl ToolHandler for WebExtractTool {
                         } else {
                             None
                         };
+                        let doc_value = serde_json::to_value(&document)
+                            .map_err(|e| ToolError::Other(format!("serialize extract document: {e}")))?;
+                        let doc_value = apply_web_extract_content_spill(doc_value, ctx, None);
                         ExtractBatchEntry {
                             url: requested,
                             success: true,
-                            result: Some(document),
+                            result: Some(doc_value),
                             error: None,
                             backend: used_name,
                             fallback_from,
