@@ -89,6 +89,12 @@ impl CompletionPolicy for DefaultCompletionPolicy {
                 ExitReason::PendingTasks,
                 "Incomplete — the assistant described a next step instead of executing it.",
             )
+        } else if has_recent_critical_tool_failure(ctx.messages) {
+            RunOutcome::new(
+                CompletionDecision::Incomplete,
+                ExitReason::NoMoreToolCalls,
+                "Incomplete — a required tool failed; the task was not fully satisfied.",
+            )
         } else if ctx.final_response.trim().is_empty() {
             RunOutcome::new(
                 CompletionDecision::Failed,
@@ -148,6 +154,19 @@ fn has_recent_tool_activity(messages: &[Message]) -> bool {
         .rev()
         .take(6)
         .any(|msg| msg.role == Role::Tool)
+}
+
+/// Recent failure on tools that commonly gate user-facing answers (web search, etc.).
+fn has_recent_critical_tool_failure(messages: &[Message]) -> bool {
+    const CRITICAL: &[&str] = &["web_search", "web_extract", "web_crawl"];
+    messages.iter().rev().take(12).any(|msg| {
+        msg.role == Role::Tool
+            && msg
+                .name
+                .as_deref()
+                .is_some_and(|n| CRITICAL.contains(&n))
+            && looks_like_error(&msg.text_content())
+    })
 }
 
 fn has_deferred_work_signal(text: &str) -> bool {
@@ -347,6 +366,33 @@ fn truncate(text: &str, max_chars: usize) -> String {
 mod tests {
     use super::*;
     use edgecrab_types::Message;
+
+    #[test]
+    fn failed_web_search_is_not_reported_complete() {
+        let err = serde_json::json!({
+            "type": "tool_error",
+            "category": "execution",
+            "code": "execution_failed",
+            "message": "Web search via ddgs failed: bot-challenge"
+        })
+        .to_string();
+        let messages = vec![Message::tool_result("tc_1", "web_search", &err)];
+        let ctx = CompletionContext {
+            final_response: "I'm sorry, I cannot provide that information.",
+            messages: &messages,
+            interrupted: false,
+            budget_exhausted: false,
+            pending_approval: false,
+            pending_clarification: false,
+            active_todos: 0,
+            blocked_todos: 0,
+            child_runs_in_flight: 0,
+        };
+
+        let outcome = assess_completion(&ctx);
+        assert_eq!(outcome.state, CompletionDecision::Incomplete);
+        assert!(!outcome.is_success());
+    }
 
     #[test]
     fn budget_exhausted_is_never_reported_complete() {

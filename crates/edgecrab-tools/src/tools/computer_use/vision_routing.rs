@@ -1,7 +1,9 @@
 //! Vision-routing policy for `computer_use` captures (mirrors Hermes `vision_routing.py`).
 
 use crate::config_ref::AppConfigRef;
-use crate::vision_models::{model_supports_vision, normalize_provider_name, parse_provider_model_spec};
+use crate::vision_models::{
+    model_supports_vision, normalize_provider_name, parse_provider_model_spec,
+};
 
 /// True when the user explicitly configured an auxiliary vision backend.
 pub fn explicit_aux_vision_override(config: &AppConfigRef) -> bool {
@@ -40,12 +42,21 @@ pub fn provider_accepts_multimodal_tool_result(provider: &str, model: &str) -> O
 
     if matches!(
         p.as_str(),
-        "anthropic" | "claude" | "anthropic-direct" | "openai" | "openai-chat" | "openai-codex" | "azure"
+        "anthropic"
+            | "claude"
+            | "anthropic-direct"
+            | "openai"
+            | "openai-chat"
+            | "openai-codex"
+            | "azure"
     ) {
         return Some(true);
     }
 
-    if matches!(p.as_str(), "gemini" | "google" | "google-gemini" | "google-vertex-gemini") {
+    if matches!(
+        p.as_str(),
+        "gemini" | "google" | "google-gemini" | "google-vertex-gemini"
+    ) {
         let lowered = model.trim().to_ascii_lowercase();
         return Some(
             lowered.contains("gemini-3")
@@ -178,15 +189,12 @@ mod tests {
     #[test]
     fn provider_rejects_multimodal_tool_results_routes_to_aux() {
         let cfg = AppConfigRef::default();
+        assert!(
+            should_route_capture_to_aux_vision("custom-provider", "vision-model", &cfg)
+                || should_route_capture_to_aux_vision("openai", "gpt-3.5-turbo", &cfg)
+        );
         assert!(should_route_capture_to_aux_vision(
-            "custom-provider",
-            "vision-model",
-            &cfg
-        ) || should_route_capture_to_aux_vision("openai", "gpt-3.5-turbo", &cfg));
-        assert!(should_route_capture_to_aux_vision(
-            "copilot",
-            "gpt-4.1",
-            &cfg
+            "copilot", "gpt-4.1", &cfg
         ));
     }
 

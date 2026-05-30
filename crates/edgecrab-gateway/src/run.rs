@@ -261,7 +261,7 @@ fn handle_computer_command(msg: &IncomingMessage) -> String {
         auxiliary_base_url: config.auxiliary.base_url.clone(),
         ..Default::default()
     };
-  let sub = msg.get_command_args().trim().to_ascii_lowercase();
+    let sub = msg.get_command_args().trim().to_ascii_lowercase();
     let first = sub.split_whitespace().next().unwrap_or("");
     match first {
         "enable" | "on" | "disable" | "off" => {
@@ -270,12 +270,15 @@ fn handle_computer_command(msg: &IncomingMessage) -> String {
             edgecrab_tools::format_computer_enable_result(
                 enabled,
                 persist_result.is_ok(),
-                persist_result.err().as_ref().map(|e| e.to_string()).as_deref(),
+                persist_result
+                    .err()
+                    .as_ref()
+                    .map(|e| e.to_string())
+                    .as_deref(),
             )
         }
         "setup" => {
-            let install =
-                edgecrab_tools::install_cua_driver(&status_cfg.cua_driver_cmd, false);
+            let install = edgecrab_tools::install_cua_driver(&status_cfg.cua_driver_cmd, false);
             let persist_result = edgecrab_core::AppConfig::persist_computer_use_enabled(true);
             let open_notes = edgecrab_tools::open_computer_use_settings();
             edgecrab_tools::format_computer_setup_report(
@@ -288,8 +291,7 @@ fn handle_computer_command(msg: &IncomingMessage) -> String {
         }
         other if edgecrab_tools::parse_install_args(other).0 => {
             let upgrade = edgecrab_tools::parse_install_args(other).1;
-            let result =
-                edgecrab_tools::install_cua_driver(&status_cfg.cua_driver_cmd, upgrade);
+            let result = edgecrab_tools::install_cua_driver(&status_cfg.cua_driver_cmd, upgrade);
             edgecrab_tools::render_install_report(&result)
         }
         _ => edgecrab_tools::format_computer_command(&sub, &status_cfg, &ctx),
@@ -331,7 +333,9 @@ fn format_gateway_insights(
     ));
 
     if let Some(records) = handoffs {
-        text.push_str(&edgecrab_core::format_model_transfer_insights_section(records));
+        text.push_str(&edgecrab_core::format_model_transfer_insights_section(
+            records,
+        ));
     }
 
     if let Some(report) = historical {
@@ -1240,7 +1244,10 @@ impl Gateway {
 
     async fn handle_lsp_command(&self, msg: &IncomingMessage, origin_chat_id: &str) -> String {
         let args = msg.get_command_args().trim().to_ascii_lowercase();
-        match self.resolve_command_session_agent(msg, origin_chat_id).await {
+        match self
+            .resolve_command_session_agent(msg, origin_chat_id)
+            .await
+        {
             Ok(agent) => {
                 let current = agent.lsp_config().await;
                 match args.as_str() {
@@ -1281,11 +1288,9 @@ impl Gateway {
                             ),
                         }
                     }
-                    _ => {
-                        "Usage: /lsp [on|off|status|toggle]\n\
+                    _ => "Usage: /lsp [on|off|status|toggle]\n\
                          Controls LSP and post-write diagnostics on file mutations."
-                            .into()
-                    }
+                        .into(),
                 }
             }
             Err(error) => error,
@@ -1348,10 +1353,16 @@ impl Gateway {
             return "No agent configured.".into();
         };
 
-        edgecrab_core::format_model_transfer_result(agent.perform_model_transfer(target, None).await)
+        edgecrab_core::format_model_transfer_result(
+            agent.perform_model_transfer(target, None).await,
+        )
     }
 
-    async fn handle_transfer_model_command(&self, msg: &IncomingMessage, origin_chat_id: &str) -> String {
+    async fn handle_transfer_model_command(
+        &self,
+        msg: &IncomingMessage,
+        origin_chat_id: &str,
+    ) -> String {
         let target = msg.get_command_args().trim();
         if target.is_empty() {
             return edgecrab_core::MODEL_TRANSFER_USAGE.into();
@@ -1599,11 +1610,7 @@ impl Gateway {
             Some(db) => db.query_insights(days).ok(),
             None => None,
         };
-        format_gateway_insights(
-            &snapshot,
-            historical.as_ref(),
-            handoffs.as_deref(),
-        )
+        format_gateway_insights(&snapshot, historical.as_ref(), handoffs.as_deref())
     }
 
     /// Returns `true` if the user is authorized to use the gateway.

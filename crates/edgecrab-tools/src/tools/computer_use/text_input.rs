@@ -13,10 +13,7 @@
 /// trigger `daemon transport: daemon closed connection`. Clipboard paste is one
 /// keystroke (`cmd+v`) and sidesteps both problems.
 pub fn needs_clipboard_paste(text: &str) -> bool {
-    !text.is_ascii()
-        || text.contains('\n')
-        || text.contains('\t')
-        || text.chars().count() > 40
+    !text.is_ascii() || text.contains('\n') || text.contains('\t') || text.chars().count() > 40
 }
 
 /// Heuristic: URL / domain typed into a browser omnibox after `cmd+l`.
@@ -30,7 +27,8 @@ pub fn looks_like_url_or_domain(text: &str) -> bool {
     }
     t.contains('.')
         && !t.contains(' ')
-        && t.chars().all(|c| c.is_ascii_alphanumeric() || ".-_:/?#%&=".contains(c))
+        && t.chars()
+            .all(|c| c.is_ascii_alphanumeric() || ".-_:/?#%&=".contains(c))
 }
 
 /// True when a key combo focuses the browser address bar (Hermes workflow).
@@ -93,7 +91,9 @@ mod tests {
     #[test]
     fn pastes_long_or_multiline_ascii() {
         // Multi-line ASCII (e.g. a heredoc / script) must paste, not char-type.
-        assert!(needs_clipboard_paste("python3 << 'EOF'\nimport subprocess\nEOF"));
+        assert!(needs_clipboard_paste(
+            "python3 << 'EOF'\nimport subprocess\nEOF"
+        ));
         assert!(needs_clipboard_paste("col1\tcol2"));
         // Long single-line ASCII also pastes.
         assert!(needs_clipboard_paste(&"a".repeat(41)));

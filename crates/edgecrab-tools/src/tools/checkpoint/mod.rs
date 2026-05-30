@@ -26,12 +26,12 @@ use crate::registry::{ToolContext, ToolHandler};
 
 pub use display::{format_bytes, format_checkpoint_list};
 pub use maintenance::{
-    clear_all, clear_legacy, format_store_status, store_status, ClearLegacyResult, ClearResult,
-    LegacyArchive, StoreProject, StoreStatus,
+    ClearLegacyResult, ClearResult, LegacyArchive, StoreProject, StoreStatus, clear_all,
+    clear_legacy, format_store_status, store_status,
 };
 pub use manager::CheckpointManager;
-pub use prune::{maybe_auto_prune_checkpoints, prune_checkpoints, AutoPruneResult, PruneCounts};
-pub use rollback::{handle_rollback_command, RollbackOutcome};
+pub use prune::{AutoPruneResult, PruneCounts, maybe_auto_prune_checkpoints, prune_checkpoints};
+pub use rollback::{RollbackOutcome, handle_rollback_command};
 pub use types::{CheckpointConfig, CheckpointEntry, RestoreResult};
 
 static TURN_DIRS: OnceLock<Mutex<std::collections::HashSet<String>>> = OnceLock::new();
@@ -122,12 +122,12 @@ fn action_restore(ctx: &ToolContext, n: u32) -> Result<String, ToolError> {
         tool: "checkpoint".into(),
         message: format!("Checkpoint #{n} not found"),
     })?;
-    let result = mgr
-        .restore(&ctx.cwd, &hash, None, Some(ctx))
-        .map_err(|e| ToolError::ExecutionFailed {
-            tool: "checkpoint".into(),
-            message: e,
-        })?;
+    let result =
+        mgr.restore(&ctx.cwd, &hash, None, Some(ctx))
+            .map_err(|e| ToolError::ExecutionFailed {
+                tool: "checkpoint".into(),
+                message: e,
+            })?;
     Ok(serde_json::to_string(&json!({
         "ok": true,
         "action": "restored",
@@ -139,12 +139,12 @@ fn action_restore(ctx: &ToolContext, n: u32) -> Result<String, ToolError> {
 
 fn action_pin(ctx: &ToolContext, n: u32, pin: bool) -> Result<String, ToolError> {
     let mgr = CheckpointManager::new(CheckpointConfig::from_ctx(ctx));
-    let msg = mgr.pin_checkpoint(&ctx.cwd, n as usize, pin).map_err(|e| {
-        ToolError::ExecutionFailed {
-            tool: "checkpoint".into(),
-            message: e,
-        }
-    })?;
+    let msg =
+        mgr.pin_checkpoint(&ctx.cwd, n as usize, pin)
+            .map_err(|e| ToolError::ExecutionFailed {
+                tool: "checkpoint".into(),
+                message: e,
+            })?;
     Ok(serde_json::to_string(&json!({
         "ok": true,
         "action": if pin { "pinned" } else { "unpinned" },

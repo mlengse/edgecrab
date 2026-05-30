@@ -285,7 +285,28 @@ mod tests {
     }
 
     #[test]
-    fn jail_read_maps_absolute_tmp_into_virtual_tmp_root() {
+    fn jail_write_maps_relative_tmp_files_into_virtual_tmp_root() {
+        let dir = TempDir::new().expect("workspace");
+        let virtual_tmp = TempDir::new().expect("virtual tmp");
+
+        let resolved = jail_write_path(
+            "tmp/files/report.md",
+            &policy_with_virtual_tmp(dir.path(), virtual_tmp.path()),
+        )
+        .expect("map tmp/files write");
+
+        assert_eq!(
+            resolved,
+            virtual_tmp
+                .path()
+                .canonicalize()
+                .expect("canon virtual tmp")
+                .join("report.md")
+        );
+    }
+
+    #[test]
+    fn jail_read_maps_relative_tmp_files_into_virtual_tmp_root() {
         let dir = TempDir::new().expect("workspace");
         let virtual_tmp = TempDir::new().expect("virtual tmp");
         let mapped = virtual_tmp.path().join("summary.md");

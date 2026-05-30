@@ -39,15 +39,17 @@ pub fn format_checkpoint_list(entries: &[CheckpointEntry], directory: &Path) -> 
         } else {
             String::new()
         };
-        lines.push(format!(
-            "  {}. {}  {}  {}{}  {}",
-            e.n,
-            e.short_hash,
-            e.timestamp,
-            e.reason,
-            stat,
-            format_bytes(e.size_bytes)
-        ) + pin);
+        lines.push(
+            format!(
+                "  {}. {}  {}  {}{}  {}",
+                e.n,
+                e.short_hash,
+                e.timestamp,
+                e.reason,
+                stat,
+                format_bytes(e.size_bytes)
+            ) + pin,
+        );
     }
     lines.push(String::new());
     lines.push("  /rollback <N>             restore to checkpoint N".into());

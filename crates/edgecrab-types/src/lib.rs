@@ -32,9 +32,9 @@ pub use harness::{
 };
 pub use message::{Content, ContentPart, ImageUrl, Message, Role};
 pub use multimodal::{
-    capture_has_image_reference, is_multimodal_tool_json, multimodal_disk_image_from_content,
-    multimodal_has_image, multimodal_text_summary, parse_multimodal_value,
-    strip_inline_images_from_tool_output, MULTIMODAL_IMAGE_TOKEN_ESTIMATE,
+    MULTIMODAL_IMAGE_TOKEN_ESTIMATE, capture_has_image_reference, is_multimodal_tool_json,
+    multimodal_disk_image_from_content, multimodal_has_image, multimodal_text_summary,
+    parse_multimodal_value, strip_inline_images_from_tool_output,
 };
 pub use tool::{FunctionCall, ToolCall, ToolSchema};
 pub use trajectory::Trajectory;

@@ -149,6 +149,10 @@ fn resolve_preview_write_path(
         config.file_tools_tmp_dir().join(stripped)
     } else if raw_path == "/tmp" {
         config.file_tools_tmp_dir()
+    } else if let Some(stripped) = raw_path.strip_prefix("tmp/files/") {
+        config.file_tools_tmp_dir().join(stripped)
+    } else if raw_path == "tmp/files" {
+        config.file_tools_tmp_dir()
     } else {
         let raw = PathBuf::from(raw_path);
         if raw.is_absolute() {
@@ -164,7 +168,10 @@ fn resolve_preview_write_path(
     // already been remapped to file_tools_tmp_dir() above; on Windows they
     // are not considered absolute (no drive letter) so we must not reject them
     // here — the allowed_roots check below handles the permission boundary.
-    let is_virtual_tmp = raw_path == "/tmp" || raw_path.starts_with("/tmp/");
+    let is_virtual_tmp = raw_path == "/tmp"
+        || raw_path.starts_with("/tmp/")
+        || raw_path == "tmp/files"
+        || raw_path.starts_with("tmp/files/");
     if !is_virtual_tmp && !Path::new(raw_path).is_absolute() && !normalized.starts_with(&cwd) {
         return None;
     }

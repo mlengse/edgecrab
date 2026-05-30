@@ -47,11 +47,7 @@ pub async fn session_handle(session_id: &str, cua_cmd: &str) -> Result<BackendHa
 
 /// Run `f` synchronously with this conversation's backend (lazy MCP start per `session_id`).
 #[allow(dead_code)]
-pub async fn with_session_backend<F, R>(
-    session_id: &str,
-    cua_cmd: &str,
-    f: F,
-) -> Result<R, String>
+pub async fn with_session_backend<F, R>(session_id: &str, cua_cmd: &str, f: F) -> Result<R, String>
 where
     F: FnOnce(&mut dyn ComputerUseBackend) -> R,
 {

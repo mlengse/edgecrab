@@ -57,8 +57,7 @@ use edgecrab_types::trajectory::{
     TrajectoryMetadata, convert_scratchpad_to_think, save_trajectory,
 };
 use edgecrab_types::{
-    AgentError, Content, Cost, Message, Role, ToolError, ToolErrorResponse, Trajectory,
-    Usage,
+    AgentError, Content, Cost, Message, Role, ToolError, ToolErrorResponse, Trajectory, Usage,
 };
 use edgequake_llm::traits::{CacheControl, StreamChunk, StreamUsage};
 use edgequake_llm::{CachePromptConfig, LLMProvider, apply_cache_control};
@@ -2503,6 +2502,9 @@ fn build_api_chat_messages(
     provider: &dyn LLMProvider,
     app_cfg: &edgecrab_tools::config_ref::AppConfigRef,
 ) -> Vec<edgequake_llm::ChatMessage> {
+    let messages_for_api =
+        crate::compression::ensure_api_safe_tool_pairs(messages_for_api.to_vec());
+    let messages_for_api = messages_for_api.as_slice();
     let attach = crate::multimodal_tool_content::should_attach_computer_use_screenshot(
         provider.name(),
         provider.model(),
@@ -3119,7 +3121,9 @@ fn summarize_tool_result_preview(name: &str, tool_result: &str, is_error: bool) 
                     break;
                 }
                 let trimmed = line.trim();
-                if trimmed.is_empty() || trimmed.starts_with("tool:") || trimmed.starts_with("bytes:")
+                if trimmed.is_empty()
+                    || trimmed.starts_with("tool:")
+                    || trimmed.starts_with("bytes:")
                 {
                     continue;
                 }
@@ -3154,23 +3158,23 @@ fn summarize_tool_result_preview(name: &str, tool_result: &str, is_error: bool) 
         return Some(truncate(&line, 88));
     }
 
-    if name == "computer_use" {
-        if let Ok(value) = serde_json::from_str::<serde_json::Value>(tool_result) {
-            if let Some(msg) = value.get("message").and_then(|v| v.as_str()) {
-                return Some(truncate(msg.trim(), 88));
-            }
-            if value.get("_multimodal").and_then(|v| v.as_bool()) == Some(true) {
-                let summary = value
-                    .get("text_summary")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("capture");
-                let first = summary.lines().next().unwrap_or(summary);
-                return Some(truncate(first, 88));
-            }
-            if let Some(summary) = value.get("summary").and_then(|v| v.as_str()) {
-                let first = summary.lines().next().unwrap_or(summary);
-                return Some(truncate(first, 88));
-            }
+    if name == "computer_use"
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(tool_result)
+    {
+        if let Some(msg) = value.get("message").and_then(|v| v.as_str()) {
+            return Some(truncate(msg.trim(), 88));
+        }
+        if value.get("_multimodal").and_then(|v| v.as_bool()) == Some(true) {
+            let summary = value
+                .get("text_summary")
+                .and_then(|v| v.as_str())
+                .unwrap_or("capture");
+            let first = summary.lines().next().unwrap_or(summary);
+            return Some(truncate(first, 88));
+        }
+        if let Some(summary) = value.get("summary").and_then(|v| v.as_str()) {
+            let first = summary.lines().next().unwrap_or(summary);
+            return Some(truncate(first, 88));
         }
     }
 
@@ -4210,9 +4214,9 @@ fn append_tool_result_to_session(
         .as_ref()
         .map(|p| (p.name().to_string(), p.model().to_string()))
         .unwrap_or_else(|| {
-            if let Some((p, m)) =
-                edgecrab_tools::vision_models::parse_provider_model_spec(&dctx.app_config_ref.active_model)
-            {
+            if let Some((p, m)) = edgecrab_tools::vision_models::parse_provider_model_spec(
+                &dctx.app_config_ref.active_model,
+            ) {
                 (p, m)
             } else {
                 ("unknown".into(), dctx.app_config_ref.active_model.clone())
@@ -4225,12 +4229,14 @@ fn append_tool_result_to_session(
         &dctx.app_config_ref,
         &session.tool_result_image_downgrades,
     );
-    session.messages.push(Message::tool_result_for_session_policy(
-        tool_call_id,
-        tool_name,
-        tool_result,
-        store_images,
-    ));
+    session
+        .messages
+        .push(Message::tool_result_for_session_policy(
+            tool_call_id,
+            tool_name,
+            tool_result,
+            store_images,
+        ));
 }
 
 async fn process_response(
@@ -4419,13 +4425,7 @@ async fn process_response(
                     received_parallel_ids.insert(tc_id.clone());
                     // Record for duplicate detection (FP11)
                     dedup_tracker.record(&tc_name, &args_json, &tool_result);
-                    append_tool_result_to_session(
-                        session,
-                        dctx,
-                        &tc_id,
-                        &tc_name,
-                        &tool_result,
-                    );
+                    append_tool_result_to_session(session, dctx, &tc_id, &tc_name, &tool_result);
                     crate::compression::maybe_prune_computer_use_screenshots(
                         &mut session.messages,
                         dctx.app_config_ref.computer_use_keep_last_n_screenshots,
@@ -4534,13 +4534,7 @@ async fn process_response(
             }
             // Record for duplicate detection (FP11)
             dedup_tracker.record(&tc.function.name, &tc.function.arguments, &tool_result);
-            append_tool_result_to_session(
-                session,
-                dctx,
-                &tc.id,
-                &tc.function.name,
-                &tool_result,
-            );
+            append_tool_result_to_session(session, dctx, &tc.id, &tc.function.name, &tool_result);
             crate::compression::maybe_prune_computer_use_screenshots(
                 &mut session.messages,
                 dctx.app_config_ref.computer_use_keep_last_n_screenshots,
@@ -5241,7 +5235,7 @@ and stop — do NOT call any tools.";
     let chat_messages = build_chat_messages(
         session.cached_system_prompt.as_deref(),
         &session.messages,
-        None, // No cache control for reflection turn
+        None,  // No cache control for reflection turn
         false, // reflection is text-only; never attach tool screenshots
     );
 
@@ -6758,7 +6752,9 @@ def register(ctx):
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("test-capture.png");
         std::fs::write(&path, b"\x89PNG\r\n\x1a\n").expect("png");
-        let body = envelope.to_string().replace("/tmp/test-capture.png", path.display().to_string().as_str());
+        let body = envelope
+            .to_string()
+            .replace("/tmp/test-capture.png", path.display().to_string().as_str());
 
         let messages = vec![Message::tool_result("tc1", "computer_use", &body)];
         let mut session = SessionState::default();
@@ -6829,7 +6825,8 @@ def register(ctx):
     #[test]
     fn build_chat_messages_blocks_stable_has_cache_control() {
         let msgs: Vec<Message> = vec![];
-        let out = build_chat_messages_blocks("STABLE CONTENT", "DYNAMIC CONTENT", &msgs, None, true);
+        let out =
+            build_chat_messages_blocks("STABLE CONTENT", "DYNAMIC CONTENT", &msgs, None, true);
         assert_eq!(out.len(), 2);
         assert!(
             out[0].cache_control.is_some(),

@@ -234,6 +234,10 @@ pub struct AgentConfig {
     pub file_mutation_verifier: bool,
     /// Cross-session Anthropic prompt prefix cache (stable/dynamic split + TTL).
     pub cache: crate::config::CacheConfig,
+    /// Pluggable web search backend chain.
+    pub web_search: crate::config::WebSearchConfig,
+    /// Hermes-aligned `web:` capability overrides (search_backend / extract_backend / backend).
+    pub web: crate::config::WebToolsConfig,
 }
 
 impl Default for AgentConfig {
@@ -301,6 +305,8 @@ impl Default for AgentConfig {
             max_write_payload_kib: None,
             file_mutation_verifier: true,
             cache: crate::config::CacheConfig::default(),
+            web_search: crate::config::WebSearchConfig::default(),
+            web: crate::config::WebToolsConfig::default(),
         }
     }
 }
@@ -452,6 +458,32 @@ impl AgentConfig {
                 edgecrab_tools::edit_contract::DEFAULT_MAX_MUTATION_PAYLOAD_KIB,
                 |kib| kib as usize,
             ),
+            web_search: edgecrab_tools::config_ref::WebSearchConfigRef {
+                primary: self.web_search.primary.clone(),
+                fallbacks: self.web_search.fallbacks.clone(),
+                timeout_secs: self.web_search.timeout_secs,
+                backends: self
+                    .web_search
+                    .backends
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            edgecrab_tools::config_ref::WebSearchBackendConfigRef {
+                                api_key: v.api_key.clone(),
+                                endpoint: v.endpoint.clone(),
+                                rps: v.rps,
+                                timeout_secs: v.timeout_secs,
+                            },
+                        )
+                    })
+                    .collect(),
+            },
+            web: edgecrab_tools::config_ref::WebToolsConfigRef {
+                search_backend: self.web.search_backend.clone(),
+                extract_backend: self.web.extract_backend.clone(),
+                backend: self.web.backend.clone(),
+            },
             gateway_running,
             ..Default::default()
         }
@@ -511,7 +543,10 @@ pub struct SessionState {
 
 impl SessionState {
     /// Invalidate prompt cache and inject the handoff brief user message.
-    pub(crate) fn apply_model_transfer_outcome(&mut self, outcome: &crate::model_transfer::ModelTransferOutcome) {
+    pub(crate) fn apply_model_transfer_outcome(
+        &mut self,
+        outcome: &crate::model_transfer::ModelTransferOutcome,
+    ) {
         self.cached_system_prompt = None;
         self.cached_stable_prompt = None;
         if outcome.compressed {
@@ -998,7 +1033,10 @@ impl Agent {
         &self,
         target_model: &str,
         events: Option<tokio::sync::mpsc::UnboundedSender<StreamEvent>>,
-    ) -> Result<crate::model_transfer::ModelTransferOutcome, crate::model_transfer::ModelTransferError> {
+    ) -> Result<
+        crate::model_transfer::ModelTransferOutcome,
+        crate::model_transfer::ModelTransferError,
+    > {
         let (compression_cfg, auxiliary_model, current_model, main_provider) = {
             let cfg = self.config.read().await;
             (
@@ -1021,14 +1059,16 @@ impl Agent {
                 auxiliary_model: auxiliary_model.as_deref(),
             };
             let (outcome, new_provider) =
-                crate::model_transfer::ModelTransferOrchestrator::execute(&mut ctx, target_model).await?;
+                crate::model_transfer::ModelTransferOrchestrator::execute(&mut ctx, target_model)
+                    .await?;
 
             session.apply_model_transfer_outcome(&outcome);
 
             (outcome, new_provider)
         };
 
-        self.swap_model(outcome.to_model.clone(), new_provider).await;
+        self.swap_model(outcome.to_model.clone(), new_provider)
+            .await;
 
         if outcome.compressed
             && let Some(session_id) = self.session.read().await.session_id.as_deref()
@@ -1461,9 +1501,7 @@ impl Agent {
     /// Remove a subgoal by 1-based index.
     pub async fn subgoal_remove(&self, index_1based: usize) -> Result<String, AgentError> {
         let session_id = self.ensure_session_id().await?;
-        let removed = self
-            .goal_store
-            .remove_subgoal(&session_id, index_1based)?;
+        let removed = self.goal_store.remove_subgoal(&session_id, index_1based)?;
         Ok(format!("Removed subgoal #{index_1based}: {removed}"))
     }
 
@@ -2159,8 +2197,16 @@ impl std::fmt::Debug for StreamEvent {
                 let preview = &message[..message.len().min(60)];
                 write!(f, "SteerApplied({preview:?}…)")
             }
-            Self::ModelTransferComplete { from, to, compressed, .. } => {
-                write!(f, "ModelTransferComplete({from:?} → {to:?}, compressed={compressed})")
+            Self::ModelTransferComplete {
+                from,
+                to,
+                compressed,
+                ..
+            } => {
+                write!(
+                    f,
+                    "ModelTransferComplete({from:?} → {to:?}, compressed={compressed})"
+                )
             }
             Self::Footer(text) => {
                 let preview = &text[..text.len().min(60)];
@@ -2290,6 +2336,8 @@ impl AgentBuilder {
                 max_write_payload_kib: config.tools.file.max_write_payload_kib,
                 file_mutation_verifier: config.display.file_mutation_verifier,
                 cache: config.cache.clone(),
+                web_search: config.web_search.clone(),
+                web: config.web.clone(),
                 ..Default::default()
             },
             provider: None,
@@ -3265,16 +3313,18 @@ def register(ctx):
         assert!(session.cached_stable_prompt.is_none());
         assert!(session.first_compression_done);
         assert_eq!(session.messages.len(), 2);
-        assert!(session.messages[1].text_content().contains("Continue tests."));
+        assert!(
+            session.messages[1]
+                .text_content()
+                .contains("Continue tests.")
+        );
     }
 
     #[tokio::test]
     async fn goal_set_before_first_chat_avoids_foreign_key_error() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let db_path = dir.path().join("state.db");
-        let db = Arc::new(
-            edgecrab_state::SessionDb::open(&db_path).expect("open db"),
-        );
+        let db = Arc::new(edgecrab_state::SessionDb::open(&db_path).expect("open db"));
         let provider: Arc<dyn LLMProvider> = Arc::new(edgequake_llm::MockProvider::new());
         let agent = AgentBuilder::new("mock")
             .provider(provider)
@@ -3334,7 +3384,10 @@ def register(ctx):
             .build()
             .expect("build");
 
-        agent.goal_set("finish session handoff tests").await.expect("goal");
+        agent
+            .goal_set("finish session handoff tests")
+            .await
+            .expect("goal");
         agent.chat("implement session handoff").await.expect("chat");
         let session_id = agent.session.read().await.session_id.clone().expect("sid");
 
@@ -3365,7 +3418,9 @@ def register(ctx):
             session.messages = messages;
             session.apply_model_transfer_outcome(&outcome);
         }
-        agent.swap_model(outcome.to_model.clone(), new_provider).await;
+        agent
+            .swap_model(outcome.to_model.clone(), new_provider)
+            .await;
 
         let session = agent.session.read().await;
         assert!(session.cached_system_prompt.is_none());
@@ -3382,7 +3437,9 @@ def register(ctx):
 
         let goal = goal_store.as_ref().active(&session_id).expect("goal load");
         assert!(
-            goal.goal_text.as_deref().is_some_and(|g| g.contains("handoff")),
+            goal.goal_text
+                .as_deref()
+                .is_some_and(|g| g.contains("handoff")),
             "standing goal must survive model handoff"
         );
     }
@@ -3400,7 +3457,10 @@ def register(ctx):
             .build()
             .expect("build");
 
-        agent.chat("work on model transfer unification").await.expect("chat");
+        agent
+            .chat("work on model transfer unification")
+            .await
+            .expect("chat");
         let session_id = agent.session.read().await.session_id.clone().expect("sid");
 
         let outcome = agent
@@ -3411,7 +3471,9 @@ def register(ctx):
         assert_eq!(outcome.to_model, "anthropic/claude-haiku-4.5");
         assert_eq!(agent.model().await, "anthropic/claude-haiku-4.5");
 
-        let records = db.list_model_transfers(&session_id).expect("list transfers");
+        let records = db
+            .list_model_transfers(&session_id)
+            .expect("list transfers");
         assert_eq!(records.len(), 1);
         assert_eq!(records[0].from_model, "anthropic/claude-opus-4.6");
         assert_eq!(records[0].to_model, "anthropic/claude-haiku-4.5");

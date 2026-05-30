@@ -82,10 +82,10 @@ pub fn resolve_launch_target(
             return app.to_string();
         }
     }
-    if let Some(last) = last_app {
-        if let Some(b) = browser_bundle_id(last) {
-            return b.to_string();
-        }
+    if let Some(last) = last_app
+        && let Some(b) = browser_bundle_id(last)
+    {
+        return b.to_string();
     }
     "com.google.Chrome".to_string()
 }
@@ -95,9 +95,7 @@ pub fn should_open_url_via_launch(app: Option<&str>, last_app: Option<&str>, tex
     if !looks_like_url_or_domain(text) {
         return false;
     }
-    app.or(last_app)
-        .map(is_browser_app)
-        .unwrap_or(false)
+    app.or(last_app).map(is_browser_app).unwrap_or(false)
 }
 
 #[cfg(test)]
@@ -135,11 +133,7 @@ mod tests {
     #[test]
     fn resolve_target_prefers_bundle_id() {
         assert_eq!(
-            resolve_launch_target(
-                Some("Google Chrome"),
-                Some("com.google.Chrome"),
-                None
-            ),
+            resolve_launch_target(Some("Google Chrome"), Some("com.google.Chrome"), None),
             "com.google.Chrome"
         );
     }

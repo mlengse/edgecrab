@@ -68,6 +68,9 @@ pub struct AppConfig {
     pub reasoning_effort: Option<String>,
     pub context: ContextConfig,
     pub cache: CacheConfig,
+    pub web_search: WebSearchConfig,
+    /// Hermes-aligned per-capability backend overrides (`web:` in config.yaml).
+    pub web: WebToolsConfig,
 }
 
 /// Cross-session Anthropic prompt prefix cache (stable/dynamic system split).
@@ -114,6 +117,45 @@ pub struct ContextConfig {
     /// Context engine name. "builtin" (default) uses the built-in compressor.
     /// Set to a plugin name to use a custom context engine.
     pub engine: Option<String>,
+}
+
+/// Hermes-aligned `web:` section — per-capability backend overrides.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct WebToolsConfig {
+    pub search_backend: String,
+    pub extract_backend: String,
+    pub backend: String,
+}
+
+/// Pluggable web search backend chain (`web_search` in config.yaml).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct WebSearchConfig {
+    pub primary: String,
+    pub fallbacks: Vec<String>,
+    pub timeout_secs: u64,
+    pub backends: HashMap<String, WebSearchBackendConfig>,
+}
+
+impl Default for WebSearchConfig {
+    fn default() -> Self {
+        Self {
+            primary: "searxng".into(),
+            fallbacks: vec!["brave".into(), "ddgs".into()],
+            timeout_secs: 8,
+            backends: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct WebSearchBackendConfig {
+    pub api_key: Option<String>,
+    pub endpoint: Option<String>,
+    pub rps: Option<f64>,
+    pub timeout_secs: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
@@ -182,14 +224,25 @@ impl AppConfig {
         config.save()
     }
 
-    /// Enable or disable `computer_use` and ensure the toolset is registered.
+    /// Enable or disable `computer_use` and sync the toolset in config.yaml.
     pub fn persist_computer_use_enabled(enabled: bool) -> Result<(), AgentError> {
         let mut config = Self::load()?;
         config.computer_use.enabled = enabled;
         if enabled {
             Self::ensure_toolset_enabled(&mut config.tools.enabled_toolsets, "computer_use");
+        } else {
+            Self::ensure_toolset_disabled(&mut config.tools.enabled_toolsets, "computer_use");
         }
         config.save()
+    }
+
+    fn ensure_toolset_disabled(toolsets: &mut Option<Vec<String>>, name: &str) {
+        if let Some(list) = toolsets {
+            list.retain(|entry| !entry.eq_ignore_ascii_case(name));
+            if list.is_empty() {
+                *toolsets = None;
+            }
+        }
     }
 
     fn ensure_toolset_enabled(toolsets: &mut Option<Vec<String>>, name: &str) {
@@ -1472,6 +1525,14 @@ impl Default for SkillsConfig {
     }
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct WebsiteBlocklistConfig {
+    pub enabled: bool,
+    pub domains: Vec<String>,
+    pub shared_files: Vec<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SecurityConfig {
@@ -1480,6 +1541,7 @@ pub struct SecurityConfig {
     pub path_restrictions: Vec<PathBuf>,
     pub injection_scanning: bool,
     pub url_safety: bool,
+    pub website_blocklist: WebsiteBlocklistConfig,
     /// Set by EDGECRAB_MANAGED=1 — blocks config writes.
     #[serde(skip)]
     pub managed_mode: bool,
@@ -1493,6 +1555,7 @@ impl Default for SecurityConfig {
             path_restrictions: Vec::new(),
             injection_scanning: true,
             url_safety: true,
+            website_blocklist: WebsiteBlocklistConfig::default(),
             managed_mode: false,
         }
     }
@@ -2752,6 +2815,7 @@ tools:
         let cfg = SecurityConfig::default();
         assert!(cfg.injection_scanning);
         assert!(cfg.url_safety);
+        assert!(!cfg.website_blocklist.enabled);
         assert!(!cfg.managed_mode);
     }
 

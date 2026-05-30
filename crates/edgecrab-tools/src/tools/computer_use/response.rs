@@ -2,12 +2,12 @@
 
 use std::path::{Path, PathBuf};
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::json;
 
 use super::aux_vision::route_capture_through_aux_vision;
 use super::backend::{ActionResult, CaptureResult, UIElement};
-use super::schema::{coerce_max_elements, DEFAULT_MAX_ELEMENTS};
+use super::schema::{DEFAULT_MAX_ELEMENTS, coerce_max_elements};
 use super::vision_routing::{active_provider_model, should_route_capture_to_aux_vision};
 use crate::registry::ToolContext;
 
@@ -52,13 +52,12 @@ fn format_elements(elements: &[UIElement], max_lines: usize) -> Vec<String> {
         };
         // Surface non-AXPress action sets so the model can pick a working
         // `ax_action` instead of crashing into AXPress and getting -25206.
-        let actions_hint = if e.actions.is_empty()
-            || (e.actions.len() == 1 && e.actions[0] == "AXPress")
-        {
-            String::new()
-        } else {
-            format!(" actions={:?}", e.actions)
-        };
+        let actions_hint =
+            if e.actions.is_empty() || (e.actions.len() == 1 && e.actions[0] == "AXPress") {
+                String::new()
+            } else {
+                format!(" actions={:?}", e.actions)
+            };
         out.push(format!(
             "  #{} {} {:?} @ {:?}{}",
             e.index, e.role, label, e.bounds, actions_hint
@@ -79,21 +78,24 @@ fn build_capture_summary(cap: &CaptureResult, visible: &[UIElement], total: usiz
     } else {
         format!("{}x{}", cap.width, cap.height)
     };
-    let mut summary_lines = vec![format!(
-        "capture mode={} {}{}{}",
-        cap.mode,
-        dims,
-        if cap.app.is_empty() {
-            String::new()
-        } else {
-            format!(" app={}", cap.app)
-        },
-        if cap.window_title.is_empty() {
-            String::new()
-        } else {
-            format!(" window={:?}", cap.window_title)
-        }
-    ), format!("{total} interactable element(s):")];
+    let mut summary_lines = vec![
+        format!(
+            "capture mode={} {}{}{}",
+            cap.mode,
+            dims,
+            if cap.app.is_empty() {
+                String::new()
+            } else {
+                format!(" app={}", cap.app)
+            },
+            if cap.window_title.is_empty() {
+                String::new()
+            } else {
+                format!(" window={:?}", cap.window_title)
+            }
+        ),
+        format!("{total} interactable element(s):"),
+    ];
     summary_lines.extend(format_elements(visible, 40));
     summary_lines.join("\n")
 }
@@ -146,7 +148,12 @@ pub async fn finalize_capture_response(
         max_elements
     };
     let total = cap.elements.len();
-    let visible: Vec<_> = cap.elements.iter().take(max_elements as usize).cloned().collect();
+    let visible: Vec<_> = cap
+        .elements
+        .iter()
+        .take(max_elements as usize)
+        .cloned()
+        .collect();
     let truncated = total.saturating_sub(visible.len());
     let summary = build_capture_summary(cap, &visible, total);
 

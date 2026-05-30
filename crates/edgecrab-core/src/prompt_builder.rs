@@ -4177,6 +4177,9 @@ timestamp (offset {ts_pos}) so it can be Anthropic-cache-eligible"
         );
 
         assert_eq!(h0, h1, "session_id must not affect stable hash");
-        assert_eq!(h2, h3, "cwd must not affect stable hash when context files skipped");
+        assert_eq!(
+            h2, h3,
+            "cwd must not affect stable hash when context files skipped"
+        );
     }
 }

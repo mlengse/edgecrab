@@ -417,10 +417,7 @@ impl DiscordAdapter {
             id: String,
         }
 
-        let direct_url = format!(
-            "{}/channels/{}/threads",
-            self.api_base, parent_channel_id
-        );
+        let direct_url = format!("{}/channels/{}/threads", self.api_base, parent_channel_id);
         let direct_body = CreateThreadRequest {
             name: thread_name,
             auto_archive_duration: 1440,

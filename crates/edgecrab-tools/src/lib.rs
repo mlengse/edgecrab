@@ -22,14 +22,14 @@ pub mod edit_contract;
 pub mod execution_fs;
 pub mod execution_tmp;
 pub mod fuzzy_match;
-pub mod lsp_gate;
-pub mod mutations;
 mod local_pty;
+pub mod lsp_gate;
 #[cfg(target_os = "macos")]
 pub mod macos_permissions;
 #[cfg(not(target_os = "macos"))]
 #[path = "macos_permissions_stub.rs"]
 pub mod macos_permissions;
+pub mod mutations;
 pub mod path_utils;
 pub mod process_table;
 pub mod provider_factory;
@@ -56,8 +56,6 @@ pub(crate) fn safe_truncate(s: &str, max_bytes: usize) -> &str {
 
 pub use config_ref::AppConfigRef;
 pub use execution_fs::{ExecutionFilesystemView, describe_execution_filesystem};
-pub use process_table::ProcessTable;
-pub use provider_factory::{build_copilot_provider, create_provider_for_model};
 pub use lsp_gate::{
     LspEditContext, LspGate, LspWriteHook, ToolDiagnostic, attach_post_write_diagnostics,
 };
@@ -66,29 +64,41 @@ pub use mutations::{
     file_mutation_result_landed, render_failure_footer, render_success_footer,
     render_success_footer_width,
 };
+pub use process_table::ProcessTable;
+pub use provider_factory::{build_copilot_provider, create_provider_for_model};
 pub use registry::{
     SubAgentResult, SubAgentRunner, ToolContext, ToolHandler, ToolProgressUpdate, ToolRegistry,
     to_llm_definitions,
 };
-pub use tools::todo::TodoStore;
 pub use tools::checkpoint::{
+    AutoPruneResult, CheckpointConfig, CheckpointManager, PruneCounts, RollbackOutcome,
     checkpoint_new_turn, clear_all, clear_legacy, format_checkpoint_list, format_store_status,
     handle_rollback_command, maybe_auto_prune_checkpoints, prune_checkpoints, store_status,
-    AutoPruneResult, CheckpointConfig, CheckpointManager, PruneCounts, RollbackOutcome,
+};
+pub use tools::computer_use::permissions_status;
+pub use tools::computer_use::{
+    COMPUTER_USE_GUIDANCE_COMPACT, ComputerUseReportContext, ComputerUseStatusConfig,
+    collect_snapshot, computer_command_overlay, computer_command_usage, computer_status_one_liner,
+    format_computer_command, format_computer_enable_result, format_computer_setup_report,
+    install_cua_driver, is_computer_use_toolset_active, open_computer_use_settings,
+    parse_install_args, provider_accepts_multimodal_tool_result, render_install_report,
+    should_route_capture_to_aux_vision,
+};
+pub use tools::todo::TodoStore;
+pub use tools::web::{
+    SearchResult, WebSearchBackend, WebSearchChainUpdate, WebSearchTool, WebSectionUpdate,
+    capability_label, clear_web_search_chain_in_config, clear_web_section_overrides,
+    collect_web_diagnostics, format_extract_doctor_detail, format_search_chain_summary,
+    format_search_doctor_detail, format_web_setup_report, get_web_search_backend,
+    list_web_search_backends, load_web_search_config_from_disk, load_web_search_config_from_path,
+    persist_web_backend_in_config, persist_web_search_chain_in_config,
+    persist_web_section_in_config, register_web_search_backend, render_web_dashboard,
+    web_command_overlay, web_command_usage, web_menu_status_hint, web_provider_picker_rows,
+    web_search_is_available, web_status_one_liner,
 };
 pub use toolsets::{
     ACP_TOOLS, CORE_TOOLS, LSP_TOOLS, MCP_EXTENDED_TOOLS, MOA_TOOLS, acp_tools,
     resolve_active_toolsets, resolve_alias,
-};
-pub use tools::computer_use::permissions_status;
-pub use tools::computer_use::{
-    provider_accepts_multimodal_tool_result, should_route_capture_to_aux_vision,
-    ComputerUseReportContext, ComputerUseStatusConfig, collect_snapshot, computer_command_overlay,
-    computer_command_usage, computer_status_one_liner, format_computer_command,
-    format_computer_enable_result,
-    format_computer_setup_report, install_cua_driver, is_computer_use_toolset_active,
-    open_computer_use_settings, parse_install_args, render_install_report,
-    COMPUTER_USE_GUIDANCE_COMPACT,
 };
 
 #[cfg(test)]

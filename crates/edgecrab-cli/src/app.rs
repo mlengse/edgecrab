@@ -2714,9 +2714,7 @@ enum BackgroundOpResult {
         outcome: edgecrab_core::ModelTransferOutcome,
     },
     /// CLI → platform session handoff finished — exit CLI.
-    SessionHandoffDone {
-        message: String,
-    },
+    SessionHandoffDone { message: String },
 }
 
 /// Tab-completion overlay state.
@@ -3278,6 +3276,13 @@ struct DetailFullscreenState {
     scroll: u16,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum DocumentOverlayKind {
+    #[default]
+    Generic,
+    Web,
+}
+
 #[derive(Clone, Debug)]
 struct DocumentOverlayState {
     title: String,
@@ -3286,6 +3291,9 @@ struct DocumentOverlayState {
     icon: String,
     accent: Color,
     scroll: u16,
+    kind: DocumentOverlayKind,
+    /// Active `/web` subcommand — used for refresh (`r`) and shortcut navigation.
+    web_sub: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4886,6 +4894,8 @@ pub struct App {
     stream_selector_active: bool,
     /// Which row is highlighted in the stream picker (0=ON, 1=OFF)
     stream_selector_cursor: usize,
+    /// In-TUI web configurator (`/web`).
+    web_setup: crate::web_setup_tui::WebSetupTui,
     /// Status bar picker overlay (activated by `/statusbar` with no args)
     statusbar_selector_active: bool,
     /// Which row is highlighted in the statusbar picker (0=Visible, 1=Hidden)
@@ -5841,7 +5851,10 @@ impl App {
             personality_selector_cursor: 0,
             personality_selector_entries: Vec::new(),
             stream_selector_active: false,
-            stream_selector_cursor: 0, // default to ON
+            stream_selector_cursor: 0,
+            web_setup: crate::web_setup_tui::WebSetupTui::new(
+                edgecrab_core::edgecrab_home().join("config.yaml"),
+            ),
             statusbar_selector_active: false,
             statusbar_selector_cursor: 0, // default to Visible
             shadow_judge_selector_active: false,
@@ -7156,6 +7169,8 @@ impl App {
             icon: icon.into(),
             accent,
             scroll: 0,
+            kind: DocumentOverlayKind::Generic,
+            web_sub: None,
         });
         self.needs_redraw = true;
     }
@@ -7200,13 +7215,14 @@ impl App {
         subtitle: impl Into<String>,
         body: impl Into<String>,
     ) {
-        self.open_document_overlay(
-            title,
-            subtitle,
-            body,
-            "🖥",
-            Color::Rgb(95, 195, 255),
-        );
+        self.open_document_overlay(title, subtitle, body, "🖥", Color::Rgb(95, 195, 255));
+    }
+
+    /// Open the single-screen web configurator (`/web`).
+    fn open_web_config(&mut self) {
+        self.document_overlay = None;
+        self.web_setup.open();
+        self.needs_redraw = true;
     }
 
     fn normalize_skill_identifier(identifier: &str) -> String {
@@ -7960,11 +7976,23 @@ impl App {
             "computer" | "cu" | "desktop" | "cua" => &[
                 ("setup", "Guided wizard: install → enable → open settings"),
                 ("install", "Download and install cua-driver from GitHub"),
-                ("install upgrade", "Refresh cua-driver to the latest release"),
+                (
+                    "install upgrade",
+                    "Refresh cua-driver to the latest release",
+                ),
                 ("status", "Readiness checklist (default) — run until READY"),
-                ("permissions", "Driver + Accessibility + Screen Recording checklist"),
-                ("open", "Open Accessibility and Screen Recording in System Settings"),
-                ("enable", "Persist computer_use.enabled and activate toolset"),
+                (
+                    "permissions",
+                    "Driver + Accessibility + Screen Recording checklist",
+                ),
+                (
+                    "open",
+                    "Open Accessibility and Screen Recording in System Settings",
+                ),
+                (
+                    "enable",
+                    "Persist computer_use.enabled and activate toolset",
+                ),
                 ("on", "Alias for enable"),
                 ("disable", "Turn off computer_use in config"),
                 ("off", "Alias for disable"),
@@ -9501,6 +9529,19 @@ impl App {
 
         if matches!(self.display_state, DisplayState::ValueCapture { .. }) {
             self.handle_value_capture_key(key);
+            return;
+        }
+
+        if self.web_setup.active {
+            let action = self.web_setup.handle_key(key);
+            match action {
+                crate::web_setup_tui::WebSetupAction::Close => {
+                    self.web_setup.close();
+                    self.needs_redraw = true;
+                }
+                crate::web_setup_tui::WebSetupAction::Redraw => self.needs_redraw = true,
+                crate::web_setup_tui::WebSetupAction::None => {}
+            }
             return;
         }
 
@@ -11932,10 +11973,7 @@ impl App {
         let auto_stop_prompt = input.strip_prefix(STOP_HOOK_AUTO_PREFIX).map(str::trim);
         let goal_continuation = edgecrab_core::is_goal_continuation_text(input);
         if goal_continuation {
-            self.push_output(
-                "↻ Continuing toward standing goal…",
-                OutputRole::System,
-            );
+            self.push_output("↻ Continuing toward standing goal…", OutputRole::System);
             self.goal_flash_status = Some("↻ goal continuing".into());
             self.refresh_goal_status_chip();
         } else if auto_stop_prompt.is_none() {
@@ -12216,6 +12254,9 @@ impl App {
             }
             CommandResult::ShowConfig(args) => {
                 self.handle_config_command(args);
+            }
+            CommandResult::WebCommand(args) => {
+                self.handle_web_command(args);
             }
             CommandResult::ShowHistory => {
                 self.handle_show_history();
@@ -13369,15 +13410,9 @@ impl App {
                 AgentResponse::Done => {
                     self.flush_buffered_assistant_output();
                     let goal_last_response = self.last_agent_response_text.clone();
-                    let goal_interrupted = self
-                        .last_run_outcome
-                        .as_ref()
-                        .is_some_and(|o| {
-                            matches!(
-                                o.state,
-                                edgecrab_types::CompletionDecision::Interrupted
-                            )
-                        });
+                    let goal_interrupted = self.last_run_outcome.as_ref().is_some_and(|o| {
+                        matches!(o.state, edgecrab_types::CompletionDecision::Interrupted)
+                    });
                     self.clear_active_request_state();
                     self.last_response_time = Some(Instant::now());
                     self.turn_count += 1;
@@ -13556,7 +13591,9 @@ impl App {
                                 edgecrab_core::format_model_transfer_confirmation(&outcome);
                             match persist_model_to_config(&outcome.to_model) {
                                 Ok(()) => self.push_output(
-                                    format!("{confirmation}\n\nSaved as default model for next run."),
+                                    format!(
+                                        "{confirmation}\n\nSaved as default model for next run."
+                                    ),
                                     OutputRole::System,
                                 ),
                                 Err(e) => self.push_output(
@@ -14509,9 +14546,8 @@ impl App {
         let platform = platform_raw.trim().to_ascii_lowercase();
         let config = self.load_runtime_config();
         let parsed = edgecrab_core::handoff_platform_from_name(&platform);
-        let home = parsed.and_then(|p| {
-            edgecrab_core::resolve_gateway_home_channel(&config.gateway, p)
-        });
+        let home =
+            parsed.and_then(|p| edgecrab_core::resolve_gateway_home_channel(&config.gateway, p));
         if parsed.is_none() {
             self.push_output(
                 format!(
@@ -16774,6 +16810,17 @@ impl App {
         }
     }
 
+    fn handle_web_command(&mut self, args: String) {
+        let first = args.trim().to_ascii_lowercase();
+        let first = first.split_whitespace().next().unwrap_or("");
+        match first {
+            "help" => {
+                self.push_output(edgecrab_tools::web_command_usage(), OutputRole::System);
+            }
+            _ => self.open_web_config(),
+        }
+    }
+
     fn current_worktree_status(&self) -> crate::worktree::WorktreeRuntimeStatus {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         crate::worktree::inspect_runtime(&cwd, self.load_runtime_config().worktree)
@@ -17351,7 +17398,9 @@ impl App {
         };
         let trimmed = args.trim().to_string();
         if trimmed.is_empty() {
-            let result = self.rt_handle.block_on(async move { agent.subgoal_list().await });
+            let result = self
+                .rt_handle
+                .block_on(async move { agent.subgoal_list().await });
             match result {
                 Ok(msg) => self.push_output(msg, OutputRole::System),
                 Err(err) => self.push_output(format!("Subgoal error: {err}"), OutputRole::Error),
@@ -17362,7 +17411,10 @@ impl App {
 
         let tokens: Vec<&str> = trimmed.split_whitespace().collect();
         let verb = tokens[0].to_ascii_lowercase();
-        let rest = tokens.get(1..).map(|parts| parts.join(" ")).unwrap_or_default();
+        let rest = tokens
+            .get(1..)
+            .map(|parts| parts.join(" "))
+            .unwrap_or_default();
 
         let result = self.rt_handle.block_on(async move {
             match verb.as_str() {
@@ -17370,9 +17422,15 @@ impl App {
                     let idx = rest
                         .split_whitespace()
                         .next()
-                        .ok_or_else(|| edgecrab_types::AgentError::Config("Usage: /subgoal remove <n>".into()))?
+                        .ok_or_else(|| {
+                            edgecrab_types::AgentError::Config("Usage: /subgoal remove <n>".into())
+                        })?
                         .parse::<usize>()
-                        .map_err(|_| edgecrab_types::AgentError::Config("/subgoal remove: <n> must be an integer (1-based index).".into()))?;
+                        .map_err(|_| {
+                            edgecrab_types::AgentError::Config(
+                                "/subgoal remove: <n> must be an integer (1-based index).".into(),
+                            )
+                        })?;
                     agent.subgoal_remove(idx).await
                 }
                 "clear" => agent.subgoal_clear().await,
@@ -17415,7 +17473,9 @@ impl App {
         let Some(agent) = self.require_agent() else {
             return;
         };
-        let result = self.rt_handle.block_on(async move { agent.subgoal_done().await });
+        let result = self
+            .rt_handle
+            .block_on(async move { agent.subgoal_done().await });
         match result {
             Ok(msg) => self.push_output(msg, OutputRole::System),
             Err(err) => self.push_output(format!("Done error: {err}"), OutputRole::Error),
@@ -17951,9 +18011,7 @@ impl App {
                 );
                 self.refresh_goal_status_chip();
                 if self.goal_status_chip.is_some() {
-                    let status = self.rt_handle.block_on(async {
-                        agent.goal_status().await
-                    });
+                    let status = self.rt_handle.block_on(async { agent.goal_status().await });
                     if let Ok(line) = status {
                         self.push_output(line, OutputRole::System);
                     }
@@ -21082,10 +21140,7 @@ impl App {
             text.push_str(&format!("  Cache read:     {}\n", snap.cache_read_tokens));
         }
         if snap.cache_write_tokens > 0 {
-            text.push_str(&format!(
-                "  Cache write:    {}\n",
-                snap.cache_write_tokens
-            ));
+            text.push_str(&format!("  Cache write:    {}\n", snap.cache_write_tokens));
         }
         text.push_str(&format!("  Output tokens:  {}\n", snap.output_tokens));
         text.push_str(&format!("  Total tokens:   {}\n", snap.total_tokens()));
@@ -21106,7 +21161,9 @@ impl App {
         {
             match db.list_model_transfers(session_id) {
                 Ok(handoffs) => {
-                    text.push_str(&edgecrab_core::format_model_transfer_insights_section(&handoffs));
+                    text.push_str(&edgecrab_core::format_model_transfer_insights_section(
+                        &handoffs,
+                    ));
                 }
                 Err(e) => {
                     text.push_str(&format!("\n  (Handoff history unavailable: {e})\n"));
@@ -21727,7 +21784,11 @@ impl App {
         }
 
         let sub = args.trim().to_ascii_lowercase();
-        let sub = if sub.is_empty() { "status".to_string() } else { sub };
+        let sub = if sub.is_empty() {
+            "status".to_string()
+        } else {
+            sub
+        };
         let first = sub.split_whitespace().next().unwrap_or("status");
         let summary = edgecrab_tools::computer_status_one_liner(&status_cfg, &ctx);
 
@@ -21736,9 +21797,12 @@ impl App {
                 let enabled = matches!(first, "enable" | "on");
                 if let Some(agent) = self.agent.as_ref() {
                     let agent = Arc::clone(agent);
-                    self.block_on_agent(async move { agent.set_computer_use_enabled(enabled).await });
+                    self.block_on_agent(
+                        async move { agent.set_computer_use_enabled(enabled).await },
+                    );
                 }
-                let persist_result = edgecrab_core::AppConfig::persist_computer_use_enabled(enabled);
+                let persist_result =
+                    edgecrab_core::AppConfig::persist_computer_use_enabled(enabled);
                 let saved = persist_result.is_ok();
                 let body = edgecrab_tools::format_computer_enable_result(
                     enabled,
@@ -21766,15 +21830,20 @@ impl App {
                 );
             }
             "setup" => {
-                let install =
-                    edgecrab_tools::install_cua_driver(&status_cfg.cua_driver_cmd, false);
+                let install = edgecrab_tools::install_cua_driver(&status_cfg.cua_driver_cmd, false);
                 let persist_result = edgecrab_core::AppConfig::persist_computer_use_enabled(true);
                 if persist_result.is_ok() {
                     if let Some(agent) = self.agent.as_ref() {
                         let agent = Arc::clone(agent);
-                        self.block_on_agent(async move { agent.set_computer_use_enabled(true).await });
+                        self.block_on_agent(
+                            async move { agent.set_computer_use_enabled(true).await },
+                        );
                     }
-                    if !ctx.enabled_toolsets.iter().any(|t| t.eq_ignore_ascii_case("computer_use")) {
+                    if !ctx
+                        .enabled_toolsets
+                        .iter()
+                        .any(|t| t.eq_ignore_ascii_case("computer_use"))
+                    {
                         ctx.enabled_toolsets.push("computer_use".into());
                     }
                 }
@@ -21790,8 +21859,16 @@ impl App {
                 self.push_output(
                     format!(
                         "🖥 Computer Use setup — driver install {}, config {}\n{summary}",
-                        if install.ok() { "ok" } else { "needs attention" },
-                        if persist_result.is_ok() { "saved" } else { "not saved" },
+                        if install.ok() {
+                            "ok"
+                        } else {
+                            "needs attention"
+                        },
+                        if persist_result.is_ok() {
+                            "saved"
+                        } else {
+                            "not saved"
+                        },
                     ),
                     OutputRole::System,
                 );
@@ -21818,7 +21895,11 @@ impl App {
                     format!(
                         "🖥 cua-driver {} — {}",
                         if upgrade { "upgrade" } else { "install" },
-                        if result.ok() { "completed" } else { "see report for details" }
+                        if result.ok() {
+                            "completed"
+                        } else {
+                            "see report for details"
+                        }
                     ),
                     OutputRole::System,
                 );
@@ -22959,6 +23040,14 @@ impl App {
             self.render_personality_selector(frame, frame.area());
         }
 
+        if self.document_overlay.is_some() {
+            self.render_document_overlay(frame, frame.area());
+        }
+
+        if self.web_setup.active {
+            self.render_web_setup_tui(frame, frame.area());
+        }
+
         // Stream picker overlay (compact centered popup)
         if self.stream_selector_active {
             self.render_stream_selector(frame, frame.area());
@@ -22977,10 +23066,6 @@ impl App {
         // Steering overlay (compact floating panel — lower screen half)
         if self.steering_overlay_active {
             self.render_steering_overlay(frame, frame.area());
-        }
-
-        if self.document_overlay.is_some() {
-            self.render_document_overlay(frame, frame.area());
         }
 
         // Approval overlay (full screen, highest precedence)
@@ -29264,17 +29349,152 @@ impl App {
             detail_lines,
         );
 
-        let help = Paragraph::new(Line::from(vec![
-            Span::styled(" ↑↓ ", Style::default().fg(overlay.accent)),
-            Span::styled("scroll line  ", Style::default().fg(Color::DarkGray)),
-            self.paging_key_help_span(overlay.accent),
-            Span::styled("scroll page  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Home/End ", Style::default().fg(overlay.accent)),
-            Span::styled("jump  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(overlay.accent)),
-            Span::styled("close", Style::default().fg(Color::DarkGray)),
-        ]));
+        let help = if overlay.kind == DocumentOverlayKind::Web {
+            Paragraph::new(Line::from(vec![
+                Span::styled(" ↑↓ ", Style::default().fg(overlay.accent)),
+                Span::styled("scroll  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("s ", Style::default().fg(overlay.accent)),
+                Span::styled("setup  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("c ", Style::default().fg(overlay.accent)),
+                Span::styled("chain  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("d ", Style::default().fg(overlay.accent)),
+                Span::styled("doctor  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("p ", Style::default().fg(overlay.accent)),
+                Span::styled("providers  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("h ", Style::default().fg(overlay.accent)),
+                Span::styled("help  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("r ", Style::default().fg(overlay.accent)),
+                Span::styled("refresh  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("b ", Style::default().fg(overlay.accent)),
+                Span::styled("hub  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Esc ", Style::default().fg(overlay.accent)),
+                Span::styled("close", Style::default().fg(Color::DarkGray)),
+            ]))
+        } else {
+            Paragraph::new(Line::from(vec![
+                Span::styled(" ↑↓ ", Style::default().fg(overlay.accent)),
+                Span::styled("scroll line  ", Style::default().fg(Color::DarkGray)),
+                self.paging_key_help_span(overlay.accent),
+                Span::styled("scroll page  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Home/End ", Style::default().fg(overlay.accent)),
+                Span::styled("jump  ", Style::default().fg(Color::DarkGray)),
+                Span::styled("Esc ", Style::default().fg(overlay.accent)),
+                Span::styled("close", Style::default().fg(Color::DarkGray)),
+            ]))
+        };
         frame.render_widget(help, chunks[2]);
+    }
+
+    fn render_web_setup_tui(&self, frame: &mut Frame, area: Rect) {
+        use crate::web_setup_tui::{WebSetupScreen, provider_label, row_prefix};
+        use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
+
+        frame.render_widget(Clear, area);
+        let chunks = picker_three_layout(area);
+        let body = picker_two_cols(chunks[1], 38);
+
+        let setup = &self.web_setup;
+        let accent = crate::web_command::WEB_ACCENT;
+
+        let title = match setup.screen {
+            WebSetupScreen::Configure => " /web ",
+            WebSetupScreen::ConfirmAuto => " Reset to auto? ",
+        };
+        frame.render_widget(
+            Paragraph::new(setup.status_line()).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(Color::Rgb(180, 130, 50)))
+                    .title(title),
+            ),
+            chunks[0],
+        );
+
+        let list_items: Vec<ListItem> = if setup.screen == WebSetupScreen::ConfirmAuto {
+            vec![ListItem::new(Line::from(Span::styled(
+                "  Clear custom chain and use auto (best configured backend)?",
+                Style::default().fg(Color::Rgb(255, 210, 150)),
+            )))]
+        } else {
+            setup
+                .search_backend_ids
+                .iter()
+                .enumerate()
+                .map(|(i, id)| {
+                    let is_cursor = i == setup.list_cursor;
+                    let row = setup
+                        .provider_rows
+                        .iter()
+                        .find(|r| r["id"].as_str() == Some(id.as_str()));
+                    let bg = if is_cursor {
+                        Color::Rgb(55, 42, 18)
+                    } else {
+                        Color::Reset
+                    };
+                    let label = row.map(provider_label).unwrap_or_else(|| id.clone());
+                    let prefix = row_prefix(setup, i);
+                    ListItem::new(Line::from(vec![
+                        selector_marker(is_cursor, accent, Some(bg)),
+                        Span::styled(
+                            format!(" {prefix}{label}"),
+                            Style::default().fg(if is_cursor {
+                                Color::White
+                            } else {
+                                Color::Rgb(230, 200, 150)
+                            }),
+                        ),
+                    ]))
+                })
+                .collect()
+        };
+
+        frame.render_widget(
+            List::new(list_items)
+                .block(
+                    Block::default()
+                        .borders(Borders::LEFT | Borders::RIGHT)
+                        .title(" Search backends (▶=primary  1,2=fallback) "),
+                ),
+            body[0],
+        );
+
+        let mut detail = setup.selected_provider_detail();
+        if setup.screen == WebSetupScreen::ConfirmAuto {
+            detail = vec![
+                Line::from("Reset removes your custom primary and fallback order."),
+                Line::from("EdgeCrab picks the best backend that has credentials."),
+                Line::from(""),
+                Line::from("y or Enter — confirm   n or Esc — cancel"),
+            ];
+        }
+        if let Some(ref toast) = setup.toast {
+            detail.push(Line::from(""));
+            detail.push(Line::from(Span::styled(
+                toast.clone(),
+                Style::default().fg(Color::Rgb(140, 220, 160)),
+            )));
+        }
+
+        frame.render_widget(
+            Paragraph::new(detail)
+                .wrap(Wrap { trim: true })
+                .block(
+                    Block::default()
+                        .borders(Borders::LEFT | Borders::RIGHT)
+                        .title(" Details "),
+                ),
+            body[1],
+        );
+
+        let help = if setup.screen == WebSetupScreen::ConfirmAuto {
+            Line::from(Span::styled(
+                " y/Enter confirm · n/Esc cancel ",
+                Style::default().fg(Color::DarkGray),
+            ))
+        } else {
+            crate::web_setup_tui::WebSetupTui::help_line()
+        };
+        frame.render_widget(Paragraph::new(help), chunks[2]);
     }
 
     fn render_skin_browser(&self, frame: &mut Frame, area: Rect) {

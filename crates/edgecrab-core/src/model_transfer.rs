@@ -12,7 +12,7 @@ use edgecrab_types::Message;
 use edgequake_llm::{ChatMessage, LLMProvider};
 
 use crate::compression::{
-    CompressionParams, compress_with_llm, estimate_tokens, check_compression_status_for_estimate,
+    CompressionParams, check_compression_status_for_estimate, compress_with_llm, estimate_tokens,
 };
 use crate::config::CompressionConfig;
 use crate::model_catalog::ModelCatalog;
@@ -74,13 +74,19 @@ impl std::fmt::Display for ModelTransferError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::InvalidFormat => {
-                write!(f, "Invalid format: use provider/model (e.g. copilot/gpt-5-mini)")
+                write!(
+                    f,
+                    "Invalid format: use provider/model (e.g. copilot/gpt-5-mini)"
+                )
             }
             Self::UnknownModel(m) => write!(f, "Unknown model '{m}' — not in model catalog"),
             Self::SameModel => write!(f, "Already on the requested model"),
             Self::ProviderAuth(msg) => write!(f, "Provider auth failed: {msg}"),
             Self::CompressionFailed { reason } => {
-                write!(f, "Cannot hand off: context too large and compression failed ({reason})")
+                write!(
+                    f,
+                    "Cannot hand off: context too large and compression failed ({reason})"
+                )
             }
             Self::BriefGenerationFailed { reason } => {
                 write!(f, "Handoff brief generation failed: {reason}")
@@ -95,7 +101,9 @@ const MODEL_TRANSFER_USER_PREFIX: &str = "Continuing from previous session";
 const STRUCTURAL_TURN_LIMIT: usize = 6;
 
 /// Parse and validate a handoff target against the compiled model catalog.
-pub fn resolve_model_transfer_target(model_str: &str) -> Result<ModelTransferTarget, ModelTransferError> {
+pub fn resolve_model_transfer_target(
+    model_str: &str,
+) -> Result<ModelTransferTarget, ModelTransferError> {
     let display = model_str.trim();
     if display.is_empty() {
         return Err(ModelTransferError::InvalidFormat);
@@ -114,7 +122,9 @@ pub fn resolve_model_transfer_target(model_str: &str) -> Result<ModelTransferTar
 }
 
 /// Create the target LLM provider — auth / config errors surface before mutation.
-pub fn create_model_transfer_provider(target: &ModelTransferTarget) -> Result<Arc<dyn LLMProvider>, ModelTransferError> {
+pub fn create_model_transfer_provider(
+    target: &ModelTransferTarget,
+) -> Result<Arc<dyn LLMProvider>, ModelTransferError> {
     edgecrab_tools::create_provider_for_model(&target.provider, &target.model_name)
         .map_err(ModelTransferError::ProviderAuth)
 }
@@ -166,8 +176,7 @@ pub async fn maybe_compress_for_model_transfer(
         return Ok((messages, false, true));
     }
 
-    let (compressed, llm_succeeded) =
-        compress_with_llm(&messages, params, provider, None).await;
+    let (compressed, llm_succeeded) = compress_with_llm(&messages, params, provider, None).await;
     let after = estimate_model_transfer_tokens(&compressed, system_prompt);
 
     if matches!(
@@ -196,7 +205,11 @@ pub fn structural_model_transfer_brief(messages: &[Message]) -> ModelTransferBri
             if text.trim().is_empty() || is_prior_model_transfer_message(&text) {
                 continue;
             }
-            parts.push(format!("{}: {}", msg.role, crate::safe_truncate(&text, 400)));
+            parts.push(format!(
+                "{}: {}",
+                msg.role,
+                crate::safe_truncate(&text, 400)
+            ));
         }
         if parts.len() >= STRUCTURAL_TURN_LIMIT {
             break;
@@ -383,8 +396,7 @@ impl ModelTransferOrchestrator {
         target: &ModelTransferTarget,
         new_provider: Arc<dyn LLMProvider>,
     ) -> Result<(ModelTransferOutcome, Arc<dyn LLMProvider>), ModelTransferError> {
-        Self::execute_internal(ctx, &target.display, Some((target.clone(), new_provider)))
-            .await
+        Self::execute_internal(ctx, &target.display, Some((target.clone(), new_provider))).await
     }
 
     async fn execute_internal(
@@ -472,7 +484,8 @@ mod tests {
 
     #[test]
     fn resolve_known_catalog_model_succeeds() {
-        let target = resolve_model_transfer_target("anthropic/claude-haiku-4.5").expect("catalog hit");
+        let target =
+            resolve_model_transfer_target("anthropic/claude-haiku-4.5").expect("catalog hit");
         assert_eq!(target.provider, "anthropic");
         assert_eq!(target.model_name, "claude-haiku-4.5");
         assert!(target.context_window > 0);
@@ -508,14 +521,10 @@ mod tests {
         };
         let before = estimate_model_transfer_tokens(&messages, None);
         assert!(needs_compression_for_target(&messages, None, &params));
-        let (out, compressed, llm_ok) = maybe_compress_for_model_transfer(
-            messages.clone(),
-            None,
-            &params,
-            &provider,
-        )
-        .await
-        .expect("compress should succeed with mock/structural fallback");
+        let (out, compressed, llm_ok) =
+            maybe_compress_for_model_transfer(messages.clone(), None, &params, &provider)
+                .await
+                .expect("compress should succeed with mock/structural fallback");
         messages = out;
         let after = estimate_model_transfer_tokens(&messages, None);
         assert!(compressed);
@@ -544,8 +553,9 @@ mod tests {
     async fn brief_generation_ok_via_mock() {
         let messages = sample_messages(4);
         let provider: Arc<dyn LLMProvider> = Arc::new(MockProvider::new());
-        let brief = generate_model_transfer_brief(&messages, provider, "anthropic/claude-opus-4.6", None)
-            .await;
+        let brief =
+            generate_model_transfer_brief(&messages, provider, "anthropic/claude-opus-4.6", None)
+                .await;
         assert!(!brief.0.is_empty());
     }
 
@@ -661,13 +671,10 @@ mod tests {
             main_provider: provider.clone(),
             auxiliary_model: None,
         };
-        let (outcome, _) = ModelTransferOrchestrator::execute_with_provider(
-            &mut ctx,
-            &target,
-            provider,
-        )
-        .await
-        .expect("transfer");
+        let (outcome, _) =
+            ModelTransferOrchestrator::execute_with_provider(&mut ctx, &target, provider)
+                .await
+                .expect("transfer");
         assert!(outcome.brief.contains("implement session handoff"));
     }
 
@@ -675,7 +682,12 @@ mod tests {
     fn brief_ignores_prior_handoff_messages() {
         let messages = vec![
             Message::user("start the auth refactor"),
-            Message::user(&format_model_transfer_user_message("x/y", "a/b", "stale brief", false)),
+            Message::user(&format_model_transfer_user_message(
+                "x/y",
+                "a/b",
+                "stale brief",
+                false,
+            )),
             Message::assistant("reading agent.rs"),
         ];
         let brief = structural_model_transfer_brief(&messages);

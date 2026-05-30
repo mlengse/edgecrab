@@ -905,9 +905,7 @@ async fn execute_v4a_patch(patch_text: &str, ctx: &ToolContext) -> Result<String
             "created": files_created,
             "deleted": files_deleted,
         });
-        let lsp_target = files_created
-            .first()
-            .or_else(|| files_modified.first());
+        let lsp_target = files_created.first().or_else(|| files_modified.first());
         if let Some(rel) = lsp_target {
             let rel_path = rel.split(" → ").next().unwrap_or(rel.as_str());
             let path = ctx.cwd.join(rel_path);

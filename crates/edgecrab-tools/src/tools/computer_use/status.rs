@@ -2,10 +2,10 @@
 
 use std::process::Command;
 
-use crate::toolsets::{contains_all_sentinel, COMPUTER_USE_TOOLS};
+use crate::toolsets::{COMPUTER_USE_TOOLS, contains_all_sentinel};
 
 use super::install::{
-    install_cua_driver, render_install_report, CuaDriverInstallResult, CUA_DRIVER_INSTALL_SHELL,
+    CUA_DRIVER_INSTALL_SHELL, CuaDriverInstallResult, install_cua_driver, render_install_report,
 };
 use super::permissions::{cua_driver_binary_available, install_hint, is_macos};
 use super::vision_routing::{active_provider_model, should_route_capture_to_aux_vision};
@@ -121,7 +121,8 @@ pub fn collect_snapshot(
 ) -> ComputerUseSnapshot {
     let platform_supported = is_macos() || ctx.noop_backend;
     let driver_installed = ctx.noop_backend || cua_driver_binary_available(&cfg.cua_driver_cmd);
-    let toolset_active = is_computer_use_toolset_active(&ctx.enabled_toolsets, &ctx.disabled_toolsets);
+    let toolset_active =
+        is_computer_use_toolset_active(&ctx.enabled_toolsets, &ctx.disabled_toolsets);
     let accessibility = if is_macos() {
         crate::macos_permissions::accessibility_consent_status()
     } else {
@@ -147,7 +148,10 @@ pub fn collect_snapshot(
     }
 }
 
-fn vision_route_summary(cfg: &ComputerUseStatusConfig, ctx: &ComputerUseReportContext) -> VisionRouteSummary {
+fn vision_route_summary(
+    cfg: &ComputerUseStatusConfig,
+    ctx: &ComputerUseReportContext,
+) -> VisionRouteSummary {
     if !is_macos() && !ctx.noop_backend {
         return VisionRouteSummary::Unavailable;
     }
@@ -175,13 +179,13 @@ pub fn computer_command_usage() -> &'static str {
        /computer setup              guided wizard: install → enable → open settings\n\
        /computer install            download & install cua-driver from GitHub\n\
        /computer install upgrade    refresh to latest cua-driver release\n\
-       /computer enable             persist computer_use.enabled + toolset\n\
+       /computer enable | /computer on   persist computer_use.enabled + toolset\n\
+       /computer disable | /computer off   turn off computer_use + remove toolset\n\
        /computer open               open Accessibility + Screen Recording panes\n\
        /computer status             readiness checklist (run until READY)\n\
      \n\
      Diagnostics\n\
        /computer permissions        permission + driver checklist\n\
-       /computer disable            turn off computer_use\n\
        /computer help               show this help\n\
      \n\
      Using computer_use with the agent (once READY)\n\
@@ -289,7 +293,9 @@ fn overlay_subtitle(sub: &str, snap: &ComputerUseSnapshot) -> String {
         "open" => "Opened System Settings privacy panes".into(),
         "help" => "Slash commands · setup · agent examples".into(),
         "setup" => "Install → enable → permissions → checklist".into(),
-        s if super::install::parse_install_args(s).0 => "cua-driver from GitHub (trycua/cua)".into(),
+        s if super::install::parse_install_args(s).0 => {
+            "cua-driver from GitHub (trycua/cua)".into()
+        }
         _ if snap.ready => format!(
             "READY — {} · {}",
             COMPUTER_USE_TOOLS.join(", "),
@@ -331,18 +337,18 @@ pub fn computer_command_overlay(
             "Computer Use — Permissions".into(),
             render_permissions_report(cfg, ctx),
         ),
-        "help" => ("Computer Use — Help".into(), computer_command_usage().into()),
+        "help" => (
+            "Computer Use — Help".into(),
+            computer_command_usage().into(),
+        ),
         "open" => (
             "Computer Use — Settings".into(),
             render_open_settings_report(cfg, ctx),
         ),
-        "setup" => (
-            "Computer Use — Setup Wizard".into(),
-            {
-                let install = install_cua_driver(&cfg.cua_driver_cmd, false);
-                render_setup_report(cfg, ctx, &install, None, &[])
-            },
-        ),
+        "setup" => ("Computer Use — Setup Wizard".into(), {
+            let install = install_cua_driver(&cfg.cua_driver_cmd, false);
+            render_setup_report(cfg, ctx, &install, None, &[])
+        }),
         other if super::install::parse_install_args(other).0 => {
             let (_, upgrade) = super::install::parse_install_args(other);
             let result = install_cua_driver(&cfg.cua_driver_cmd, upgrade);
@@ -379,7 +385,7 @@ pub fn format_computer_enable_result(enabled: bool, saved: bool, error: Option<&
          Next: /computer open → grant permissions → /computer status"
             .into()
     } else {
-        "computer_use disabled in config.yaml.".into()
+        "computer_use disabled and removed from enabled_toolsets in config.yaml.".into()
     }
 }
 
@@ -454,7 +460,10 @@ fn render_setup_report(
         lines.push("Next: `/computer enable` → `/computer open` → `/computer status`".into());
     } else {
         lines.push(String::new());
-        lines.push("Next: grant permissions in System Settings, then `/computer status` until READY.".into());
+        lines.push(
+            "Next: grant permissions in System Settings, then `/computer status` until READY."
+                .into(),
+        );
     }
     lines.join("\n")
 }
@@ -559,7 +568,10 @@ fn render_status_report(cfg: &ComputerUseStatusConfig, ctx: &ComputerUseReportCo
     lines.join("\n")
 }
 
-fn render_permissions_report(cfg: &ComputerUseStatusConfig, ctx: &ComputerUseReportContext) -> String {
+fn render_permissions_report(
+    cfg: &ComputerUseStatusConfig,
+    ctx: &ComputerUseReportContext,
+) -> String {
     let snap = collect_snapshot(cfg, ctx);
     let mut lines = vec![
         "Computer Use — permission checklist".into(),
@@ -605,7 +617,10 @@ fn render_permissions_report(cfg: &ComputerUseStatusConfig, ctx: &ComputerUseRep
     lines.join("\n")
 }
 
-fn render_open_settings_report(cfg: &ComputerUseStatusConfig, ctx: &ComputerUseReportContext) -> String {
+fn render_open_settings_report(
+    cfg: &ComputerUseStatusConfig,
+    ctx: &ComputerUseReportContext,
+) -> String {
     let mut notes = open_computer_use_settings();
     let mut body = render_permissions_report(cfg, ctx);
     if !notes.is_empty() {
@@ -631,7 +646,10 @@ pub fn open_computer_use_settings() -> Vec<String> {
                 notes.push(format!("Opened {label} privacy settings."));
             }
             Ok(status) => {
-                notes.push(format!("Opening {label} settings returned exit status {}.", status));
+                notes.push(format!(
+                    "Opening {label} settings returned exit status {}.",
+                    status
+                ));
             }
             Err(err) => {
                 notes.push(format!("Could not open {label} settings: {err}"));
@@ -658,10 +676,7 @@ fn next_steps(snap: &ComputerUseSnapshot) -> Vec<String> {
             "Run `/computer help` for the full workflow and examples.".into(),
         ];
     }
-    let mut steps = vec![
-        String::new(),
-        "Next steps — run in order:".into(),
-    ];
+    let mut steps = vec![String::new(), "Next steps — run in order:".into()];
     let mut n = 1;
     if !snap.driver_installed {
         steps.push(format!("  {n}. `/computer install`  — download cua-driver"));

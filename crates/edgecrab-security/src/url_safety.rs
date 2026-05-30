@@ -10,6 +10,7 @@ use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::time::Duration;
 
 use edgecrab_types::AgentError;
+use url::Host;
 
 /// Check if a URL is safe to fetch.
 pub fn is_safe_url(raw_url: &str) -> Result<bool, AgentError> {
@@ -28,7 +29,6 @@ pub fn is_safe_url(raw_url: &str) -> Result<bool, AgentError> {
     // Use the typed Host enum so IPv6 addresses are identified reliably
     // without an intermediate string-parse step (which can fail on edge cases).
     // url::Host::Ipv6 is only present when the URL had a bracketed IPv6 literal.
-    use url::Host;
     let host = parsed
         .host()
         .ok_or_else(|| AgentError::Security(format!("No host in URL: {raw_url}")))?;
@@ -36,12 +36,18 @@ pub fn is_safe_url(raw_url: &str) -> Result<bool, AgentError> {
     match host {
         Host::Ipv4(v4) => {
             if is_private_ipv4(&v4) {
+                if allow_loopback_in_e2e(&host) {
+                    return Ok(true);
+                }
                 tracing::warn!(%v4, "Blocked private/reserved IPv4");
                 return Ok(false);
             }
         }
         Host::Ipv6(v6) => {
             if is_private_ipv6(&v6) {
+                if allow_loopback_in_e2e(&host) {
+                    return Ok(true);
+                }
                 tracing::warn!(%v6, "Blocked private/reserved IPv6");
                 return Ok(false);
             }
@@ -51,6 +57,9 @@ pub fn is_safe_url(raw_url: &str) -> Result<bool, AgentError> {
             const BLOCKED_HOSTS: &[&str] =
                 &["localhost", "metadata.google.internal", "169.254.169.254"];
             if BLOCKED_HOSTS.contains(&name) {
+                if allow_loopback_in_e2e(&host) {
+                    return Ok(true);
+                }
                 tracing::warn!(host = %name, "Blocked dangerous hostname");
                 return Ok(false);
             }
@@ -59,6 +68,9 @@ pub fn is_safe_url(raw_url: &str) -> Result<bool, AgentError> {
             if let Ok(ip) = name.parse::<IpAddr>()
                 && is_private_or_reserved(&ip)
             {
+                if allow_loopback_in_e2e(&host) {
+                    return Ok(true);
+                }
                 tracing::warn!(%ip, "Blocked private/reserved IP (domain form)");
                 return Ok(false);
             }
@@ -172,9 +184,56 @@ fn is_private_or_reserved(ip: &IpAddr) -> bool {
     }
 }
 
+fn is_loopback_ip(ip: &IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(v4) => v4.is_loopback(),
+        IpAddr::V6(v6) => v6.is_loopback(),
+    }
+}
+
+/// When `EDGECRAB_E2E_SSRF_ALLOW_LOCALHOST=1`, allow loopback only (for Docker SearXNG e2e).
+fn e2e_allow_localhost() -> bool {
+    std::env::var("EDGECRAB_E2E_SSRF_ALLOW_LOCALHOST")
+        .ok()
+        .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+}
+
+fn allow_loopback_in_e2e<S: AsRef<str>>(host: &Host<S>) -> bool {
+    if !e2e_allow_localhost() {
+        return false;
+    }
+    match host {
+        Host::Ipv4(v4) => v4.is_loopback(),
+        Host::Ipv6(v6) => v6.is_loopback(),
+        Host::Domain(name) if name.as_ref() == "localhost" => true,
+        Host::Domain(name) => name
+            .as_ref()
+            .parse::<IpAddr>()
+            .ok()
+            .is_some_and(|ip| is_loopback_ip(&ip)),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard};
+
+    static URL_SAFETY_TEST_LOCK: Mutex<()> = Mutex::new(());
+
+    fn url_safety_test_lock() -> MutexGuard<'static, ()> {
+        URL_SAFETY_TEST_LOCK.lock().expect("url safety test lock")
+    }
+
+    fn without_e2e_localhost<F: FnOnce()>(f: F) {
+        let prev = std::env::var("EDGECRAB_E2E_SSRF_ALLOW_LOCALHOST").ok();
+        unsafe { std::env::remove_var("EDGECRAB_E2E_SSRF_ALLOW_LOCALHOST") };
+        f();
+        unsafe { std::env::remove_var("EDGECRAB_E2E_SSRF_ALLOW_LOCALHOST") };
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("EDGECRAB_E2E_SSRF_ALLOW_LOCALHOST", v) };
+        }
+    }
 
     #[test]
     fn allows_public_https() {
@@ -183,7 +242,10 @@ mod tests {
 
     #[test]
     fn blocks_localhost() {
-        assert!(!is_safe_url("http://localhost:8080/admin").expect("ok"));
+        let _lock = url_safety_test_lock();
+        without_e2e_localhost(|| {
+            assert!(!is_safe_url("http://localhost:8080/admin").expect("ok"));
+        });
     }
 
     #[test]
@@ -193,7 +255,10 @@ mod tests {
 
     #[test]
     fn blocks_loopback() {
-        assert!(!is_safe_url("http://127.0.0.1:3000/api").expect("ok"));
+        let _lock = url_safety_test_lock();
+        without_e2e_localhost(|| {
+            assert!(!is_safe_url("http://127.0.0.1:3000/api").expect("ok"));
+        });
     }
 
     #[test]
@@ -223,8 +288,10 @@ mod tests {
 
     #[test]
     fn blocks_ipv6_loopback() {
-        // ::1 is the IPv6 loopback address
-        assert!(!is_safe_url("http://[::1]/api").expect("ok"));
+        let _lock = url_safety_test_lock();
+        without_e2e_localhost(|| {
+            assert!(!is_safe_url("http://[::1]/api").expect("ok"));
+        });
     }
 
     #[test]
@@ -254,9 +321,12 @@ mod tests {
 
     #[test]
     fn is_safe_url_quick_returns_false_for_private() {
-        assert!(!is_safe_url_quick("http://127.0.0.1/admin"));
-        assert!(!is_safe_url_quick("http://169.254.169.254/metadata"));
-        assert!(!is_safe_url_quick("http://[::1]/api"));
+        let _lock = url_safety_test_lock();
+        without_e2e_localhost(|| {
+            assert!(!is_safe_url_quick("http://127.0.0.1/admin"));
+            assert!(!is_safe_url_quick("http://169.254.169.254/metadata"));
+            assert!(!is_safe_url_quick("http://[::1]/api"));
+        });
     }
 
     #[test]
@@ -268,5 +338,19 @@ mod tests {
     #[test]
     fn is_safe_url_quick_returns_false_for_invalid() {
         assert!(!is_safe_url_quick("not a url"));
+    }
+
+    #[test]
+    fn e2e_env_allows_localhost_only() {
+        let _lock = url_safety_test_lock();
+        let prev = std::env::var("EDGECRAB_E2E_SSRF_ALLOW_LOCALHOST").ok();
+        unsafe { std::env::set_var("EDGECRAB_E2E_SSRF_ALLOW_LOCALHOST", "1") };
+        assert!(is_safe_url("http://127.0.0.1:8888/search").expect("ok"));
+        assert!(is_safe_url("http://localhost:8888/search").expect("ok"));
+        assert!(!is_safe_url("http://192.168.1.1/admin").expect("ok"));
+        unsafe { std::env::remove_var("EDGECRAB_E2E_SSRF_ALLOW_LOCALHOST") };
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("EDGECRAB_E2E_SSRF_ALLOW_LOCALHOST", v) };
+        }
     }
 }

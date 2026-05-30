@@ -446,7 +446,9 @@ impl SessionDb {
                     CREATE INDEX IF NOT EXISTS idx_model_transfers_session
                         ON model_transfers(session_id, ts);",
                 )
-                .map_err(|e| AgentError::Database(format!("migrate v10 create model_transfers: {e}")))?;
+                .map_err(|e| {
+                    AgentError::Database(format!("migrate v10 create model_transfers: {e}"))
+                })?;
             }
             (false, true) => {}
         }
@@ -643,7 +645,10 @@ impl SessionDb {
                 "DELETE FROM session_subgoals WHERE session_id = ?1",
                 params![id],
             )?;
-            conn.execute("DELETE FROM session_goals WHERE session_id = ?1", params![id])?;
+            conn.execute(
+                "DELETE FROM session_goals WHERE session_id = ?1",
+                params![id],
+            )?;
             conn.execute("DELETE FROM messages WHERE session_id = ?1", params![id])?;
             conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
             Ok(())
@@ -796,14 +801,20 @@ impl SessionDb {
             Ok(None) => return Ok(None),
             Err(e) => return Err(AgentError::Database(e.to_string())),
         };
-        let state: Option<String> = row.get(0).map_err(|e| AgentError::Database(e.to_string()))?;
+        let state: Option<String> = row
+            .get(0)
+            .map_err(|e| AgentError::Database(e.to_string()))?;
         let Some(state) = state else {
             return Ok(None);
         };
         Ok(Some(SessionHandoffStatus {
             state,
-            platform: row.get(1).map_err(|e| AgentError::Database(e.to_string()))?,
-            error: row.get(2).map_err(|e| AgentError::Database(e.to_string()))?,
+            platform: row
+                .get(1)
+                .map_err(|e| AgentError::Database(e.to_string()))?,
+            error: row
+                .get(2)
+                .map_err(|e| AgentError::Database(e.to_string()))?,
         }))
     }
 
@@ -1983,25 +1994,25 @@ impl SessionDb {
             .lock()
             .map_err(|_| AgentError::Database("database lock poisoned".into()))?;
         let goal_row: Option<GoalRow> = conn
-                .query_row(
-                    "SELECT goal_text, status, turns_used, max_turns, paused_reason,
+            .query_row(
+                "SELECT goal_text, status, turns_used, max_turns, paused_reason,
                         last_verdict, last_reason, consecutive_parse_failures
                  FROM session_goals WHERE session_id = ?1",
-                    params![session_id],
-                    |row| {
-                        Ok((
-                            row.get(0)?,
-                            row.get(1)?,
-                            row.get(2)?,
-                            row.get(3)?,
-                            row.get(4)?,
-                            row.get(5)?,
-                            row.get(6)?,
-                            row.get(7)?,
-                        ))
-                    },
-                )
-                .ok();
+                params![session_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .ok();
         let Some((
             goal_text,
             status,
@@ -2045,7 +2056,12 @@ impl SessionDb {
         })
     }
 
-    pub fn goals_set(&self, session_id: &str, text: &str, max_turns: u32) -> Result<(), AgentError> {
+    pub fn goals_set(
+        &self,
+        session_id: &str,
+        text: &str,
+        max_turns: u32,
+    ) -> Result<(), AgentError> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
             return Err(AgentError::Config("goal text must not be empty".into()));
@@ -2492,13 +2508,17 @@ mod tests {
                 .as_deref(),
             Some("Goal A")
         );
-        assert_eq!(db.goals_active("goal-a").expect("active a").subgoals.len(), 1);
+        assert_eq!(
+            db.goals_active("goal-a").expect("active a").subgoals.len(),
+            1
+        );
         db.goals_clear("goal-a").expect("clear");
-        assert!(db
-            .goals_active("goal-a")
-            .expect("active a")
-            .goal_text
-            .is_none());
+        assert!(
+            db.goals_active("goal-a")
+                .expect("active a")
+                .goal_text
+                .is_none()
+        );
         assert_eq!(
             db.goals_active("goal-b")
                 .expect("active b")
@@ -2532,8 +2552,7 @@ mod tests {
             .goals_set("orphan-session", "No parent row", 20)
             .expect_err("FK should fail without sessions row");
         assert!(
-            err.to_string().contains("FOREIGN KEY")
-                || err.to_string().contains("constraint"),
+            err.to_string().contains("FOREIGN KEY") || err.to_string().contains("constraint"),
             "unexpected error: {err}"
         );
     }
@@ -2723,9 +2742,10 @@ mod tests {
         let session = sample_session("handoff-cli-session");
         db.save_session(&session).expect("save session");
 
-        assert!(db
-            .request_session_handoff(&session.id, "telegram")
-            .expect("request"));
+        assert!(
+            db.request_session_handoff(&session.id, "telegram")
+                .expect("request")
+        );
         let status = db
             .get_session_handoff_status(&session.id)
             .expect("status")

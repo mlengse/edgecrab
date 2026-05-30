@@ -25,7 +25,10 @@ pub fn permissions_status(cmd: &str) -> String {
         return "computer_use: macOS only (current platform unsupported)".into();
     }
     if !cua_driver_binary_available(cmd) {
-        return format!("computer_use: cua-driver not found ({cmd})\n{}\n", install_hint());
+        return format!(
+            "computer_use: cua-driver not found ({cmd})\n{}\n",
+            install_hint()
+        );
     }
     format!(
         "computer_use: cua-driver found ({cmd})\n\

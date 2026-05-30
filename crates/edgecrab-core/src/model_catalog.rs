@@ -413,7 +413,10 @@ mod tests {
 
     #[test]
     fn catalog_provider_id_normalizes_aliases() {
-        assert_eq!(ModelCatalog::catalog_provider_id("vscode-copilot"), "copilot");
+        assert_eq!(
+            ModelCatalog::catalog_provider_id("vscode-copilot"),
+            "copilot"
+        );
         assert_eq!(ModelCatalog::catalog_provider_id("gemini"), "google");
         assert_eq!(ModelCatalog::catalog_provider_id("claude"), "anthropic");
     }

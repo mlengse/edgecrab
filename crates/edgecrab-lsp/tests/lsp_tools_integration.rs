@@ -443,10 +443,15 @@ async fn write_file_delta_filters_preexisting_diagnostics() {
 
     let first = dispatch_json(&registry, &ctx, "write_file", args.clone()).await;
     let diags = first["diagnostics"].as_array().expect("first write diags");
-    assert!(!diags.is_empty(), "first write should surface mock diagnostic");
+    assert!(
+        !diags.is_empty(),
+        "first write should surface mock diagnostic"
+    );
 
     let second = dispatch_json(&registry, &ctx, "write_file", args).await;
-    let second_diags = second["diagnostics"].as_array().expect("second write diags");
+    let second_diags = second["diagnostics"]
+        .as_array()
+        .expect("second write diags");
     assert!(
         second_diags.is_empty(),
         "delta filter should drop unchanged diagnostics on rewrite: {second}"

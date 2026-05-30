@@ -236,10 +236,7 @@ pub fn enforce_turn_budget(
             break;
         }
         let tool_name = messages[idx].name.as_deref().unwrap_or("tool");
-        let tool_call_id = messages[idx]
-            .tool_call_id
-            .as_deref()
-            .unwrap_or("budget");
+        let tool_call_id = messages[idx].tool_call_id.as_deref().unwrap_or("budget");
         let body = messages[idx].text_content();
         match maybe_spill(
             tool_name,
@@ -647,7 +644,10 @@ mod tests {
         let result = format!(
             r#"{{"mode":"som","app":"Safari","window_title":"Start Page","elements":["{big_elements}"],"summary":"capture mode=som 1567x1065 app=Safari"}}"#
         );
-        assert!(result.len() > 5_000, "fixture must exceed default threshold");
+        assert!(
+            result.len() > 5_000,
+            "fixture must exceed default threshold"
+        );
         match maybe_spill(
             "computer_use",
             "tc-text",
@@ -812,18 +812,16 @@ mod tests {
         let config = test_config(true, 100, 5);
         let big = "x".repeat(500);
         let mut messages = vec![
-            Message::tool_result("t1", "computer_use", r#"{"_multimodal":true,"text_summary":"ok"}"#),
+            Message::tool_result(
+                "t1",
+                "computer_use",
+                r#"{"_multimodal":true,"text_summary":"ok"}"#,
+            ),
             Message::tool_result("t2", "terminal", &big),
             Message::tool_result("t3", "file_read", "small"),
         ];
-        let spilled = enforce_turn_budget(
-            &mut messages,
-            200,
-            &config,
-            "ses-budget",
-            tmp.path(),
-            &seq,
-        );
+        let spilled =
+            enforce_turn_budget(&mut messages, 200, &config, "ses-budget", tmp.path(), &seq);
         assert_eq!(spilled, 1);
         let terminal = messages
             .iter()

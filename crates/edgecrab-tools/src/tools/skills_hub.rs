@@ -1168,11 +1168,7 @@ fn hub_client() -> Result<reqwest::Client, String> {
 }
 
 fn ensure_safe_url(url: &str) -> Result<(), String> {
-    match edgecrab_security::url_safety::is_safe_url(url) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(format!("blocked by SSRF policy: {url}")),
-        Err(err) => Err(format!("invalid URL '{url}': {err}")),
-    }
+    edgecrab_security::url_validation::validate_outbound_url(url).map_err(|e| e.to_string())
 }
 
 fn read_source_cache(source_id: &str) -> Option<SourceCache> {

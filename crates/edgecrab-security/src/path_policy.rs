@@ -74,12 +74,9 @@ impl PathPolicy {
         let candidate = resolve_candidate(path, &workspace_root, effective_tmp);
 
         // Traversal guard: reject relative paths that escape the workspace root.
-        // Exception: when effective_tmp is active, /tmp/... paths have already
-        // been remapped into the virtual_tmp sandbox. On Windows, /tmp/... is
-        // not absolute (no drive letter), so the guard would fire incorrectly.
-        // The `ensure_allowed` call below enforces the real permission boundary
-        // regardless of path absoluteness.
-        if !is_unix_tmp_candidate(path, effective_tmp) && !path.is_absolute() {
+        // Exception: virtual-tmp aliases (`/tmp/…`, `tmp/files/…`) are remapped into
+        // the sandbox before this check; on Windows, `/tmp/…` is not absolute.
+        if !is_virtual_tmp_candidate(path, effective_tmp) && !path.is_absolute() {
             let normalized = normalize_path(&candidate);
             if !normalized.starts_with(&workspace_root) {
                 return Err(PathPolicyError::PermissionDenied(
@@ -115,7 +112,7 @@ impl PathPolicy {
         let candidate = resolve_candidate(path, &workspace_root, effective_tmp);
         let normalized = normalize_path(&candidate);
 
-        if !is_unix_tmp_candidate(path, effective_tmp)
+        if !is_virtual_tmp_candidate(path, effective_tmp)
             && !path.is_absolute()
             && !normalized.starts_with(&workspace_root)
         {
@@ -128,7 +125,7 @@ impl PathPolicy {
             PathPolicyError::InvalidRoot("Invalid path: no parent directory".into())
         })?;
 
-        if create_dirs {
+        if create_dirs || is_virtual_tmp_candidate(path, effective_tmp) {
             std::fs::create_dir_all(parent).map_err(|e| {
                 PathPolicyError::InvalidRoot(format!(
                     "Cannot create parent directories for '{}': {e}",
@@ -342,8 +339,34 @@ fn resolve_candidate(
 
 fn map_virtual_tmp_path(path: &Path, virtual_tmp_root: Option<&Path>) -> Option<PathBuf> {
     let tmp_root = virtual_tmp_root?;
-    let suffix = path.strip_prefix(Path::new("/tmp")).ok()?;
-    Some(normalize_path(&tmp_root.join(suffix)))
+
+    // Unix-style `/tmp/…` → EdgeCrab-owned temp tree (Hermes / harness parity).
+    if let Ok(suffix) = path.strip_prefix(Path::new("/tmp")) {
+        return Some(normalize_path(&join_virtual_tmp_suffix(tmp_root, suffix)));
+    }
+
+    // Relative alias `tmp/files/…` — models often use this instead of `/tmp/…`
+    // after seeing `~/.edgecrab/tmp/files` in tool output or docs.
+    if path == Path::new("tmp/files") {
+        return Some(normalize_path(tmp_root));
+    }
+    if let Ok(suffix) = path.strip_prefix(Path::new("tmp/files")) {
+        return Some(normalize_path(&join_virtual_tmp_suffix(tmp_root, suffix)));
+    }
+
+    None
+}
+
+/// Join a virtual-tmp suffix, stripping a leading separator component if present.
+fn join_virtual_tmp_suffix(tmp_root: &Path, suffix: &Path) -> PathBuf {
+    let trimmed = suffix
+        .strip_prefix(Component::RootDir)
+        .unwrap_or(suffix);
+    if trimmed.as_os_str().is_empty() {
+        tmp_root.to_path_buf()
+    } else {
+        tmp_root.join(trimmed)
+    }
 }
 
 fn resolve_root(root: &Path, workspace_root: &Path) -> PathBuf {
@@ -368,15 +391,9 @@ fn normalize_path(path: &Path) -> PathBuf {
     result
 }
 
-/// Returns true when `path` uses the Unix `/tmp` convention AND `effective_tmp`
-/// is active (i.e. the path will be remapped into the sandbox).
-///
-/// WHY this matters on Windows: `/tmp/…` paths lack a drive letter so
-/// `Path::is_absolute()` returns `false`, causing the traversal guard to fire
-/// incorrectly. The downstream `ensure_allowed` call still enforces the real
-/// permission boundary regardless, so bypassing the early guard is safe.
-fn is_unix_tmp_candidate(path: &Path, effective_tmp: Option<&Path>) -> bool {
-    effective_tmp.is_some() && path.starts_with(Path::new("/tmp"))
+/// Returns true when `path` is a virtual-tmp alias AND remapping is active.
+fn is_virtual_tmp_candidate(path: &Path, effective_tmp: Option<&Path>) -> bool {
+    effective_tmp.is_some() && map_virtual_tmp_path(path, effective_tmp).is_some()
 }
 
 #[cfg(test)]
@@ -461,6 +478,61 @@ mod tests {
     // virtual_tmp_root maps Unix-style /tmp/... paths to a sandboxed root.
     // On Windows, /tmp/... is not an absolute path (no drive letter), so this
     // feature is Unix-only. Gate all three tests accordingly.
+    #[cfg(unix)]
+    #[test]
+    fn relative_tmp_files_alias_maps_into_virtual_tmp_root_for_writes() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let virtual_tmp = tempfile::tempdir().expect("virtual_tmp");
+        let policy = PathPolicy::new(workspace.path().to_path_buf())
+            .with_virtual_tmp_root(virtual_tmp.path().to_path_buf());
+
+        let resolved = policy
+            .resolve_write_path(Path::new("tmp/files/report.md"), false)
+            .expect("relative tmp/files write");
+
+        assert_eq!(
+            resolved,
+            virtual_tmp
+                .path()
+                .canonicalize()
+                .expect("canon virtual tmp")
+                .join("report.md")
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relative_tmp_files_alias_creates_nested_subdirs_on_write() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let virtual_tmp = tempfile::tempdir().expect("virtual_tmp");
+        let policy = PathPolicy::new(workspace.path().to_path_buf())
+            .with_virtual_tmp_root(virtual_tmp.path().to_path_buf());
+
+        let resolved = policy
+            .resolve_write_path(Path::new("tmp/files/osint/report.md"), false)
+            .expect("nested virtual tmp write");
+
+        std::fs::write(&resolved, "body").expect("write file");
+        assert!(resolved.is_file());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn relative_tmp_files_alias_maps_for_reads() {
+        let workspace = tempfile::tempdir().expect("workspace");
+        let virtual_tmp = tempfile::tempdir().expect("virtual_tmp");
+        let mapped = virtual_tmp.path().join("note.txt");
+        std::fs::write(&mapped, "hello").expect("write virtual tmp file");
+
+        let policy = PathPolicy::new(workspace.path().to_path_buf())
+            .with_virtual_tmp_root(virtual_tmp.path().to_path_buf());
+        let resolved = policy
+            .resolve_read_path(Path::new("tmp/files/note.txt"), &[])
+            .expect("relative tmp/files read");
+
+        assert_eq!(resolved, mapped.canonicalize().expect("canon mapped"));
+    }
+
     #[cfg(unix)]
     #[test]
     fn absolute_tmp_is_mapped_into_virtual_tmp_root_for_writes() {

@@ -7,8 +7,8 @@ use serde_json::json;
 use crate::registry::{ToolContext, ToolHandler};
 use crate::test_support::TestEdgecrabHome;
 use crate::tools::checkpoint::{
-    checkpoint_new_turn, excludes, git, manager::CheckpointManager, maybe_auto_prune_checkpoints,
-    CheckpointConfig, CheckpointTool,
+    CheckpointConfig, CheckpointTool, checkpoint_new_turn, excludes, git,
+    manager::CheckpointManager, maybe_auto_prune_checkpoints,
 };
 
 fn git_available() -> bool {
@@ -242,7 +242,8 @@ fn pin_survives_eviction() {
 
     let entries = mgr.list_checkpoints(work.path());
     let oldest = entries.last().expect("has entries");
-    mgr.pin_checkpoint(work.path(), oldest.n, true).expect("pin");
+    mgr.pin_checkpoint(work.path(), oldest.n, true)
+        .expect("pin");
 
     for i in 5..10 {
         std::fs::write(work.path().join("f.txt"), format!("v{i}")).expect("write");
@@ -348,7 +349,10 @@ fn rollback_handler_list_when_empty() {
     let work = tempfile::TempDir::new().expect("work");
     let cfg = CheckpointConfig::from_home(home.path().to_path_buf(), true, 20, 200, 10);
     let outcome = super::rollback::handle_rollback_command("", work.path(), cfg);
-    assert!(matches!(outcome, super::rollback::RollbackOutcome::Report { .. }));
+    assert!(matches!(
+        outcome,
+        super::rollback::RollbackOutcome::Report { .. }
+    ));
 }
 
 #[test]

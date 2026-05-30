@@ -3,10 +3,12 @@
 use serde_json::json;
 
 use crate::registry::{ToolContext, ToolHandler};
-use crate::tools::computer_use::schema::{coerce_max_elements, computer_use_schema, DEFAULT_MAX_ELEMENTS, MAX_ALLOWED_MAX_ELEMENTS};
-use crate::tools::computer_use::safety::{blocked_key_combo, blocked_type_pattern};
-use crate::tools::computer_use::{ComputerUseTool, permissions_status};
 use crate::tools::computer_use::response::parse_multimodal_tool_output;
+use crate::tools::computer_use::safety::{blocked_key_combo, blocked_type_pattern};
+use crate::tools::computer_use::schema::{
+    DEFAULT_MAX_ELEMENTS, MAX_ALLOWED_MAX_ELEMENTS, coerce_max_elements, computer_use_schema,
+};
+use crate::tools::computer_use::{ComputerUseTool, permissions_status};
 
 fn noop_ctx() -> ToolContext {
     // SAFETY: test-only env override for backend selection.
@@ -23,10 +25,7 @@ fn schema_has_expected_actions() {
     let actions = schema.parameters["properties"]["action"]["enum"]
         .as_array()
         .expect("enum");
-    let set: std::collections::HashSet<_> = actions
-        .iter()
-        .filter_map(|v| v.as_str())
-        .collect();
+    let set: std::collections::HashSet<_> = actions.iter().filter_map(|v| v.as_str()).collect();
     assert!(set.contains("capture"));
     assert!(set.contains("click"));
     assert!(set.contains("set_value"));
@@ -38,15 +37,24 @@ fn schema_max_elements_defaults_match_runtime() {
     let prop = schema.parameters["properties"]["max_elements"]
         .as_object()
         .expect("max_elements");
-    assert_eq!(prop.get("default").and_then(|v| v.as_u64()), Some(u64::from(DEFAULT_MAX_ELEMENTS)));
-    assert_eq!(prop.get("maximum").and_then(|v| v.as_u64()), Some(u64::from(MAX_ALLOWED_MAX_ELEMENTS)));
+    assert_eq!(
+        prop.get("default").and_then(|v| v.as_u64()),
+        Some(u64::from(DEFAULT_MAX_ELEMENTS))
+    );
+    assert_eq!(
+        prop.get("maximum").and_then(|v| v.as_u64()),
+        Some(u64::from(MAX_ALLOWED_MAX_ELEMENTS))
+    );
 }
 
 #[test]
 fn coerce_max_elements_clamps() {
     assert_eq!(coerce_max_elements(None), DEFAULT_MAX_ELEMENTS);
     assert_eq!(coerce_max_elements(Some(&json!(0))), DEFAULT_MAX_ELEMENTS);
-    assert_eq!(coerce_max_elements(Some(&json!(9999))), MAX_ALLOWED_MAX_ELEMENTS);
+    assert_eq!(
+        coerce_max_elements(Some(&json!(9999))),
+        MAX_ALLOWED_MAX_ELEMENTS
+    );
     assert_eq!(coerce_max_elements(Some(&json!(50))), 50);
 }
 
@@ -76,7 +84,10 @@ async fn unknown_action_via_dispatch() {
         .execute(json!({ "action": "nope" }), &noop_ctx())
         .await
         .expect_err("execute");
-    assert!(matches!(err, edgecrab_types::ToolError::ExecutionFailed { .. }));
+    assert!(matches!(
+        err,
+        edgecrab_types::ToolError::ExecutionFailed { .. }
+    ));
 }
 
 #[tokio::test]
@@ -201,7 +212,10 @@ async fn navigate_action_dispatches_to_backend() {
     use crate::tools::computer_use::noop::NoopBackend;
 
     let mut backend = NoopBackend::new();
-    backend.navigate_url("https://x.com").await.expect("navigate");
+    backend
+        .navigate_url("https://x.com")
+        .await
+        .expect("navigate");
     let (action, args) = backend.calls.last().expect("recorded");
     assert_eq!(action, "open_browser_url");
     assert_eq!(args["url"], "https://x.com");
@@ -217,10 +231,7 @@ async fn launch_app_action_dispatches_to_backend() {
 
     let mut backend = NoopBackend::new();
     backend
-        .launch_app(
-            "com.apple.Safari",
-            Some(&["about:blank".to_string()]),
-        )
+        .launch_app("com.apple.Safari", Some(&["about:blank".to_string()]))
         .await
         .expect("launch");
     let (action, args) = backend.calls.last().expect("recorded");
@@ -238,15 +249,24 @@ fn focus_app_failure_hint_recovers_safari() {
     assert!(msg.contains("RECOVERY"), "missing RECOVERY tag: {msg}");
     assert!(msg.contains("launch_app"), "missing tool name: {msg}");
     assert!(msg.contains("com.apple.Safari"), "missing bundle id: {msg}");
-    assert!(msg.contains("about:blank"), "missing browser URL hint: {msg}");
+    assert!(
+        msg.contains("about:blank"),
+        "missing browser URL hint: {msg}"
+    );
 }
 
 #[test]
 fn focus_app_failure_hint_no_bundle_for_unknown_app() {
     use crate::tools::computer_use::cua_backend::build_focus_app_failure_hint;
     let msg = build_focus_app_failure_hint("Obsidian");
-    assert!(msg.contains("list_apps"), "should still suggest list_apps: {msg}");
-    assert!(msg.contains("launch_app"), "should still suggest launch_app: {msg}");
+    assert!(
+        msg.contains("list_apps"),
+        "should still suggest list_apps: {msg}"
+    );
+    assert!(
+        msg.contains("launch_app"),
+        "should still suggest launch_app: {msg}"
+    );
 }
 
 #[test]
@@ -255,7 +275,10 @@ fn schema_app_param_mentions_launch_not_spotlight() {
     let app = schema.parameters["properties"]["app"]
         .as_object()
         .expect("app");
-    let desc = app.get("description").and_then(|v| v.as_str()).unwrap_or("");
+    let desc = app
+        .get("description")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
     assert!(
         desc.contains("launch_app"),
         "schema should steer away from Spotlight: {desc}"
@@ -271,7 +294,10 @@ async fn disabled_when_config_off() {
         .execute(json!({ "action": "list_apps" }), &ctx)
         .await
         .expect_err("disabled");
-    assert!(matches!(err, edgecrab_types::ToolError::PermissionDenied(_)));
+    assert!(matches!(
+        err,
+        edgecrab_types::ToolError::PermissionDenied(_)
+    ));
 }
 
 #[test]
@@ -336,7 +362,10 @@ fn permissions_status_non_macos_hint() {
 async fn blocked_key_returns_error_json() {
     let tool = ComputerUseTool;
     let out = tool
-        .execute(json!({ "action": "key", "keys": "cmd+shift+q" }), &noop_ctx())
+        .execute(
+            json!({ "action": "key", "keys": "cmd+shift+q" }),
+            &noop_ctx(),
+        )
         .await
         .expect("execute");
     assert!(out.contains("blocked key combo"));
@@ -344,7 +373,9 @@ async fn blocked_key_returns_error_json() {
 
 #[test]
 fn format_computer_status_includes_readiness_sections() {
-    use crate::tools::computer_use::{ComputerUseReportContext, ComputerUseStatusConfig, format_computer_command};
+    use crate::tools::computer_use::{
+        ComputerUseReportContext, ComputerUseStatusConfig, format_computer_command,
+    };
 
     let body = format_computer_command(
         "status",
@@ -455,14 +486,17 @@ fn blocked_type_pattern_detects_pipe_to_shell() {
 #[test]
 fn max_elements_coerce_clamps() {
     assert_eq!(coerce_max_elements(Some(&json!(0))), DEFAULT_MAX_ELEMENTS);
-    assert_eq!(coerce_max_elements(Some(&json!(9999))), MAX_ALLOWED_MAX_ELEMENTS);
+    assert_eq!(
+        coerce_max_elements(Some(&json!(9999))),
+        MAX_ALLOWED_MAX_ELEMENTS
+    );
     assert_eq!(coerce_max_elements(Some(&json!(50))), 50);
 }
 
 #[test]
 fn vision_routing_text_only_model_uses_aux() {
-    use crate::tools::computer_use::vision_routing::should_route_capture_to_aux_vision;
     use crate::AppConfigRef;
+    use crate::tools::computer_use::vision_routing::should_route_capture_to_aux_vision;
 
     let cfg = AppConfigRef::default();
     assert!(should_route_capture_to_aux_vision(

@@ -6,8 +6,8 @@ use serde::Serialize;
 
 use super::display::format_bytes;
 use super::git::{
-    checkpoint_base, dir_size_bytes, ref_name, run_git, store_path, GIT_TIMEOUT_SECS,
-    LEGACY_PREFIX, PROJECTS_DIRNAME,
+    GIT_TIMEOUT_SECS, LEGACY_PREFIX, PROJECTS_DIRNAME, checkpoint_base, dir_size_bytes, ref_name,
+    run_git, store_path,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -56,12 +56,20 @@ pub fn store_status(edgecrab_home: &Path) -> StoreStatus {
         out.store_size_bytes = dir_size_bytes(&store);
         let projects_dir = store.join(PROJECTS_DIRNAME);
         if projects_dir.exists() {
-            for entry in std::fs::read_dir(&projects_dir).into_iter().flatten().flatten() {
+            for entry in std::fs::read_dir(&projects_dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
                 let path = entry.path();
                 if path.extension().and_then(|e| e.to_str()) != Some("json") {
                     continue;
                 }
-                let hash = path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                let hash = path
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("")
+                    .to_string();
                 let meta = std::fs::read_to_string(&path)
                     .ok()
                     .and_then(|t| serde_json::from_str::<serde_json::Value>(&t).ok());
@@ -145,10 +153,7 @@ pub fn format_store_status(status: &StoreStatus, limit: usize) -> String {
                 wd = format!("…{}", &wd[wd.len().saturating_sub(59)..]);
             }
             let state = if p.exists { "live" } else { "orphan" };
-            let last = p
-                .last_touch
-                .map(format_age)
-                .unwrap_or_else(|| "—".into());
+            let last = p.last_touch.map(format_age).unwrap_or_else(|| "—".into());
             lines.push(format!(
                 "  {wd:<60}  {:>7}  {:>12}  {state}",
                 p.commits, last

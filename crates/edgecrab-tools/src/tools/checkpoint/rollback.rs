@@ -21,11 +21,7 @@ pub enum RollbackOutcome {
 }
 
 /// Parse and execute `/rollback` args against `cwd`.
-pub fn handle_rollback_command(
-    args: &str,
-    cwd: &Path,
-    cfg: CheckpointConfig,
-) -> RollbackOutcome {
+pub fn handle_rollback_command(args: &str, cwd: &Path, cfg: CheckpointConfig) -> RollbackOutcome {
     if !cfg.enabled {
         return RollbackOutcome::Disabled;
     }

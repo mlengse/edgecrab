@@ -47,8 +47,14 @@ pub fn run(command: Option<CheckpointsCommand>) -> Result<()> {
                 println!("Nothing to clear — checkpoint base does not exist.");
                 return Ok(());
             }
-            println!("This will delete the ENTIRE checkpoint base at {}", status.base.display());
-            println!("  size:        {}", edgecrab_tools::tools::checkpoint::format_bytes(status.total_size_bytes));
+            println!(
+                "This will delete the ENTIRE checkpoint base at {}",
+                status.base.display()
+            );
+            println!(
+                "  size:        {}",
+                edgecrab_tools::tools::checkpoint::format_bytes(status.total_size_bytes)
+            );
             println!("  projects:    {}", status.project_count);
             println!("  legacy dirs: {}", status.legacy_archives.len());
             println!();
@@ -108,5 +114,8 @@ fn confirm(prompt: &str) -> Result<bool> {
     io::stdout().flush().context("flush stdout")?;
     let mut line = String::new();
     io::stdin().read_line(&mut line).context("read stdin")?;
-    Ok(matches!(line.trim().to_ascii_lowercase().as_str(), "y" | "yes"))
+    Ok(matches!(
+        line.trim().to_ascii_lowercase().as_str(),
+        "y" | "yes"
+    ))
 }

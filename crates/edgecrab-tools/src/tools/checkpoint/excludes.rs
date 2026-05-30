@@ -78,7 +78,13 @@ mod tests {
     #[test]
     fn default_excludes_cover_build_artifacts() {
         let content = default_exclude_file_content();
-        for needle in ["node_modules/", "target/", ".git/", ".venv/", "__pycache__/"] {
+        for needle in [
+            "node_modules/",
+            "target/",
+            ".git/",
+            ".venv/",
+            "__pycache__/",
+        ] {
             assert!(content.contains(needle), "missing {needle}");
         }
     }

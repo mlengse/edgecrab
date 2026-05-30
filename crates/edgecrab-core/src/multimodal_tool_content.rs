@@ -7,9 +7,7 @@ use std::collections::HashSet;
 
 use edgecrab_tools::config_ref::AppConfigRef;
 use edgecrab_tools::vision_models::model_supports_vision;
-use edgecrab_tools::{
-    provider_accepts_multimodal_tool_result, should_route_capture_to_aux_vision,
-};
+use edgecrab_tools::{provider_accepts_multimodal_tool_result, should_route_capture_to_aux_vision};
 use edgecrab_types::{Content, ContentPart, Message, Role};
 
 /// Provider/model pair that rejected list-shaped tool message content this session.
@@ -121,7 +119,7 @@ pub fn attach_disk_capture_to_tool_message(
     chat_msg: &mut edgequake_llm::ChatMessage,
     raw_json: &str,
 ) -> bool {
-    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
 
     let Some((path, mime)) = edgecrab_types::multimodal_disk_image_from_content(raw_json) else {
         return false;
@@ -171,24 +169,18 @@ pub fn downgrade_tool_images_in_chat_messages(
         if msg.role != edgequake_llm::ChatRole::Tool {
             continue;
         }
-        if msg
-            .images
-            .as_ref()
-            .is_some_and(|imgs| !imgs.is_empty())
-        {
+        if msg.images.as_ref().is_some_and(|imgs| !imgs.is_empty()) {
             msg.images = None;
             if msg.content.trim().is_empty() {
-                msg.content =
-                    "[screenshot omitted — model does not accept tool images]".into();
+                msg.content = "[screenshot omitted — model does not accept tool images]".into();
             } else if !msg.content.contains("image content removed") {
-                msg.content.push_str("\n[image content removed — provider rejected tool images]");
+                msg.content
+                    .push_str("\n[image content removed — provider rejected tool images]");
             }
             changed = true;
         }
     }
-    if changed
-        && let Some((provider, model, downgrades)) = record_downgrade
-    {
+    if changed && let Some((provider, model, downgrades)) = record_downgrade {
         let model = model.trim();
         if !model.is_empty() {
             downgrades.insert(provider_model_key(provider, model));
@@ -294,7 +286,11 @@ mod tests {
 
     #[test]
     fn last_disk_capture_index_picks_latest() {
-        let a = Message::tool_result("t1", "computer_use", r#"{"_multimodal":true,"text_summary":"a"}"#);
+        let a = Message::tool_result(
+            "t1",
+            "computer_use",
+            r#"{"_multimodal":true,"text_summary":"a"}"#,
+        );
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("cap.png");
         std::fs::write(&path, b"\x89PNG\r\n\x1a\n").unwrap();

@@ -54,7 +54,9 @@ pub fn ref_name(dir_hash: &str) -> String {
 }
 
 pub fn project_meta_path(store: &Path, dir_hash: &str) -> PathBuf {
-    store.join(PROJECTS_DIRNAME).join(format!("{dir_hash}.json"))
+    store
+        .join(PROJECTS_DIRNAME)
+        .join(format!("{dir_hash}.json"))
 }
 
 pub fn validate_commit_hash(commit_hash: &str) -> Option<String> {
@@ -366,7 +368,12 @@ pub fn load_pinned_shas(store: &Path, working_dir: &Path) -> HashSet<String> {
         .unwrap_or_default()
 }
 
-pub fn set_pin(store: &Path, working_dir: &Path, commit_hash: &str, pinned: bool) -> Result<(), String> {
+pub fn set_pin(
+    store: &Path,
+    working_dir: &Path,
+    commit_hash: &str,
+    pinned: bool,
+) -> Result<(), String> {
     let dir_hash = project_hash(working_dir);
     let meta_path = project_meta_path(store, &dir_hash);
     let mut meta = std::fs::read_to_string(&meta_path)
@@ -376,7 +383,11 @@ pub fn set_pin(store: &Path, working_dir: &Path, commit_hash: &str, pinned: bool
 
     let pinned_arr = meta
         .as_object_mut()
-        .and_then(|o| o.entry("pinned").or_insert(serde_json::json!([])).as_array_mut())
+        .and_then(|o| {
+            o.entry("pinned")
+                .or_insert(serde_json::json!([]))
+                .as_array_mut()
+        })
         .ok_or_else(|| "invalid metadata".to_string())?;
 
     if pinned {

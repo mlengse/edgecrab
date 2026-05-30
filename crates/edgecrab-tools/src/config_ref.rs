@@ -14,6 +14,53 @@ use crate::tools::backends::{
 };
 use edgecrab_security::path_policy::PathPolicy;
 
+/// Per-backend settings under `web_search.backends.<name>` in config.yaml.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct WebSearchBackendConfigRef {
+    pub api_key: Option<String>,
+    pub endpoint: Option<String>,
+    pub rps: Option<f64>,
+    pub timeout_secs: Option<u64>,
+}
+
+/// Hermes-aligned `web:` section — per-capability backend overrides.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct WebToolsConfigRef {
+    /// Override for `web_search` when non-empty (Hermes `web.search_backend`).
+    pub search_backend: String,
+    /// Default backend for `web_extract` / `web_crawl` (Hermes `web.extract_backend`).
+    pub extract_backend: String,
+    /// Shared fallback for both capabilities (Hermes `web.backend`).
+    pub backend: String,
+}
+
+/// Web search chain configuration (`web_search` section in config.yaml).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct WebSearchConfigRef {
+    /// Primary backend name (`searxng`, `brave`, `ddgs`, …).
+    pub primary: String,
+    /// Ordered fallback backends when primary fails transiently.
+    pub fallbacks: Vec<String>,
+    /// Default request timeout in seconds.
+    pub timeout_secs: u64,
+    /// Per-backend overrides keyed by backend name.
+    pub backends: HashMap<String, WebSearchBackendConfigRef>,
+}
+
+impl Default for WebSearchConfigRef {
+    fn default() -> Self {
+        Self {
+            primary: "searxng".into(),
+            fallbacks: vec!["brave".into(), "ddgs".into()],
+            timeout_secs: 8,
+            backends: HashMap::new(),
+        }
+    }
+}
+
 /// Resolve the EdgeCrab home directory.
 ///
 /// Resolution order:
@@ -231,6 +278,10 @@ pub struct AppConfigRef {
     /// larger JSON tool arguments can increase this. The value is clamped to
     /// [8, 256] KiB to prevent mis-configuration.
     pub max_write_payload_kib: usize,
+    /// Pluggable web search backend chain configuration.
+    pub web_search: WebSearchConfigRef,
+    /// Hermes-aligned web tool backend overrides (`web:` in config.yaml).
+    pub web: WebToolsConfigRef,
 }
 
 impl Default for AppConfigRef {
@@ -304,6 +355,8 @@ impl Default for AppConfigRef {
             result_spill_preview_lines: 80,
             result_turn_budget_chars: 200_000,
             max_write_payload_kib: crate::edit_contract::DEFAULT_MAX_MUTATION_PAYLOAD_KIB,
+            web_search: WebSearchConfigRef::default(),
+            web: WebToolsConfigRef::default(),
         }
     }
 }

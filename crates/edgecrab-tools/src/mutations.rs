@@ -89,13 +89,7 @@ impl MutationTurnState {
         }
     }
 
-    pub fn record_tool_outcome(
-        &self,
-        tool_name: &str,
-        args: &Value,
-        result: &str,
-        is_error: bool,
-    ) {
+    pub fn record_tool_outcome(&self, tool_name: &str, args: &Value, result: &str, is_error: bool) {
         if !FILE_MUTATING_TOOLS.contains(&tool_name) {
             return;
         }
@@ -193,9 +187,9 @@ pub fn extract_file_mutation_targets(tool_name: &str, args: &Value) -> Vec<Strin
             }
             Vec::new()
         }
-        "apply_patch" => parse_v4a_patch_paths(
-            args.get("patch").and_then(Value::as_str).unwrap_or(""),
-        ),
+        "apply_patch" => {
+            parse_v4a_patch_paths(args.get("patch").and_then(Value::as_str).unwrap_or(""))
+        }
         _ => Vec::new(),
     }
 }
@@ -246,9 +240,7 @@ pub fn render_success_footer(records: &[MutationRecord]) -> Option<String> {
     if records.is_empty() {
         return None;
     }
-    let mut lines = vec![
-        "─── files-mutated this turn ───────────────────────".to_string(),
-    ];
+    let mut lines = vec!["─── files-mutated this turn ───────────────────────".to_string()];
     let show = records.len().min(MAX_MUTATION_RECORDS);
     for rec in records.iter().take(show) {
         lines.push(format_mutation_line(rec));
@@ -261,9 +253,7 @@ pub fn render_success_footer(records: &[MutationRecord]) -> Option<String> {
     Some(lines.join("\n"))
 }
 
-pub fn render_failure_footer(
-    failed: &HashMap<String, (String, String)>,
-) -> Option<String> {
+pub fn render_failure_footer(failed: &HashMap<String, (String, String)>) -> Option<String> {
     if failed.is_empty() {
         return None;
     }
@@ -305,13 +295,20 @@ fn truncate_path(path: &str, max_cols: usize) -> String {
     if path.chars().count() <= max_cols {
         return path.to_string();
     }
-    let tail: String = path.chars().rev().take(max_cols.saturating_sub(1)).collect();
+    let tail: String = path
+        .chars()
+        .rev()
+        .take(max_cols.saturating_sub(1))
+        .collect();
     let tail: String = tail.chars().rev().collect();
     format!("…{tail}")
 }
 
 /// Render success footer with optional terminal width (compact / Termux).
-pub fn render_success_footer_width(records: &[MutationRecord], max_cols: Option<usize>) -> Option<String> {
+pub fn render_success_footer_width(
+    records: &[MutationRecord],
+    max_cols: Option<usize>,
+) -> Option<String> {
     let base = render_success_footer(records)?;
     let Some(cols) = max_cols else {
         return Some(base);
@@ -319,9 +316,7 @@ pub fn render_success_footer_width(records: &[MutationRecord], max_cols: Option<
     if cols >= 60 {
         return Some(base);
     }
-    let mut lines = vec![
-        "─── files-mutated ───".to_string(),
-    ];
+    let mut lines = vec!["─── files-mutated ───".to_string()];
     let show = records.len().min(8);
     for rec in records.iter().take(show) {
         let path = truncate_path(&rec.path, cols.saturating_sub(12));
@@ -391,7 +386,8 @@ mod tests {
 
     #[test]
     fn extract_patch_v4a_paths() {
-        let body = "*** Begin Patch\n*** Update File: /tmp/a.md\n*** Add File: /tmp/b.md\n*** End Patch\n";
+        let body =
+            "*** Begin Patch\n*** Update File: /tmp/a.md\n*** Add File: /tmp/b.md\n*** End Patch\n";
         let args = json!({"mode": "patch", "patch": body});
         assert_eq!(
             extract_file_mutation_targets("patch", &args),
@@ -415,12 +411,7 @@ mod tests {
     fn record_tool_outcome_success_clears_failure() {
         let state = MutationTurnState::new();
         let args = json!({"path": "/tmp/a.md", "old_string": "x", "new_string": "y"});
-        state.record_tool_outcome(
-            "patch",
-            &args,
-            r#"{"error":"not found"}"#,
-            true,
-        );
+        state.record_tool_outcome("patch", &args, r#"{"error":"not found"}"#, true);
         assert_eq!(state.take_failed().len(), 1);
         state.record_tool_outcome(
             "patch",

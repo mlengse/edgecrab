@@ -9,8 +9,8 @@ use crate::mutations::{MutationKind, MutationRecord};
 use crate::registry::ToolContext;
 
 use super::git::{
-    checkpoint_base, index_path, load_pinned_shas, normalize_path, project_hash, ref_name, run_git,
-    set_pin, store_path, validate_commit_hash, validate_file_path, GIT_TIMEOUT_SECS,
+    GIT_TIMEOUT_SECS, checkpoint_base, index_path, load_pinned_shas, normalize_path, project_hash,
+    ref_name, run_git, set_pin, store_path, validate_commit_hash, validate_file_path,
 };
 use super::ref_ops::{estimate_commit_bytes, list_worktree_files, parse_shortstat};
 use super::types::{CheckpointConfig, CheckpointEntry, RestoreResult};
@@ -130,7 +130,12 @@ impl CheckpointManager {
         out
     }
 
-    pub fn pin_checkpoint(&self, working_dir: &Path, n: usize, pin: bool) -> Result<String, String> {
+    pub fn pin_checkpoint(
+        &self,
+        working_dir: &Path,
+        n: usize,
+        pin: bool,
+    ) -> Result<String, String> {
         let entries = self.list_checkpoints(working_dir);
         let entry = entries
             .into_iter()
@@ -198,7 +203,10 @@ impl CheckpointManager {
 
         let short = &commit_hash[..8.min(commit_hash.len())];
         let mut pre = CheckpointManager::new(self.cfg.clone());
-        let _ = pre.take(&abs, &format!("pre-rollback snapshot (restoring to {short})"));
+        let _ = pre.take(
+            &abs,
+            &format!("pre-rollback snapshot (restoring to {short})"),
+        );
 
         let index_file = index_path(&store, &project_hash(&abs));
         let target = file_path.unwrap_or(".");

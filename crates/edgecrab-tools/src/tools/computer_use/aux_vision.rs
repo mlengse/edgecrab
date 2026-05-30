@@ -1,6 +1,6 @@
 //! Route computer_use captures through auxiliary vision (Hermes #24015).
 
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde_json::json;
 
 use super::backend::CaptureResult;
@@ -16,7 +16,11 @@ pub async fn route_capture_through_aux_vision(
 ) -> Option<String> {
     let b64 = cap.png_b64.as_ref()?;
     let raw = STANDARD.decode(b64).ok()?;
-    let ext = if b64.starts_with("/9j/") { ".jpg" } else { ".png" };
+    let ext = if b64.starts_with("/9j/") {
+        ".jpg"
+    } else {
+        ".png"
+    };
     let dir = cache_dir(&ctx.config.edgecrab_home);
     std::fs::create_dir_all(&dir).ok()?;
     let path = dir.join(format!("aux_{}{ext}", uuid::Uuid::new_v4()));

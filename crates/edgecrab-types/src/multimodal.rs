@@ -41,9 +41,9 @@ pub fn multimodal_value_has_inline_image(value: &Value) -> bool {
         .get("content")
         .and_then(|c| c.as_array())
         .is_some_and(|parts| {
-            parts.iter().any(|p| {
-                p.get("type").and_then(|t| t.as_str()) == Some("image_url")
-            })
+            parts
+                .iter()
+                .any(|p| p.get("type").and_then(|t| t.as_str()) == Some("image_url"))
         })
 }
 
@@ -91,9 +91,8 @@ pub fn strip_inline_images_from_tool_output(tool_name: &str, raw: &str) -> Strin
     if let Some(arr) = value.get_mut("content").and_then(|c| c.as_array_mut()) {
         arr.retain(|p| p.get("type").and_then(|t| t.as_str()) != Some("image_url"));
     }
-    serde_json::to_string(&value).unwrap_or_else(|_| {
-        multimodal_text_summary(raw).unwrap_or_else(|| raw.to_string())
-    })
+    serde_json::to_string(&value)
+        .unwrap_or_else(|_| multimodal_text_summary(raw).unwrap_or_else(|| raw.to_string()))
 }
 
 /// Flat token estimate per image block (matches Hermes model_metadata ~1500).

@@ -627,7 +627,10 @@ async fn e2e_lsp_write_diagnostics_with_copilot_gpt5_mini() {
     };
 
     let broken = workspace.path().join("src/lsp_e2e_broken.rs");
-    assert!(broken.is_file(), "write_file should create src/lsp_e2e_broken.rs");
+    assert!(
+        broken.is_file(),
+        "write_file should create src/lsp_e2e_broken.rs"
+    );
 
     let tool_has_lsp = result.messages.iter().any(|m| {
         m.role == edgecrab_types::Role::Tool

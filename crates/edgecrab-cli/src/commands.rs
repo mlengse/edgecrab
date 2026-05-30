@@ -117,6 +117,8 @@ pub enum CommandResult {
     PromptCommand(String),
     /// Open or query the configuration surface
     ShowConfig(String),
+    /// Web search/extract wizard or status (`/web`, `/web setup`, `/web status`)
+    WebCommand(String),
     /// Show message history summary
     ShowHistory,
     /// Cycle tool progress display
@@ -979,6 +981,13 @@ impl CommandRegistry {
         });
 
         self.register(Command {
+            name: "web",
+            aliases: &[],
+            description: "Web hub — dashboard, setup, chain, diagnostics (/web help)",
+            handler: |args| CommandResult::WebCommand(args.trim().to_string()),
+        });
+
+        self.register(Command {
             name: "dump",
             aliases: &["debug-dump", "debug"],
             description: "Show compact setup summary for support (copy-paste friendly)",
@@ -1237,7 +1246,7 @@ impl CommandRegistry {
         self.register(Command {
             name: "computer",
             aliases: &["cu", "desktop", "cua"],
-            description: "Computer use status, permissions, enable, and setup (macOS + cua-driver)",
+            description: "Computer use: status, setup, enable/on, disable/off (macOS + cua-driver)",
             handler: |args| CommandResult::ShowComputer(args.trim().to_string()),
         });
 

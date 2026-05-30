@@ -5,8 +5,8 @@ use serde_json::json;
 use super::backend::ComputerUseBackend;
 use super::browsers::{is_browser_app, should_open_url_via_launch};
 use super::response::{action_response, finalize_capture_response, max_elements_from_args};
-use super::text_input::{is_address_bar_focus_combo, is_submit_key};
 use super::text_input::looks_like_url_or_domain;
+use super::text_input::{is_address_bar_focus_combo, is_submit_key};
 use crate::registry::ToolContext;
 
 pub async fn dispatch_action(
@@ -74,7 +74,10 @@ pub async fn dispatch_action(
                 .and_then(|v| v.as_str())
                 .ok_or("focus_app requires `app`")?;
             let res = backend
-                .focus_app(app, args.get("raise_window").and_then(|v| v.as_bool()) == Some(true))
+                .focus_app(
+                    app,
+                    args.get("raise_window").and_then(|v| v.as_bool()) == Some(true),
+                )
                 .await?;
             maybe_follow_capture(backend, res, capture_after, args, edgecrab_home, tool_ctx).await
         }
@@ -87,10 +90,8 @@ pub async fn dispatch_action(
                 .or_else(|| args.get("name"))
                 .and_then(|v| v.as_str())
                 .ok_or("launch_app requires `bundle_id`, `app`, or `name`")?;
-            let urls: Option<Vec<String>> = args
-                .get("urls")
-                .and_then(|v| v.as_array())
-                .map(|arr| {
+            let urls: Option<Vec<String>> =
+                args.get("urls").and_then(|v| v.as_array()).map(|arr| {
                     arr.iter()
                         .filter_map(|v| v.as_str().map(|s| s.to_string()))
                         .collect()
@@ -104,7 +105,9 @@ pub async fn dispatch_action(
                 "right_click" => ("right", 1),
                 "middle_click" => ("middle", 1),
                 _ => (
-                    args.get("button").and_then(|v| v.as_str()).unwrap_or("left"),
+                    args.get("button")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("left"),
                     1,
                 ),
             };
@@ -121,7 +124,9 @@ pub async fn dispatch_action(
             backend.prepare_action_target(action_app).await?;
             let res = backend
                 .click(
-                    args.get("element").and_then(|v| v.as_u64()).map(|v| v as u32),
+                    args.get("element")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as u32),
                     x,
                     y,
                     button,
@@ -134,26 +139,32 @@ pub async fn dispatch_action(
         }
         "drag" => {
             let has_el = args.get("from_element").is_some() && args.get("to_element").is_some();
-            let has_xy = args.get("from_coordinate").is_some() && args.get("to_coordinate").is_some();
+            let has_xy =
+                args.get("from_coordinate").is_some() && args.get("to_coordinate").is_some();
             if !has_el && !has_xy {
-                Err(
-                    "drag requires from_coordinate/to_coordinate or from_element/to_element".into(),
-                )
+                Err("drag requires from_coordinate/to_coordinate or from_element/to_element".into())
             } else {
                 let from_xy = coord_pair(args.get("from_coordinate"));
                 let to_xy = coord_pair(args.get("to_coordinate"));
                 backend.prepare_action_target(action_app).await?;
                 let res = backend
                     .drag(
-                        args.get("from_element").and_then(|v| v.as_u64()).map(|v| v as u32),
-                        args.get("to_element").and_then(|v| v.as_u64()).map(|v| v as u32),
+                        args.get("from_element")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as u32),
+                        args.get("to_element")
+                            .and_then(|v| v.as_u64())
+                            .map(|v| v as u32),
                         from_xy,
                         to_xy,
-                        args.get("button").and_then(|v| v.as_str()).unwrap_or("left"),
+                        args.get("button")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("left"),
                         modifiers(args).as_deref(),
                     )
                     .await?;
-                maybe_follow_capture(backend, res, capture_after, args, edgecrab_home, tool_ctx).await
+                maybe_follow_capture(backend, res, capture_after, args, edgecrab_home, tool_ctx)
+                    .await
             }
         }
         "scroll" => {
@@ -161,9 +172,13 @@ pub async fn dispatch_action(
             backend.prepare_action_target(action_app).await?;
             let res = backend
                 .scroll(
-                    args.get("direction").and_then(|v| v.as_str()).unwrap_or("down"),
+                    args.get("direction")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("down"),
                     args.get("amount").and_then(|v| v.as_i64()).unwrap_or(3) as i32,
-                    args.get("element").and_then(|v| v.as_u64()).map(|v| v as u32),
+                    args.get("element")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as u32),
                     coord.map(|(x, _)| x),
                     coord.map(|(_, y)| y),
                     modifiers(args).as_deref(),
@@ -225,11 +240,12 @@ pub async fn dispatch_action(
                 let res = super::backend::ActionResult {
                     ok: false,
                     action: "key".into(),
-                    message: "Return does not commit browser navigation in background (cua-driver). \
+                    message:
+                        "Return does not commit browser navigation in background (cua-driver). \
                         Use action=navigate(url='https://x.com', app='Google Chrome') or \
                         launch_app(bundle_id='com.google.Chrome', urls=['https://x.com']). \
                         If you already typed a URL, call navigate with that URL instead of Return."
-                        .into(),
+                            .into(),
                     meta: std::collections::HashMap::new(),
                 };
                 return maybe_follow_capture(
@@ -276,7 +292,9 @@ pub async fn dispatch_action(
             let res = backend
                 .set_value(
                     value,
-                    args.get("element").and_then(|v| v.as_u64()).map(|v| v as u32),
+                    args.get("element")
+                        .and_then(|v| v.as_u64())
+                        .map(|v| v as u32),
                 )
                 .await?;
             maybe_follow_capture(backend, res, capture_after, args, edgecrab_home, tool_ctx).await
@@ -312,10 +330,7 @@ pub(crate) async fn maybe_follow_capture(
             *text = json!(format!("{prefix}\n\n{}", text.as_str().unwrap_or("")));
         }
         if let Some(summary) = value.get_mut("text_summary") {
-            *summary = json!(format!(
-                "{prefix}\n\n{}",
-                summary.as_str().unwrap_or("")
-            ));
+            *summary = json!(format!("{prefix}\n\n{}", summary.as_str().unwrap_or("")));
         }
         Ok(serde_json::to_string(&value).unwrap_or(resp))
     } else if let Ok(mut value) = serde_json::from_str::<serde_json::Value>(&resp) {
@@ -350,10 +365,7 @@ fn coord_pair(value: Option<&serde_json::Value>) -> Option<(i32, i32)> {
     if arr.len() < 2 {
         return None;
     }
-    Some((
-        arr[0].as_i64()? as i32,
-        arr[1].as_i64()? as i32,
-    ))
+    Some((arr[0].as_i64()? as i32, arr[1].as_i64()? as i32))
 }
 
 fn modifiers(args: &serde_json::Value) -> Option<Vec<String>> {

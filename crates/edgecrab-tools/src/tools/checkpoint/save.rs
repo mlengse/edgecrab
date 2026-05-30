@@ -4,8 +4,8 @@ use std::collections::{HashSet, VecDeque};
 use std::path::Path;
 
 use super::git::{
-    checkpoint_base, dir_file_count, index_path, init_store, load_pinned_shas, normalize_path,
-    project_hash, ref_name, run_git, store_path, touch_project, GIT_TIMEOUT_SECS,
+    GIT_TIMEOUT_SECS, checkpoint_base, dir_file_count, index_path, init_store, load_pinned_shas,
+    normalize_path, project_hash, ref_name, run_git, store_path, touch_project,
 };
 use super::manager::CheckpointManager;
 use super::ref_ops::{
@@ -150,12 +150,7 @@ impl CheckpointManager {
         }
 
         let update_args: Vec<&str> = if has_ref {
-            vec![
-                "update-ref",
-                &reference,
-                &commit.stdout,
-                &ref_commit.stdout,
-            ]
+            vec!["update-ref", &reference, &commit.stdout, &ref_commit.stdout]
         } else {
             vec!["update-ref", &reference, &commit.stdout]
         };

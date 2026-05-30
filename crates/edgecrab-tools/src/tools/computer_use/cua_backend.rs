@@ -3,9 +3,9 @@
 use std::collections::HashMap;
 
 use async_trait::async_trait;
-use base64::{engine::general_purpose::STANDARD, Engine as _};
+use base64::{Engine as _, engine::general_purpose::STANDARD};
 use regex::Regex;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use super::backend::{ActionResult, CaptureResult, ComputerUseBackend, UIElement};
 use super::mcp::{CuaMcpSession, McpToolResult};
@@ -33,8 +33,7 @@ fn element_line_re() -> &'static Regex {
 /// Returns the list of action names found on `line`, or `None` if absent.
 fn parse_actions_for_line(line: &str) -> Option<Vec<String>> {
     static ACTIONS_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-    let re = ACTIONS_RE
-        .get_or_init(|| Regex::new(r"actions=\[([^\]]+)\]").expect("regex"));
+    let re = ACTIONS_RE.get_or_init(|| Regex::new(r"actions=\[([^\]]+)\]").expect("regex"));
     let cap = re.captures(line)?;
     let inner = cap.get(1)?.as_str();
     let actions: Vec<String> = inner
@@ -42,7 +41,11 @@ fn parse_actions_for_line(line: &str) -> Option<Vec<String>> {
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
-    if actions.is_empty() { None } else { Some(actions) }
+    if actions.is_empty() {
+        None
+    } else {
+        Some(actions)
+    }
 }
 
 pub struct CuaDriverBackend {
@@ -213,9 +216,7 @@ impl ComputerUseBackend for CuaDriverBackend {
             {
                 obj.insert("query".into(), json!(q));
             }
-            let gws = session
-                .call_tool("get_window_state", gws_args)
-                .await?;
+            let gws = session.call_tool("get_window_state", gws_args).await?;
             let parsed = parse_gws_result(&gws);
             let tree = parsed.tree;
             if !tree.is_empty() && gws.images.is_empty() {
@@ -228,7 +229,10 @@ impl ComputerUseBackend for CuaDriverBackend {
                 .ok()
                 .and_then(|re| re.captures(&tree))
             {
-                window_title = cap.get(1).map(|m| m.as_str().to_string()).unwrap_or_default();
+                window_title = cap
+                    .get(1)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default();
             }
             self.record_element_scope(target.pid, target.window_id, &elements);
             if elements.is_empty() {
@@ -243,7 +247,10 @@ impl ComputerUseBackend for CuaDriverBackend {
                         window_title = format!("{window_title} [{hint}]");
                     }
                 } else if !parsed.summary.is_empty() && parsed.summary.contains('⚠') {
-                    window_title = format!("{window_title} [{}]", parsed.summary.lines().next().unwrap_or(""));
+                    window_title = format!(
+                        "{window_title} [{}]",
+                        parsed.summary.lines().next().unwrap_or("")
+                    );
                 }
             }
             (parsed.width, parsed.height)
@@ -282,7 +289,9 @@ impl ComputerUseBackend for CuaDriverBackend {
         ax_action: Option<&str>,
     ) -> Result<ActionResult, String> {
         self.ensure_active_target(None).await?;
-        let pid = self.active_pid.ok_or("No active window — call capture() first.")?;
+        let pid = self
+            .active_pid
+            .ok_or("No active window — call capture() first.")?;
         let tool = match (button, click_count) {
             ("right", _) => "right_click",
             (_, 2) => "double_click",
@@ -326,7 +335,9 @@ impl ComputerUseBackend for CuaDriverBackend {
         _modifiers: Option<&[String]>,
     ) -> Result<ActionResult, String> {
         self.ensure_active_target(None).await?;
-        let pid = self.active_pid.ok_or("No active window — call capture() first.")?;
+        let pid = self
+            .active_pid
+            .ok_or("No active window — call capture() first.")?;
         let mut args = json!({ "pid": pid });
         if let (Some(f), Some(t)) = (from_element, to_element) {
             self.validate_element_index(f)?;
@@ -343,7 +354,9 @@ impl ComputerUseBackend for CuaDriverBackend {
             args["to_x"] = json!(tx);
             args["to_y"] = json!(ty);
         } else {
-            return Err("drag requires from_element/to_element or from_coordinate/to_coordinate.".into());
+            return Err(
+                "drag requires from_element/to_element or from_coordinate/to_coordinate.".into(),
+            );
         }
         self.action("drag", args).await
     }
@@ -358,7 +371,9 @@ impl ComputerUseBackend for CuaDriverBackend {
         _modifiers: Option<&[String]>,
     ) -> Result<ActionResult, String> {
         self.ensure_active_target(None).await?;
-        let pid = self.active_pid.ok_or("No active window — call capture() first.")?;
+        let pid = self
+            .active_pid
+            .ok_or("No active window — call capture() first.")?;
         let mut args = json!({
             "pid": pid,
             "direction": direction,
@@ -377,7 +392,11 @@ impl ComputerUseBackend for CuaDriverBackend {
         self.action("scroll", args).await
     }
 
-    async fn type_text(&mut self, text: &str, element: Option<u32>) -> Result<ActionResult, String> {
+    async fn type_text(
+        &mut self,
+        text: &str,
+        element: Option<u32>,
+    ) -> Result<ActionResult, String> {
         use super::text_input::{copy_to_macos_clipboard, needs_clipboard_paste};
 
         self.ensure_active_target(None).await?;
@@ -390,12 +409,12 @@ impl ComputerUseBackend for CuaDriverBackend {
         }
 
         if super::browsers::should_open_url_via_launch(None, self.last_app.as_deref(), text) {
-            return self
-                .open_browser_url(None, None, text, "type")
-                .await;
+            return self.open_browser_url(None, None, text, "type").await;
         }
 
-        let pid = self.active_pid.ok_or("No active window — call capture() first.")?;
+        let pid = self
+            .active_pid
+            .ok_or("No active window — call capture() first.")?;
 
         if needs_clipboard_paste(text) {
             copy_to_macos_clipboard(text)?;
@@ -416,7 +435,8 @@ impl ComputerUseBackend for CuaDriverBackend {
     }
 
     async fn navigate_url(&mut self, url_text: &str) -> Result<ActionResult, String> {
-        self.open_browser_url(None, None, url_text, "navigate").await
+        self.open_browser_url(None, None, url_text, "navigate")
+            .await
     }
 
     async fn open_browser_url(
@@ -443,14 +463,17 @@ impl ComputerUseBackend for CuaDriverBackend {
             return Err("Empty URL.".into());
         }
         self.pending_omnibox_url = None;
-        self.navigate_via_launch_app(&target, &url, via_action).await
+        self.navigate_via_launch_app(&target, &url, via_action)
+            .await
     }
 
     async fn key(&mut self, keys: &str) -> Result<ActionResult, String> {
         use super::text_input::is_address_bar_focus_combo;
 
         self.ensure_active_target(None).await?;
-        let pid = self.active_pid.ok_or("No active window — call capture() first.")?;
+        let pid = self
+            .active_pid
+            .ok_or("No active window — call capture() first.")?;
 
         if is_address_bar_focus_combo(keys) {
             self.pending_omnibox_url = None;
@@ -545,7 +568,10 @@ impl ComputerUseBackend for CuaDriverBackend {
             return Ok(result);
         }
         // Poll for the new window (browsers need urls[] or no window appears).
-        let wait_hint = app_match_filters(target).first().cloned().unwrap_or_else(|| target.to_string());
+        let wait_hint = app_match_filters(target)
+            .first()
+            .cloned()
+            .unwrap_or_else(|| target.to_string());
         self.last_app = Some(wait_hint.clone());
         if let Some(w) = self.wait_for_window(target, 8.0).await {
             self.apply_window_target(&w);
@@ -575,9 +601,15 @@ impl ComputerUseBackend for CuaDriverBackend {
         })
     }
 
-    async fn set_value(&mut self, value: &str, element: Option<u32>) -> Result<ActionResult, String> {
+    async fn set_value(
+        &mut self,
+        value: &str,
+        element: Option<u32>,
+    ) -> Result<ActionResult, String> {
         self.ensure_active_target(None).await?;
-        let pid = self.active_pid.ok_or("No active window — call capture() first.")?;
+        let pid = self
+            .active_pid
+            .ok_or("No active window — call capture() first.")?;
         let wid = self
             .active_window_id
             .ok_or("No active window — call capture() first.")?;
@@ -605,8 +637,8 @@ impl ComputerUseBackend for CuaDriverBackend {
 
 impl CuaDriverBackend {
     fn apply_window_target(&mut self, w: &WindowRow) {
-        let window_changed = self.active_pid != Some(w.pid)
-            || self.active_window_id != Some(w.window_id);
+        let window_changed =
+            self.active_pid != Some(w.pid) || self.active_window_id != Some(w.window_id);
         self.active_pid = Some(w.pid);
         self.active_window_id = Some(w.window_id);
         self.last_app = Some(w.app_name.clone());
@@ -638,10 +670,7 @@ impl CuaDriverBackend {
     ) -> Result<ActionResult, String> {
         let bundle = target;
         let result = self
-            .action(
-                "launch_app",
-                json!({ "bundle_id": bundle, "urls": [url] }),
-            )
+            .action("launch_app", json!({ "bundle_id": bundle, "urls": [url] }))
             .await?;
         if !result.ok {
             let mut res = result;
@@ -673,10 +702,7 @@ impl CuaDriverBackend {
     fn record_element_scope(&mut self, pid: i32, window_id: i32, elements: &[UIElement]) {
         self.element_scope_pid = Some(pid);
         self.element_scope_window_id = Some(window_id);
-        self.element_scope_max_index = elements
-            .iter()
-            .map(|e| e.index)
-            .max();
+        self.element_scope_max_index = elements.iter().map(|e| e.index).max();
         // New capture on this window — drop sticky click index from a prior tree.
         self.last_element = None;
     }
@@ -753,10 +779,7 @@ impl CuaDriverBackend {
         if self.active_pid.is_some() {
             // Validate pid still exists; clear if the window closed.
             let windows = self.fetch_windows().await?;
-            if self
-                .sticky_window_from_list(&windows)
-                .is_some()
-            {
+            if self.sticky_window_from_list(&windows).is_some() {
                 return Ok(());
             }
             self.active_pid = None;
@@ -783,7 +806,11 @@ impl CuaDriverBackend {
         None
     }
 
-    async fn action(&mut self, name: &str, args: serde_json::Value) -> Result<ActionResult, String> {
+    async fn action(
+        &mut self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<ActionResult, String> {
         let out = self.mcp_call(name, args).await?;
         let message = match &out.data {
             serde_json::Value::Object(map) => map
@@ -822,7 +849,11 @@ impl CuaDriverBackend {
 
     /// Call a cua-driver MCP tool with one automatic reconnect+retry on a
     /// transient daemon-transport failure.
-    async fn mcp_call(&mut self, name: &str, args: serde_json::Value) -> Result<McpToolResult, String> {
+    async fn mcp_call(
+        &mut self,
+        name: &str,
+        args: serde_json::Value,
+    ) -> Result<McpToolResult, String> {
         if self.session.is_none() {
             self.start().await?;
         }
@@ -897,7 +928,10 @@ fn parse_windows(lw: &super::mcp::McpToolResult) -> Vec<WindowRow> {
                         .and_then(|v| v.as_str())
                         .unwrap_or("")
                         .to_string(),
-                    off_screen: !w.get("is_on_screen").and_then(|v| v.as_bool()).unwrap_or(true),
+                    off_screen: !w
+                        .get("is_on_screen")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true),
                     z_index: w.get("z_index").and_then(|v| v.as_i64()).unwrap_or(0) as i32,
                 })
             })
@@ -910,11 +944,23 @@ fn parse_windows(lw: &super::mcp::McpToolResult) -> Vec<WindowRow> {
     window_line_re()
         .captures_iter(text)
         .map(|cap| WindowRow {
-            app_name: cap.get(1).map(|m| m.as_str().trim().to_string()).unwrap_or_default(),
-            pid: cap.get(2).and_then(|m| m.as_str().parse().ok()).unwrap_or(0),
-            window_id: cap.get(3).and_then(|m| m.as_str().parse().ok()).unwrap_or(0),
+            app_name: cap
+                .get(1)
+                .map(|m| m.as_str().trim().to_string())
+                .unwrap_or_default(),
+            pid: cap
+                .get(2)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0),
+            window_id: cap
+                .get(3)
+                .and_then(|m| m.as_str().parse().ok())
+                .unwrap_or(0),
             title: String::new(),
-            off_screen: cap.get(0).map(|m| m.as_str().contains("[off-screen]")).unwrap_or(false),
+            off_screen: cap
+                .get(0)
+                .map(|m| m.as_str().contains("[off-screen]"))
+                .unwrap_or(false),
             z_index: 0,
         })
         .collect()
@@ -928,9 +974,7 @@ fn split_tree(full: &str) -> (String, String) {
 }
 
 fn u32_field(obj: &Value, key: &str) -> u32 {
-    obj.get(key)
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0) as u32
+    obj.get(key).and_then(|v| v.as_u64()).unwrap_or(0) as u32
 }
 
 fn merge_gws_fields(into: &mut GwsParsed, obj: &Value) {
@@ -946,7 +990,10 @@ fn merge_gws_fields(into: &mut GwsParsed, obj: &Value) {
         into.height = u32_field(obj, "screenshot_height");
     }
     if into.element_count.is_none() {
-        into.element_count = obj.get("element_count").and_then(|v| v.as_u64()).map(|n| n as u32);
+        into.element_count = obj
+            .get("element_count")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as u32);
     }
 }
 
@@ -999,8 +1046,14 @@ fn parse_elements(tree: &str) -> Vec<UIElement> {
         .filter_map(|line| {
             let cap = element_line_re().captures(line)?;
             Some(UIElement {
-                index: cap.get(1).and_then(|m| m.as_str().parse().ok()).unwrap_or(0),
-                role: cap.get(2).map(|m| m.as_str().to_string()).unwrap_or_default(),
+                index: cap
+                    .get(1)
+                    .and_then(|m| m.as_str().parse().ok())
+                    .unwrap_or(0),
+                role: cap
+                    .get(2)
+                    .map(|m| m.as_str().to_string())
+                    .unwrap_or_default(),
                 label: cap
                     .get(3)
                     .or_else(|| cap.get(4))
@@ -1015,7 +1068,9 @@ fn parse_elements(tree: &str) -> Vec<UIElement> {
 }
 
 fn parse_key_combo(keys: &str) -> (Option<String>, Vec<String>) {
-    const MODS: &[&str] = &["cmd", "command", "shift", "option", "alt", "ctrl", "control", "fn"];
+    const MODS: &[&str] = &[
+        "cmd", "command", "shift", "option", "alt", "ctrl", "control", "fn",
+    ];
     let mut modifiers = Vec::new();
     let mut key = None;
     for part in keys.split(['+', '-']) {
@@ -1163,9 +1218,9 @@ pub(crate) fn build_focus_app_failure_hint(app: &str) -> String {
             "RECOVERY: `launch_app(bundle_id=\"{b}\", urls=[\"about:blank\"])` then retry \
              focus_app. Browsers REQUIRE urls=[…] or no window is created."
         ),
-        (Some(b), false) => format!(
-            "RECOVERY: `launch_app(bundle_id=\"{b}\")` then retry focus_app."
-        ),
+        (Some(b), false) => {
+            format!("RECOVERY: `launch_app(bundle_id=\"{b}\")` then retry focus_app.")
+        }
         (None, _) => format!(
             "RECOVERY: 1) Run `list_apps` to see exact (localized) names — macOS reports \
              names in the user's language. 2) If the app is not running, try \
@@ -1191,34 +1246,33 @@ fn empty_capture(mode: &str) -> CaptureResult {
     }
 }
 
-fn parse_list_apps(out: &super::mcp::McpToolResult) -> Result<Vec<HashMap<String, serde_json::Value>>, String> {
+fn parse_list_apps(
+    out: &super::mcp::McpToolResult,
+) -> Result<Vec<HashMap<String, serde_json::Value>>, String> {
     match &out.data {
         serde_json::Value::Array(arr) => Ok(arr
             .iter()
-            .filter_map(|v| v.as_object().map(|o| {
-                o.iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
-                    .collect()
-            }))
+            .filter_map(|v| {
+                v.as_object()
+                    .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            })
             .collect()),
         serde_json::Value::Object(map) => {
             if let Some(apps) = map.get("apps").and_then(|v| v.as_array()) {
                 return Ok(apps
                     .iter()
-                    .filter_map(|v| v.as_object().map(|o| {
-                        o.iter()
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect()
-                    }))
+                    .filter_map(|v| {
+                        v.as_object()
+                            .map(|o| o.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+                    })
                     .collect());
             }
             Ok(Vec::new())
         }
         serde_json::Value::String(text) => {
             static APP_LINE_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
-            let re = APP_LINE_RE.get_or_init(|| {
-                Regex::new(r"(.+?)\s+\(pid\s+(\d+)\)").expect("regex")
-            });
+            let re =
+                APP_LINE_RE.get_or_init(|| Regex::new(r"(.+?)\s+\(pid\s+(\d+)\)").expect("regex"));
             let mut apps = Vec::new();
             for line in text.lines() {
                 if let Some(cap) = re.captures(line) {
@@ -1241,15 +1295,13 @@ fn parse_list_apps(out: &super::mcp::McpToolResult) -> Result<Vec<HashMap<String
 
 #[cfg(test)]
 mod list_apps_tests {
-    use super::*;
     use super::super::mcp::McpToolResult;
+    use super::*;
 
     #[test]
     fn parse_list_apps_from_text_lines() {
         let out = McpToolResult {
-            data: serde_json::json!(
-                "Safari (pid 123)\nGoogle Chrome (pid 456)\n"
-            ),
+            data: serde_json::json!("Safari (pid 123)\nGoogle Chrome (pid 456)\n"),
             images: vec![],
             structured: None,
             is_error: false,
@@ -1283,7 +1335,9 @@ mod list_apps_tests {
         assert!(!CuaDriverBackend::is_transient_daemon_error(
             "element_index 99 out of range"
         ));
-        assert!(!CuaDriverBackend::is_transient_daemon_error("No active window"));
+        assert!(!CuaDriverBackend::is_transient_daemon_error(
+            "No active window"
+        ));
     }
 
     #[test]
@@ -1296,13 +1350,13 @@ mod list_apps_tests {
         backend.active_window_id = Some(200);
         backend.element_scope_max_index = Some(10);
         assert_eq!(
-            backend
-                .resolve_type_element_index(None)
-                .expect("resolve"),
+            backend.resolve_type_element_index(None).expect("resolve"),
             None
         );
         assert_eq!(
-            backend.resolve_type_element_index(Some(3)).expect("explicit"),
+            backend
+                .resolve_type_element_index(Some(3))
+                .expect("explicit"),
             Some(3)
         );
     }

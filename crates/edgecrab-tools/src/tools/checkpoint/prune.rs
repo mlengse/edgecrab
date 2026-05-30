@@ -5,8 +5,8 @@ use std::path::Path;
 use tracing::info;
 
 use super::git::{
-    checkpoint_base, dir_size_bytes, index_path, ref_name, run_git, store_path,
     GIT_TIMEOUT_SECS, LEGACY_PREFIX, PRUNE_MARKER_NAME, REFS_PREFIX, STORE_DIRNAME,
+    checkpoint_base, dir_size_bytes, index_path, ref_name, run_git, store_path,
 };
 use super::ref_ops::{gc_store, rebuild_ref_chain};
 
@@ -121,7 +121,11 @@ pub fn prune_checkpoints(
     if store.join("HEAD").exists() {
         let projects_dir = store.join("projects");
         if projects_dir.exists() {
-            for entry in std::fs::read_dir(&projects_dir).into_iter().flatten().flatten() {
+            for entry in std::fs::read_dir(&projects_dir)
+                .into_iter()
+                .flatten()
+                .flatten()
+            {
                 let meta_path = entry.path();
                 if meta_path.extension().and_then(|e| e.to_str()) != Some("json") {
                     continue;
@@ -139,7 +143,10 @@ pub fn prune_checkpoints(
                 if delete_orphans && (workdir.is_empty() || !Path::new(workdir).exists()) {
                     reason = Some("orphan");
                 } else if retention_days > 0 {
-                    let last_touch = meta.get("last_touch").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                    let last_touch = meta
+                        .get("last_touch")
+                        .and_then(|v| v.as_f64())
+                        .unwrap_or(0.0);
                     if last_touch > 0.0 && last_touch < cutoff {
                         reason = Some("stale");
                     }
@@ -173,7 +180,9 @@ pub fn prune_checkpoints(
     }
 
     let size_after = dir_size_bytes(&base);
-    result.bytes_freed = result.bytes_freed.max(size_before.saturating_sub(size_after));
+    result.bytes_freed = result
+        .bytes_freed
+        .max(size_before.saturating_sub(size_after));
     result
 }
 

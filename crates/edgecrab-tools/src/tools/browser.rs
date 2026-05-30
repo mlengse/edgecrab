@@ -4002,14 +4002,17 @@ fn validate_browser_url(url: &str) -> Result<(), ToolError> {
         )));
     }
 
-    match edgecrab_security::url_safety::is_safe_url(url) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(ToolError::PermissionDenied(format!(
-            "URL blocked by SSRF policy: {url}"
-        ))),
-        Err(e) => Err(ToolError::PermissionDenied(format!(
-            "URL validation error: {e}"
-        ))),
+    match edgecrab_security::url_validation::validate_outbound_url(url) {
+        Ok(()) => Ok(()),
+        Err(edgecrab_security::url_validation::UrlValidationError::SsrfBlocked(_)) => Err(
+            ToolError::PermissionDenied(format!("URL blocked by SSRF policy: {url}")),
+        ),
+        Err(edgecrab_security::url_validation::UrlValidationError::WebsitePolicyBlocked(msg)) => {
+            Err(ToolError::PermissionDenied(msg))
+        }
+        Err(edgecrab_security::url_validation::UrlValidationError::Invalid(e)) => Err(
+            ToolError::PermissionDenied(format!("URL validation error: {e}")),
+        ),
     }
 }
 
@@ -4194,6 +4197,33 @@ mod tests {
     #[test]
     fn validate_url_blocks_localhost() {
         assert!(validate_browser_url("http://127.0.0.1:8080").is_err());
+    }
+
+    #[test]
+    fn validate_url_blocks_website_policy_domain() {
+        use edgecrab_security::website_policy::invalidate_cache;
+        use tempfile::TempDir;
+
+        invalidate_cache();
+        let dir = TempDir::new().expect("tempdir");
+        std::fs::write(
+            dir.path().join("config.yaml"),
+            r#"
+security:
+  website_blocklist:
+    enabled: true
+    domains: [blocked.example]
+"#,
+        )
+        .expect("write config");
+        unsafe { std::env::set_var("EDGECRAB_HOME", dir.path()) };
+
+        let err =
+            validate_browser_url("https://docs.blocked.example/page").expect_err("policy block");
+        assert!(err.to_string().contains("website policy"));
+
+        unsafe { std::env::remove_var("EDGECRAB_HOME") };
+        invalidate_cache();
     }
 
     #[test]

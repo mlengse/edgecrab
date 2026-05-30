@@ -185,7 +185,12 @@ impl Message {
         raw_output: &str,
         store_inline_images: bool,
     ) -> Self {
-        Self::tool_result_from_output_with_policy(tool_call_id, name, raw_output, store_inline_images)
+        Self::tool_result_from_output_with_policy(
+            tool_call_id,
+            name,
+            raw_output,
+            store_inline_images,
+        )
     }
 
     /// Assistant message that requested tool calls.

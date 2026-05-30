@@ -8,6 +8,7 @@ mod backend;
 mod browsers;
 mod cua_backend;
 mod dispatch;
+pub mod guidance;
 mod install;
 #[cfg(test)]
 mod manual_e2e;
@@ -19,7 +20,6 @@ mod safety;
 mod schema;
 mod status;
 mod text_input;
-pub mod guidance;
 mod vision_routing;
 
 #[cfg(test)]
@@ -32,15 +32,17 @@ use edgecrab_types::{ToolError, ToolSchema};
 
 use crate::registry::{ToolContext, ToolHandler};
 
+pub use guidance::{COMPUTER_USE_GUIDANCE_COMPACT, COMPUTER_USE_GUIDANCE_FULL};
+pub use install::{
+    CuaDriverInstallResult, install_cua_driver, parse_install_args, render_install_report,
+};
 pub use permissions::{check_requirements, permissions_status};
 pub use response::parse_multimodal_tool_output;
-pub use install::{install_cua_driver, parse_install_args, render_install_report, CuaDriverInstallResult};
-pub use guidance::{COMPUTER_USE_GUIDANCE_COMPACT, COMPUTER_USE_GUIDANCE_FULL};
 pub use status::{
     ComputerUseReportContext, ComputerUseStatusConfig, collect_snapshot, computer_command_overlay,
-    computer_status_one_liner,
-    computer_command_usage, format_computer_command, format_computer_enable_result,
-    format_computer_setup_report, is_computer_use_toolset_active, open_computer_use_settings,
+    computer_command_usage, computer_status_one_liner, format_computer_command,
+    format_computer_enable_result, format_computer_setup_report, is_computer_use_toolset_active,
+    open_computer_use_settings,
 };
 pub use vision_routing::{
     provider_accepts_multimodal_tool_result, should_route_capture_to_aux_vision,
@@ -86,7 +88,11 @@ impl ToolHandler for ComputerUseTool {
         permissions::check_requirements(&ctx.config.computer_use_cua_cmd)
     }
 
-    async fn execute(&self, args: serde_json::Value, ctx: &ToolContext) -> Result<String, ToolError> {
+    async fn execute(
+        &self,
+        args: serde_json::Value,
+        ctx: &ToolContext,
+    ) -> Result<String, ToolError> {
         if !ctx.config.computer_use_enabled {
             return Err(ToolError::PermissionDenied(
                 "computer_use is disabled. Set computer_use.enabled: true in config.yaml.".into(),

@@ -80,7 +80,9 @@ pub async fn run_goal_judge(
         };
     }
 
-    let now = chrono::Local::now().format("%Y-%m-%d %H:%M:%S %Z").to_string();
+    let now = chrono::Local::now()
+        .format("%Y-%m-%d %H:%M:%S %Z")
+        .to_string();
     let active_subgoals: Vec<String> = state
         .subgoals
         .iter()
@@ -268,7 +270,9 @@ mod tests {
 
     #[test]
     fn parse_prose_wrapped_json() {
-        let v = parse_judge_response("Here is my verdict: {\"done\": false, \"reason\": \"needs tests\"}");
+        let v = parse_judge_response(
+            "Here is my verdict: {\"done\": false, \"reason\": \"needs tests\"}",
+        );
         assert!(!v.done);
         assert_eq!(v.reason, "needs tests");
     }

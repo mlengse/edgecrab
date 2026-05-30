@@ -81,16 +81,23 @@ fn validate_image_url(url: &str) -> Result<(), ToolError> {
         });
     }
 
-    // SSRF protection via edgecrab-security
-    match edgecrab_security::url_safety::is_safe_url(url) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(ToolError::PermissionDenied(
-            "Blocked: URL points to a private/internal address (SSRF protection)".into(),
-        )),
-        Err(e) => Err(ToolError::InvalidArgs {
-            tool: "vision_analyze".into(),
-            message: format!("URL validation error: {e}"),
-        }),
+    // SSRF + website blocklist via edgecrab-security
+    match edgecrab_security::url_validation::validate_outbound_url(url) {
+        Ok(()) => Ok(()),
+        Err(edgecrab_security::url_validation::UrlValidationError::SsrfBlocked(_)) => {
+            Err(ToolError::PermissionDenied(
+                "Blocked: URL points to a private/internal address (SSRF protection)".into(),
+            ))
+        }
+        Err(edgecrab_security::url_validation::UrlValidationError::WebsitePolicyBlocked(msg)) => {
+            Err(ToolError::PermissionDenied(msg))
+        }
+        Err(edgecrab_security::url_validation::UrlValidationError::Invalid(e)) => {
+            Err(ToolError::InvalidArgs {
+                tool: "vision_analyze".into(),
+                message: format!("URL validation error: {e}"),
+            })
+        }
     }
 }
 
@@ -542,12 +549,8 @@ pub async fn analyze_local_image(
         gateway_media_dir.as_path(),
         computer_use_cache.as_path(),
     ];
-    let canonical = jail_read_path_multi(
-        path.to_string_lossy().as_ref(),
-        &path_policy,
-        &trusted,
-    )
-    .map_err(|e| ToolError::ExecutionFailed {
+    let canonical = jail_read_path_multi(path.to_string_lossy().as_ref(), &path_policy, &trusted)
+        .map_err(|e| ToolError::ExecutionFailed {
         tool: "vision_analyze".into(),
         message: e.to_string(),
     })?;
@@ -577,10 +580,7 @@ pub async fn analyze_local_image(
         .await
         {
             Ok(Ok(response)) if !response.content.trim().is_empty() => {
-                analysis = Some((
-                    target,
-                    response.content.trim().to_string(),
-                ));
+                analysis = Some((target, response.content.trim().to_string()));
                 break;
             }
             Ok(Ok(_)) => {

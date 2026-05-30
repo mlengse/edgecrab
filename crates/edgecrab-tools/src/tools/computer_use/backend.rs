@@ -118,11 +118,16 @@ pub trait ComputerUseBackend: Send {
         modifiers: Option<&[String]>,
     ) -> Result<ActionResult, String>;
 
-    async fn type_text(&mut self, text: &str, element: Option<u32>) -> Result<ActionResult, String>;
+    async fn type_text(&mut self, text: &str, element: Option<u32>)
+    -> Result<ActionResult, String>;
     async fn key(&mut self, keys: &str) -> Result<ActionResult, String>;
     async fn list_apps(&mut self) -> Result<Vec<HashMap<String, serde_json::Value>>, String>;
     async fn focus_app(&mut self, app: &str, raise_window: bool) -> Result<ActionResult, String>;
-    async fn set_value(&mut self, value: &str, element: Option<u32>) -> Result<ActionResult, String>;
+    async fn set_value(
+        &mut self,
+        value: &str,
+        element: Option<u32>,
+    ) -> Result<ActionResult, String>;
 
     /// Launch a macOS app in the background — does not steal focus or raise window.
     ///
@@ -143,6 +148,7 @@ pub trait ComputerUseBackend: Send {
     }
 
     /// Open a URL in a browser via `launch_app` (cua-driver primary path — omnibox Return does not commit).
+    #[allow(dead_code)]
     async fn navigate_url(&mut self, url: &str) -> Result<ActionResult, String> {
         let _ = url;
         Err("navigate_url not supported by this backend".into())

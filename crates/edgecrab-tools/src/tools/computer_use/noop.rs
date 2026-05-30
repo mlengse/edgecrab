@@ -40,10 +40,7 @@ impl ComputerUseBackend for NoopBackend {
     }
 
     async fn capture(&mut self, mode: &str, app: Option<&str>) -> Result<CaptureResult, String> {
-        self.record(
-            "capture",
-            serde_json::json!({ "mode": mode, "app": app }),
-        );
+        self.record("capture", serde_json::json!({ "mode": mode, "app": app }));
         Ok(CaptureResult {
             mode: mode.to_string(),
             width: 1024,
@@ -91,7 +88,10 @@ impl ComputerUseBackend for NoopBackend {
         _button: &str,
         _modifiers: Option<&[String]>,
     ) -> Result<ActionResult, String> {
-        self.record("drag", json!({ "from_element": from_element, "to_element": to_element }));
+        self.record(
+            "drag",
+            json!({ "from_element": from_element, "to_element": to_element }),
+        );
         Ok(ActionResult {
             ok: true,
             action: "drag".into(),
@@ -109,7 +109,10 @@ impl ComputerUseBackend for NoopBackend {
         _y: Option<i32>,
         _modifiers: Option<&[String]>,
     ) -> Result<ActionResult, String> {
-        self.record("scroll", json!({ "direction": direction, "amount": amount }));
+        self.record(
+            "scroll",
+            json!({ "direction": direction, "amount": amount }),
+        );
         Ok(ActionResult {
             ok: true,
             action: "scroll".into(),
@@ -118,8 +121,15 @@ impl ComputerUseBackend for NoopBackend {
         })
     }
 
-    async fn type_text(&mut self, text: &str, element: Option<u32>) -> Result<ActionResult, String> {
-        self.record("type", serde_json::json!({ "text": text, "element": element }));
+    async fn type_text(
+        &mut self,
+        text: &str,
+        element: Option<u32>,
+    ) -> Result<ActionResult, String> {
+        self.record(
+            "type",
+            serde_json::json!({ "text": text, "element": element }),
+        );
         Ok(ActionResult {
             ok: true,
             action: "type".into(),
@@ -156,7 +166,11 @@ impl ComputerUseBackend for NoopBackend {
         })
     }
 
-    async fn set_value(&mut self, value: &str, element: Option<u32>) -> Result<ActionResult, String> {
+    async fn set_value(
+        &mut self,
+        value: &str,
+        element: Option<u32>,
+    ) -> Result<ActionResult, String> {
         self.record(
             "set_value",
             serde_json::json!({ "value": value, "element": element }),

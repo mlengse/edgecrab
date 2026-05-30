@@ -4,8 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use edgecrab_core::{
-    Agent,
-    format_session_handoff_synthetic_message,
+    Agent, format_session_handoff_synthetic_message,
     gateway_home::{handoff_platform_from_name, resolve_gateway_home_channel},
 };
 use edgecrab_state::SessionDb;
@@ -80,10 +79,7 @@ impl SessionHandoffWatcher {
         Ok(())
     }
 
-    async fn process_one(
-        &self,
-        row: &edgecrab_state::PendingSessionHandoff,
-    ) -> anyhow::Result<()> {
+    async fn process_one(&self, row: &edgecrab_state::PendingSessionHandoff) -> anyhow::Result<()> {
         let platform_name = row.platform.trim().to_ascii_lowercase();
         let platform = handoff_platform_from_name(&platform_name)
             .ok_or_else(|| anyhow::anyhow!("unknown platform '{platform_name}'"))?;
@@ -92,7 +88,9 @@ impl SessionHandoffWatcher {
             .iter()
             .find(|a| a.platform() == platform)
             .cloned()
-            .ok_or_else(|| anyhow::anyhow!("platform '{platform_name}' is not active in this gateway"))?;
+            .ok_or_else(|| {
+                anyhow::anyhow!("platform '{platform_name}' is not active in this gateway")
+            })?;
 
         let config = edgecrab_core::AppConfig::load().unwrap_or_default();
         let home_channel = resolve_gateway_home_channel(&config.gateway, platform)
@@ -125,22 +123,21 @@ impl SessionHandoffWatcher {
 
         let gateway_session = self
             .session_manager
-            .rebind_cli_session(
-                &session_key,
-                &row.session_id,
-                &self.base_agent,
-                origin_chat,
-            )
+            .rebind_cli_session(&session_key, &row.session_id, &self.base_agent, origin_chat)
             .await?;
 
-        self.db.rebind_session_routing(&row.session_id, &platform_name, &routing_key)?;
+        self.db
+            .rebind_session_routing(&row.session_id, &platform_name, &routing_key)?;
 
         let synthetic = format_session_handoff_synthetic_message(cli_title);
         let agent = {
             let guard = gateway_session.read().await;
             guard.agent.clone()
         };
-        let response = agent.chat(&synthetic).await.map_err(|e| anyhow::anyhow!("{e}"))?;
+        let response = agent
+            .chat(&synthetic)
+            .await
+            .map_err(|e| anyhow::anyhow!("{e}"))?;
 
         let metadata = MessageMetadata {
             channel_id: Some(home_channel.clone()),

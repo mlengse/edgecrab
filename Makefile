@@ -16,7 +16,7 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help \
-        build build-debug build-fast build-native build-termux dev run run-release check fmt fmt-check lint test test-lsp ci \
+        build build-debug build-fast build-native build-termux dev run run-release check fmt fmt-check lint test test-lsp test-web-search-e2e ci \
         install install-fast install-native uninstall \
         test-python test-node test-sdks \
         publish-rust publish-rust-dry \
@@ -144,6 +144,15 @@ test: ## Run all Rust unit and integration tests across the workspace
 test-lsp: ## Run the dedicated LSP crate tests and integration coverage
 	$(call log,cargo test -p edgecrab-lsp)
 	@cargo test -p edgecrab-lsp
+
+test-web-search-e2e: ## Web search E2E: mock edge cases + Docker SearXNG live test
+	$(call log,web search unit + mock integration tests)
+	@cargo test -p edgecrab-tools --lib web::search -- --test-threads=1 --nocapture
+	@cargo test -p edgecrab-tools --test web_search_e2e_edge --test web_search_e2e_config --test web_search_e2e_setup --test web_search_e2e_setup_web --test web_search_e2e_wizard --test web_search_e2e_chain --test web_search_e2e_doctor --test web_search_ddgs_e2e --test web_search_ddgs_edge_e2e --test file_write_tmp_e2e --test web_extract_backend_e2e --test web_extract_config_e2e --test web_extract_registry_e2e --test web_extract_policy_e2e -- --test-threads=1 --nocapture
+	@cargo test -p edgecrab-tools --test web_search_e2e -- --test-threads=1 --nocapture
+	$(call log,Docker SearXNG live E2E)
+	@specs/001-gap-analysis-v14/014-web-search-backends/e2e/run-searxng-e2e.sh
+	$(call ok,Web search E2E passed)
 
 ci: fmt-check lint test-lsp test test-sdks ## Full CI gate: fmt → lint → LSP → workspace test → SDK tests
 	$(call ok,All CI checks passed)

@@ -72,12 +72,15 @@ pub fn handoff_platform_from_name(name: &str) -> Option<Platform> {
 }
 
 /// Human-readable list for CLI errors.
-pub const HANDOFF_PLATFORM_HINT: &str =
-    "telegram, discord, slack, whatsapp, signal, matrix";
+pub const HANDOFF_PLATFORM_HINT: &str = "telegram, discord, slack, whatsapp, signal, matrix";
 
 impl GatewayConfig {
     /// Persist a home channel for a named gateway platform (`/sethome`).
-    pub fn set_home_channel(&mut self, platform: &str, channel: Option<String>) -> Result<(), String> {
+    pub fn set_home_channel(
+        &mut self,
+        platform: &str,
+        channel: Option<String>,
+    ) -> Result<(), String> {
         let channel = non_empty(channel);
         match platform.trim().to_ascii_lowercase().as_str() {
             "telegram" => {
@@ -133,11 +136,26 @@ impl GatewayConfig {
     pub fn home_channel_platforms(&self) -> Vec<&'static str> {
         let mut platforms = Vec::new();
         let candidates = [
-            ("telegram", self.platform_enabled("telegram") || self.telegram.enabled),
-            ("discord", self.platform_enabled("discord") || self.discord.enabled),
-            ("slack", self.platform_enabled("slack") || self.slack.enabled),
-            ("whatsapp", self.platform_enabled("whatsapp") || self.whatsapp.enabled),
-            ("signal", self.platform_enabled("signal") || self.signal.enabled),
+            (
+                "telegram",
+                self.platform_enabled("telegram") || self.telegram.enabled,
+            ),
+            (
+                "discord",
+                self.platform_enabled("discord") || self.discord.enabled,
+            ),
+            (
+                "slack",
+                self.platform_enabled("slack") || self.slack.enabled,
+            ),
+            (
+                "whatsapp",
+                self.platform_enabled("whatsapp") || self.whatsapp.enabled,
+            ),
+            (
+                "signal",
+                self.platform_enabled("signal") || self.signal.enabled,
+            ),
             ("matrix", self.platform_enabled("matrix")),
         ];
         for (name, enabled) in candidates {

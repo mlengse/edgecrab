@@ -78,7 +78,7 @@ impl ExecutionFilesystemView {
             format_paths(&self.denied_roots)
         };
         let tmp_note = format!(
-            "File-tool `/tmp` is a virtual alias for `{}`. It is not the host-global `/tmp`, so file tools only see EdgeCrab-owned temp files there.",
+            "File-tool `/tmp/…` and relative `tmp/files/…` are virtual aliases for `{}`. They are not the host-global `/tmp`, so file tools only see EdgeCrab-owned temp files there.",
             self.file_tools_tmp_root.display()
         );
 

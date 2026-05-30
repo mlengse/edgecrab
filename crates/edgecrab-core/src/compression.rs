@@ -611,8 +611,11 @@ pub fn prune_computer_use_screenshots(messages: &[Message], keep_last_n: u32) ->
     }
 
     let strip_count = screenshot_indices.len().saturating_sub(keep);
-    let strip_set: std::collections::HashSet<usize> =
-        screenshot_indices.iter().take(strip_count).copied().collect();
+    let strip_set: std::collections::HashSet<usize> = screenshot_indices
+        .iter()
+        .take(strip_count)
+        .copied()
+        .collect();
 
     messages
         .iter()
@@ -793,7 +796,12 @@ fn find_tail_cut_by_tokens(
     cut_idx.max(head_end + 1)
 }
 
-// ─── Orphan pair sanitization ─────────────────────────────────────────
+/// Ensure every assistant `tool_call` has a matching tool result before an API request.
+///
+/// Public wrapper used by the conversation loop (not only compression).
+pub fn ensure_api_safe_tool_pairs(messages: Vec<Message>) -> Vec<Message> {
+    sanitize_orphan_pairs(messages)
+}
 
 /// Fix orphaned tool_call / tool_result pairs after assembling the compressed list.
 ///
@@ -1443,24 +1451,22 @@ mod tests {
     fn prune_computer_use_screenshots_keeps_last_three() {
         use edgecrab_types::{Content, ContentPart, ImageUrl};
 
-        let make_capture = |id: &str, label: &str| {
-            Message {
-                role: Role::Tool,
-                content: Some(Content::Parts(vec![
-                    ContentPart::Text {
-                        text: format!("capture {label}"),
+        let make_capture = |id: &str, label: &str| Message {
+            role: Role::Tool,
+            content: Some(Content::Parts(vec![
+                ContentPart::Text {
+                    text: format!("capture {label}"),
+                },
+                ContentPart::ImageUrl {
+                    image_url: ImageUrl {
+                        url: format!("data:image/png;base64,{label}"),
+                        detail: None,
                     },
-                    ContentPart::ImageUrl {
-                        image_url: ImageUrl {
-                            url: format!("data:image/png;base64,{label}"),
-                            detail: None,
-                        },
-                    },
-                ])),
-                tool_call_id: Some(id.into()),
-                name: Some("computer_use".into()),
-                ..Default::default()
-            }
+                },
+            ])),
+            tool_call_id: Some(id.into()),
+            name: Some("computer_use".into()),
+            ..Default::default()
         };
 
         let messages: Vec<Message> = (0..4)
@@ -1476,7 +1482,11 @@ mod tests {
         for msg in &pruned[1..] {
             match &msg.content {
                 Some(Content::Parts(parts)) => {
-                    assert!(parts.iter().any(|p| matches!(p, ContentPart::ImageUrl { .. })));
+                    assert!(
+                        parts
+                            .iter()
+                            .any(|p| matches!(p, ContentPart::ImageUrl { .. }))
+                    );
                 }
                 other => panic!("expected Parts, got {other:?}"),
             }

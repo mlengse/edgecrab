@@ -4,8 +4,8 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
 use super::git::{
-    dir_size_bytes, run_git, store_path, GIT_TIMEOUT_SECS, LEGACY_PREFIX, PRUNE_MARKER_NAME,
-    REFS_PREFIX, STORE_DIRNAME,
+    GIT_TIMEOUT_SECS, LEGACY_PREFIX, PRUNE_MARKER_NAME, REFS_PREFIX, STORE_DIRNAME, dir_size_bytes,
+    run_git, store_path,
 };
 use super::types::CheckpointEntry;
 
@@ -71,7 +71,13 @@ pub fn rebuild_ref_chain(
                 "--no-gpg-sign",
             ]
         } else {
-            vec!["commit-tree", &tree.stdout, "-m", commit_msg, "--no-gpg-sign"]
+            vec![
+                "commit-tree",
+                &tree.stdout,
+                "-m",
+                commit_msg,
+                "--no-gpg-sign",
+            ]
         };
         let commit = run_git(
             &commit_args,
@@ -220,7 +226,11 @@ pub fn drop_oversize_from_index(store: &Path, working_dir: &Path, index_file: &P
     }
 }
 
-pub fn list_worktree_files(working_dir: &Path, store: &Path, commit: &str) -> Result<Vec<String>, String> {
+pub fn list_worktree_files(
+    working_dir: &Path,
+    store: &Path,
+    commit: &str,
+) -> Result<Vec<String>, String> {
     let out = run_git(
         &["ls-tree", "-r", "--name-only", commit],
         store,

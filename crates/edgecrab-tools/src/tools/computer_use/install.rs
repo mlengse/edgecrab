@@ -91,9 +91,7 @@ impl CuaDriverInstallResult {
 }
 
 pub fn resolve_driver_path(cmd: &str) -> Option<String> {
-    which::which(cmd)
-        .ok()
-        .map(|p| p.display().to_string())
+    which::which(cmd).ok().map(|p| p.display().to_string())
 }
 
 pub fn driver_version(cmd: &str) -> Option<String> {
@@ -110,7 +108,9 @@ pub fn driver_version(cmd: &str) -> Option<String> {
 pub fn parse_install_args(args: &str) -> (bool, bool) {
     let lower = args.trim().to_ascii_lowercase();
     let tokens: Vec<&str> = lower.split_whitespace().collect();
-    let wants_install = tokens.first().is_some_and(|t| *t == "install" || *t == "upgrade");
+    let wants_install = tokens
+        .first()
+        .is_some_and(|t| *t == "install" || *t == "upgrade");
     let upgrade = tokens.first().is_some_and(|t| *t == "upgrade")
         || tokens.iter().any(|t| *t == "upgrade" || *t == "--upgrade");
     (wants_install, upgrade)
@@ -183,7 +183,9 @@ pub fn install_cua_driver(cmd: &str, upgrade: bool) -> CuaDriverInstallResult {
     }
 
     let label = if upgrade { "Refreshing" } else { "Installing" };
-    messages.push(format!("{label} cua-driver (macOS background computer-use)…"));
+    messages.push(format!(
+        "{label} cua-driver (macOS background computer-use)…"
+    ));
     messages.push(format!(
         "Target version: {} (override via EDGECRAB_CUA_DRIVER_VERSION).",
         pinned_cua_driver_version()
@@ -232,7 +234,10 @@ pub fn install_cua_driver(cmd: &str, upgrade: bool) -> CuaDriverInstallResult {
                 messages.push(format!(
                     "Installer finished but `{cmd}` is still not on PATH."
                 ));
-                messages.push("Restart your shell or add ~/.local/bin to PATH, then `/computer status`.".into());
+                messages.push(
+                    "Restart your shell or add ~/.local/bin to PATH, then `/computer status`."
+                        .into(),
+                );
                 messages.push(format!("Manual install: {CUA_DRIVER_INSTALL_SHELL}"));
                 CuaDriverInstallResult {
                     outcome: InstallOutcome::Failed,
@@ -407,8 +412,14 @@ mod tests {
 
     #[test]
     fn pin_defaults_to_hermes_target() {
-        assert_eq!(resolve_pinned_version(None, None), PINNED_CUA_DRIVER_VERSION);
-        assert_eq!(resolve_pinned_version(Some("  "), Some("")), PINNED_CUA_DRIVER_VERSION);
+        assert_eq!(
+            resolve_pinned_version(None, None),
+            PINNED_CUA_DRIVER_VERSION
+        );
+        assert_eq!(
+            resolve_pinned_version(Some("  "), Some("")),
+            PINNED_CUA_DRIVER_VERSION
+        );
     }
 
     #[test]

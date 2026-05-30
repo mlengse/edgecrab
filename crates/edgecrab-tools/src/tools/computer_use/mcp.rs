@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout};
 
@@ -158,17 +158,17 @@ impl CuaMcpSession {
 
     pub async fn call_tool(&mut self, name: &str, args: Value) -> Result<McpToolResult, String> {
         let result = self
-            .rpc(
-                "tools/call",
-                json!({ "name": name, "arguments": args }),
-            )
+            .rpc("tools/call", json!({ "name": name, "arguments": args }))
             .await?;
         Ok(extract_tool_result(&result))
     }
 }
 
 fn extract_tool_result(result: &Value) -> McpToolResult {
-    let is_error = result.get("isError").and_then(|v| v.as_bool()).unwrap_or(false);
+    let is_error = result
+        .get("isError")
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
     let structured = result.get("structuredContent").cloned();
     let mut images = Vec::new();
     let mut text_chunks = Vec::new();
