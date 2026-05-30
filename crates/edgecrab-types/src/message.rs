@@ -113,12 +113,37 @@ impl Message {
 
     /// Build a tool result message, promoting computer_use multimodal JSON to parts.
     pub fn tool_result_from_output(tool_call_id: &str, name: &str, content: &str) -> Self {
+        Self::tool_result_from_output_with_policy(tool_call_id, name, content, true)
+    }
+
+    /// Like [`tool_result_from_output`], but when `store_inline_images` is false,
+    /// never promotes inline screenshots into `Content::Parts` (Hermes session cache parity).
+    pub fn tool_result_from_output_with_policy(
+        tool_call_id: &str,
+        name: &str,
+        content: &str,
+        store_inline_images: bool,
+    ) -> Self {
+        let content = if store_inline_images {
+            content.to_string()
+        } else {
+            crate::multimodal::strip_inline_images_from_tool_output(name, content)
+        };
+        let content = content.as_str();
         if name == "computer_use"
-            && let Ok(value) = serde_json::from_str::<serde_json::Value>(
-                content.lines().next().unwrap_or(content),
-            )
-            && value.get("_multimodal") == Some(&serde_json::Value::Bool(true))
+            && let Some(value) = crate::multimodal::parse_multimodal_value(content)
         {
+            // Session downgrade: keep compact JSON/text only (API attach policy is separate).
+            if !store_inline_images {
+                return Self::tool_result(tool_call_id, name, content);
+            }
+            // Path-only envelope: compact JSON in history; image attached at API boundary.
+            if crate::multimodal::multimodal_disk_image(&value).is_some()
+                && !crate::multimodal::multimodal_value_has_inline_image(&value)
+            {
+                return Self::tool_result(tool_call_id, name, content);
+            }
+
             let summary = value
                 .get("text_summary")
                 .and_then(|v| v.as_str())
@@ -151,6 +176,16 @@ impl Message {
             };
         }
         Self::tool_result(tool_call_id, name, content)
+    }
+
+    /// Persist a tool result using the multimodal attach policy for this session.
+    pub fn tool_result_for_session_policy(
+        tool_call_id: &str,
+        name: &str,
+        raw_output: &str,
+        store_inline_images: bool,
+    ) -> Self {
+        Self::tool_result_from_output_with_policy(tool_call_id, name, raw_output, store_inline_images)
     }
 
     /// Assistant message that requested tool calls.

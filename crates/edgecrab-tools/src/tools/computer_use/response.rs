@@ -25,14 +25,20 @@ pub fn save_screenshot_png(edgecrab_home: &Path, png_b64: &str) -> Result<PathBu
     Ok(path)
 }
 
-fn element_to_json(e: &UIElement) -> serde_json::Value {
-    json!({
+pub(crate) fn element_to_json(e: &UIElement) -> serde_json::Value {
+    let mut v = json!({
         "index": e.index,
         "role": e.role,
         "label": e.label,
         "bounds": [e.bounds.0, e.bounds.1, e.bounds.2, e.bounds.3],
         "app": e.app,
-    })
+    });
+    if !e.actions.is_empty()
+        && let Some(obj) = v.as_object_mut()
+    {
+        obj.insert("actions".into(), json!(e.actions));
+    }
+    v
 }
 
 fn format_elements(elements: &[UIElement], max_lines: usize) -> Vec<String> {
@@ -44,9 +50,18 @@ fn format_elements(elements: &[UIElement], max_lines: usize) -> Vec<String> {
         } else {
             label
         };
+        // Surface non-AXPress action sets so the model can pick a working
+        // `ax_action` instead of crashing into AXPress and getting -25206.
+        let actions_hint = if e.actions.is_empty()
+            || (e.actions.len() == 1 && e.actions[0] == "AXPress")
+        {
+            String::new()
+        } else {
+            format!(" actions={:?}", e.actions)
+        };
         out.push(format!(
-            "  #{} {} {:?} @ {:?}",
-            e.index, e.role, label, e.bounds
+            "  #{} {} {:?} @ {:?}{}",
+            e.index, e.role, label, e.bounds, actions_hint
         ));
     }
     if elements.len() > max_lines {
@@ -59,11 +74,15 @@ fn format_elements(elements: &[UIElement], max_lines: usize) -> Vec<String> {
 }
 
 fn build_capture_summary(cap: &CaptureResult, visible: &[UIElement], total: usize) -> String {
+    let dims = if cap.width == 0 && cap.height == 0 && cap.mode != "ax" {
+        "0x0 ⚠ use mode=som for element indices".to_string()
+    } else {
+        format!("{}x{}", cap.width, cap.height)
+    };
     let mut summary_lines = vec![format!(
-        "capture mode={} {}x{}{}{}",
+        "capture mode={} {}{}{}",
         cap.mode,
-        cap.width,
-        cap.height,
+        dims,
         if cap.app.is_empty() {
             String::new()
         } else {
@@ -91,15 +110,18 @@ fn multimodal_envelope(
     } else {
         "image/png"
     };
-    let screenshot_path = save_screenshot_png(edgecrab_home, b64).ok();
+    let screenshot_path = save_screenshot_png(edgecrab_home, b64)
+        .map_err(|e| format!("failed to cache screenshot: {e}"))?;
+    // Path-only storage: never embed base64 in session JSON (prevents 200k+ token blow-ups).
     let envelope = json!({
         "_multimodal": true,
+        "_image_path": screenshot_path.display().to_string(),
+        "_image_mime": mime,
         "content": [
             { "type": "text", "text": summary },
-            { "type": "image_url", "image_url": { "url": format!("data:{mime};base64,{b64}") } }
         ],
         "text_summary": summary,
-        "screenshot_path": screenshot_path.as_ref().map(|p| p.display().to_string()),
+        "screenshot_path": screenshot_path.display().to_string(),
         "meta": {
             "mode": cap.mode,
             "width": cap.width,
@@ -131,10 +153,14 @@ pub async fn finalize_capture_response(
     if let Some(b64) = cap.png_b64.as_ref().filter(|_| cap.mode != "ax") {
         if let Some(ctx) = tool_ctx {
             let (provider, model) = active_provider_model(&ctx.config);
-            if should_route_capture_to_aux_vision(&provider, &model, &ctx.config)
-                && let Some(text) = route_capture_through_aux_vision(cap, &summary, ctx).await
-            {
-                return Ok(text);
+            let route_aux = should_route_capture_to_aux_vision(&provider, &model, &ctx.config);
+            if route_aux {
+                if let Some(text) = route_capture_through_aux_vision(cap, &summary, ctx).await {
+                    return Ok(text);
+                }
+                // Never fall back to inline PNG for text-only / aux-routed models —
+                // that path previously blew the context window (268k+ tokens).
+                return text_only_capture_json(cap, &visible, total, truncated, &summary);
             }
         }
         return multimodal_envelope(cap, &summary, b64, edgecrab_home, total);
@@ -162,6 +188,30 @@ pub async fn finalize_capture_response(
     .map_err(|e| e.to_string())
 }
 
+fn text_only_capture_json(
+    cap: &CaptureResult,
+    visible: &[UIElement],
+    total: usize,
+    truncated: usize,
+    summary: &str,
+) -> Result<String, String> {
+    let mut note = summary.to_string();
+    note.push_str("\n\n[screenshot omitted — auxiliary vision unavailable; AX/SOM indices above are authoritative]");
+    serde_json::to_string(&json!({
+        "mode": cap.mode,
+        "width": cap.width,
+        "height": cap.height,
+        "app": cap.app,
+        "window_title": cap.window_title,
+        "elements": visible.iter().map(element_to_json).collect::<Vec<_>>(),
+        "total_elements": total,
+        "truncated_elements": truncated,
+        "summary": note,
+        "screenshot_omitted": true,
+    }))
+    .map_err(|e| e.to_string())
+}
+
 pub fn action_response(res: &ActionResult) -> String {
     let mut payload = json!({ "ok": res.ok, "action": res.action });
     if !res.message.is_empty() {
@@ -174,11 +224,7 @@ pub fn action_response(res: &ActionResult) -> String {
 }
 
 pub fn parse_multimodal_tool_output(text: &str) -> Option<(String, String)> {
-    let trimmed = text.lines().next()?.trim();
-    let value: serde_json::Value = serde_json::from_str(trimmed).ok()?;
-    if value.get("_multimodal") != Some(&json!(true)) {
-        return None;
-    }
+    let value = edgecrab_types::parse_multimodal_value(text)?;
     let summary = value
         .get("text_summary")
         .and_then(|v| v.as_str())

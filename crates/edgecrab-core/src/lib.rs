@@ -29,6 +29,7 @@ pub mod shadow_judge;
 pub mod steering;
 pub mod sub_agent_runner;
 pub mod tool_result_spill;
+pub mod multimodal_tool_content;
 
 pub use agent::{
     Agent, AgentBuilder, AgentConfig, ApprovalChoice, ConversationResult, IsolatedAgentOptions,
@@ -70,7 +71,7 @@ pub use goals::{
     render_subgoals_list, status_line,
 };
 pub use model_catalog::{
-    CatalogData, ModelCatalog, ModelEntry, ModelTier, PricingPair, ProviderEntry,
+    CatalogData, ModelCatalog, ModelEntry, ModelTier, PricingPair, ProviderEntry, ResolvedModelSpec,
 };
 pub use model_discovery::{
     DiscoveryAvailability, DiscoverySource, ProviderModels, discover_multiple,

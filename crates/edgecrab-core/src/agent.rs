@@ -226,6 +226,8 @@ pub struct AgentConfig {
     pub result_spill_threshold: usize,
     /// Preview lines kept in the spill stub.
     pub result_spill_preview_lines: usize,
+    /// Per-turn aggregate tool-result char budget (`0` = disabled).
+    pub result_turn_budget_chars: usize,
     /// Maximum write payload KiB (None = use default 32 KiB).
     pub max_write_payload_kib: Option<u32>,
     /// Per-turn file-mutation footers (success log + failure advisory).
@@ -270,7 +272,7 @@ impl Default for AgentConfig {
             checkpoints_max_total_size_mb: 200,
             checkpoints_max_file_size_mb: 10,
             computer_use_enabled: false,
-            computer_use_keep_last_n_screenshots: 3,
+            computer_use_keep_last_n_screenshots: 1,
             computer_use_confirm_destructive: true,
             computer_use_cua_cmd: "cua-driver".into(),
             terminal_backend: edgecrab_tools::tools::backends::BackendKind::Local,
@@ -295,6 +297,7 @@ impl Default for AgentConfig {
             result_spill: true,
             result_spill_threshold: 16_384,
             result_spill_preview_lines: 80,
+            result_turn_budget_chars: 200_000,
             max_write_payload_kib: None,
             file_mutation_verifier: true,
             cache: crate::config::CacheConfig::default(),
@@ -444,6 +447,7 @@ impl AgentConfig {
             result_spill: self.result_spill,
             result_spill_threshold: self.result_spill_threshold,
             result_spill_preview_lines: self.result_spill_preview_lines,
+            result_turn_budget_chars: self.result_turn_budget_chars,
             max_write_payload_kib: self.max_write_payload_kib.map_or(
                 edgecrab_tools::edit_contract::DEFAULT_MAX_MUTATION_PAYLOAD_KIB,
                 |kib| kib as usize,
@@ -491,6 +495,8 @@ pub struct SessionState {
     /// runtime. Once observed, repeating the same request wastes latency and
     /// spams users with avoidable 400s. Plain text streaming still remains on.
     pub native_tool_streaming_disabled: bool,
+    /// Provider/model pairs that rejected multimodal tool-result content (Hermes parity).
+    pub tool_result_image_downgrades: std::collections::HashSet<(String, String)>,
     /// Terminal harness outcome for the most recent completed run.
     pub last_run_outcome: Option<RunOutcome>,
     pub session_tool_call_count: u32,
@@ -2280,6 +2286,7 @@ impl AgentBuilder {
                 result_spill: config.tools.result_spill,
                 result_spill_threshold: config.tools.result_spill_threshold,
                 result_spill_preview_lines: config.tools.result_spill_preview_lines,
+                result_turn_budget_chars: config.tools.result_turn_budget_chars,
                 max_write_payload_kib: config.tools.file.max_write_payload_kib,
                 file_mutation_verifier: config.display.file_mutation_verifier,
                 cache: config.cache.clone(),

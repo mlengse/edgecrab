@@ -1236,7 +1236,7 @@ impl CommandRegistry {
 
         self.register(Command {
             name: "computer",
-            aliases: &[],
+            aliases: &["cu", "desktop", "cua"],
             description: "Computer use status, permissions, enable, and setup (macOS + cua-driver)",
             handler: |args| CommandResult::ShowComputer(args.trim().to_string()),
         });

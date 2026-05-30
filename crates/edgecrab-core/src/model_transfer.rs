@@ -100,18 +100,16 @@ pub fn resolve_model_transfer_target(model_str: &str) -> Result<ModelTransferTar
     if display.is_empty() {
         return Err(ModelTransferError::InvalidFormat);
     }
-    let (provider_raw, model_name) = display
-        .split_once('/')
-        .ok_or(ModelTransferError::InvalidFormat)?;
-    let provider = edgecrab_tools::vision_models::normalize_provider_name(provider_raw);
-    let context_window = ModelCatalog::context_window(&provider, model_name)
-        .ok_or_else(|| ModelTransferError::UnknownModel(display.to_string()))?
-        as usize;
+    if !display.contains('/') {
+        return Err(ModelTransferError::InvalidFormat);
+    }
+    let resolved = ModelCatalog::resolve_spec(display)
+        .ok_or_else(|| ModelTransferError::UnknownModel(display.to_string()))?;
     Ok(ModelTransferTarget {
-        display: display.to_string(),
-        provider,
-        model_name: model_name.to_string(),
-        context_window,
+        display: resolved.display,
+        provider: resolved.runtime_provider,
+        model_name: resolved.model_name,
+        context_window: resolved.context_window as usize,
     })
 }
 
@@ -138,9 +136,7 @@ pub fn target_compression_params(
 
 /// Resolve context window for a `provider/model` display string.
 pub fn context_window_for_model(display: &str) -> Option<usize> {
-    let (provider_raw, model_name) = display.split_once('/')?;
-    let provider = edgecrab_tools::vision_models::normalize_provider_name(provider_raw);
-    ModelCatalog::context_window(&provider, model_name).map(|w| w as usize)
+    ModelCatalog::context_window_for_spec(display).map(|w| w as usize)
 }
 
 /// Returns true when estimated tokens exceed the target model's compression threshold.
@@ -480,6 +476,24 @@ mod tests {
         assert_eq!(target.provider, "anthropic");
         assert_eq!(target.model_name, "claude-haiku-4.5");
         assert!(target.context_window > 0);
+    }
+
+    #[test]
+    fn resolve_copilot_model_uses_catalog_key_and_runtime_provider() {
+        let target =
+            resolve_model_transfer_target("copilot/claude-haiku-4.5").expect("copilot catalog hit");
+        assert_eq!(target.display, "copilot/claude-haiku-4.5");
+        assert_eq!(target.provider, "vscode-copilot");
+        assert_eq!(target.model_name, "claude-haiku-4.5");
+        assert_eq!(target.context_window, 200_000);
+    }
+
+    #[test]
+    fn context_window_for_copilot_spec() {
+        assert_eq!(
+            context_window_for_model("copilot/gpt-5-mini"),
+            Some(264_000)
+        );
     }
 
     #[tokio::test]

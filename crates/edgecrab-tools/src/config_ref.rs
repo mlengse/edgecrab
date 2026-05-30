@@ -222,6 +222,8 @@ pub struct AppConfigRef {
     pub result_spill_threshold: usize,
     /// Number of preview lines kept in the spill stub.
     pub result_spill_preview_lines: usize,
+    /// Aggregate tool-result char budget per assistant turn (`0` = off).
+    pub result_turn_budget_chars: usize,
     /// Maximum write payload size in KiB for file mutation tools.
     ///
     /// WHY FP16 "Defaults protect, overrides empower": the default (32 KiB)
@@ -267,7 +269,7 @@ impl Default for AppConfigRef {
             checkpoints_max_total_size_mb: 200,
             checkpoints_max_file_size_mb: 10,
             computer_use_enabled: false,
-            computer_use_keep_last_n_screenshots: 3,
+            computer_use_keep_last_n_screenshots: 1,
             computer_use_confirm_destructive: true,
             computer_use_cua_cmd: "cua-driver".into(),
             active_model: String::new(),
@@ -300,6 +302,7 @@ impl Default for AppConfigRef {
             result_spill: true,
             result_spill_threshold: 16_384,
             result_spill_preview_lines: 80,
+            result_turn_budget_chars: 200_000,
             max_write_payload_kib: crate::edit_contract::DEFAULT_MAX_MUTATION_PAYLOAD_KIB,
         }
     }

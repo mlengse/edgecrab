@@ -57,7 +57,7 @@ use edgecrab_types::trajectory::{
     TrajectoryMetadata, convert_scratchpad_to_think, save_trajectory,
 };
 use edgecrab_types::{
-    AgentError, Content, ContentPart, Cost, Message, Role, ToolError, ToolErrorResponse, Trajectory,
+    AgentError, Content, Cost, Message, Role, ToolError, ToolErrorResponse, Trajectory,
     Usage,
 };
 use edgequake_llm::traits::{CacheControl, StreamChunk, StreamUsage};
@@ -1621,19 +1621,13 @@ impl Agent {
                 extended
             };
 
-            let chat_messages = match (session.cached_stable_prompt.as_deref(), cache_cfg.as_ref())
-            {
-                (Some(stable), Some(cfg)) => {
-                    let combined = session.cached_system_prompt.as_deref().unwrap_or("");
-                    let dynamic = split_dynamic_from_stable(combined, stable);
-                    build_chat_messages_blocks(stable, dynamic, &messages_for_api, Some(cfg))
-                }
-                _ => build_chat_messages(
-                    session.cached_system_prompt.as_deref(),
-                    &messages_for_api,
-                    cache_cfg.as_ref(),
-                ),
-            };
+            let mut chat_messages = build_api_chat_messages(
+                &session,
+                &messages_for_api,
+                cache_cfg.as_ref(),
+                effective_provider.as_ref(),
+                &app_config_ref,
+            );
             let completion_options = completion_options_for(&config);
 
             // API call with retry — sends tool definitions so LLM can request tool calls.
@@ -1677,14 +1671,79 @@ impl Agent {
                         elapsed_ms = turn_started_at.elapsed().as_millis() as u64,
                         "execute_loop: api_call_with_retry succeeded"
                     );
-                    outcome
+                    Ok(outcome)
                 }
                 // Cancellation during the API call — break cleanly without
                 // attempting the fallback provider (user wants to stop NOW).
                 Err(AgentError::Interrupted) => {
                     interrupted = true;
-                    break;
+                    break 'conversation_loop;
                 }
+                Err(primary_err) => {
+                    let err_text = primary_err.to_string();
+                    if crate::multimodal_tool_content::is_tool_content_rejection_error(&err_text) {
+                        let key = crate::multimodal_tool_content::provider_model_key(
+                            effective_provider.name(),
+                            effective_provider.model(),
+                        );
+                        if !session.tool_result_image_downgrades.contains(&key) {
+                            session.tool_result_image_downgrades.insert(key);
+                            tracing::warn!(
+                                provider = effective_provider.name(),
+                                model = effective_provider.model(),
+                                "provider rejected tool-result images; retrying with text-only tool messages"
+                            );
+                            chat_messages = build_api_chat_messages(
+                                &session,
+                                &messages_for_api,
+                                cache_cfg.as_ref(),
+                                effective_provider.as_ref(),
+                                &app_config_ref,
+                            );
+                            crate::multimodal_tool_content::downgrade_tool_images_in_chat_messages(
+                                &mut chat_messages,
+                                Some((
+                                    effective_provider.name(),
+                                    effective_provider.model(),
+                                    &mut session.tool_result_image_downgrades,
+                                )),
+                            );
+                            match api_call_with_retry(
+                                &effective_provider,
+                                &chat_messages,
+                                &active_tool_defs,
+                                MAX_RETRIES,
+                                ApiCallContext {
+                                    options: Some(&completion_options),
+                                    cancel: &cancel,
+                                    event_tx,
+                                    use_native_streaming: native_streaming_active,
+                                    discovered_plugins: discovered_plugins.as_deref(),
+                                    conversation_session_id: &conversation_session_id,
+                                    platform: config.platform,
+                                    api_call_count: session.api_call_count,
+                                },
+                            )
+                            .await
+                            {
+                                Ok(outcome) => Ok(outcome),
+                                Err(AgentError::Interrupted) => {
+                                    interrupted = true;
+                                    break 'conversation_loop;
+                                }
+                                Err(retry_err) => Err(retry_err),
+                            }
+                        } else {
+                            Err(primary_err)
+                        }
+                    } else {
+                        Err(primary_err)
+                    }
+                }
+            };
+
+            let api_outcome = match api_outcome {
+                Ok(outcome) => outcome,
                 Err(primary_err) => 'recover: {
                     // In native streaming mode, partial output may already have
                     // been shown to the user. Retrying or swapping to a fallback
@@ -2436,13 +2495,49 @@ impl Agent {
     }
 }
 
+/// Build provider-ready chat messages with multimodal attach policy applied.
+fn build_api_chat_messages(
+    session: &SessionState,
+    messages_for_api: &[Message],
+    cache_cfg: Option<&CachePromptConfig>,
+    provider: &dyn LLMProvider,
+    app_cfg: &edgecrab_tools::config_ref::AppConfigRef,
+) -> Vec<edgequake_llm::ChatMessage> {
+    let attach = crate::multimodal_tool_content::should_attach_computer_use_screenshot(
+        provider.name(),
+        provider.model(),
+        app_cfg,
+        &session.tool_result_image_downgrades,
+    );
+    match (session.cached_stable_prompt.as_deref(), cache_cfg) {
+        (Some(stable), Some(cfg)) => {
+            let combined = session.cached_system_prompt.as_deref().unwrap_or("");
+            let dynamic = split_dynamic_from_stable(combined, stable);
+            build_chat_messages_blocks(stable, dynamic, messages_for_api, Some(cfg), attach)
+        }
+        _ => build_chat_messages(
+            session.cached_system_prompt.as_deref(),
+            messages_for_api,
+            cache_cfg,
+            attach,
+        ),
+    }
+}
+
 /// Shared helper: append `messages` as edgequake-llm `ChatMessage`s into `out`.
 ///
 /// Extracted to avoid duplicating the role-mapping logic between
 /// `build_chat_messages` (single system block) and
 /// `build_chat_messages_blocks` (stable + dynamic blocks).
-fn append_conversation_messages(out: &mut Vec<edgequake_llm::ChatMessage>, messages: &[Message]) {
-    for m in messages {
+fn append_conversation_messages(
+    out: &mut Vec<edgequake_llm::ChatMessage>,
+    messages: &[Message],
+    attach_computer_use_images: bool,
+) {
+    let last_disk_image_idx =
+        crate::multimodal_tool_content::last_computer_use_disk_capture_index(messages);
+
+    for (idx, m) in messages.iter().enumerate() {
         let text = m.text_content();
         match m.role {
             Role::System => out.push(edgequake_llm::ChatMessage::system(&text)),
@@ -2451,7 +2546,6 @@ fn append_conversation_messages(out: &mut Vec<edgequake_llm::ChatMessage>, messa
                 if let Some(ref tool_calls) = m.tool_calls
                     && !tool_calls.is_empty()
                 {
-                    // Convert our ToolCall → edgequake-llm ToolCall
                     let llm_calls: Vec<edgequake_llm::ToolCall> =
                         tool_calls.iter().map(|tc| tc.to_llm()).collect();
                     out.push(edgequake_llm::ChatMessage::assistant_with_tools(
@@ -2465,26 +2559,12 @@ fn append_conversation_messages(out: &mut Vec<edgequake_llm::ChatMessage>, messa
                 let tool_call_id = m.tool_call_id.as_deref().unwrap_or("unknown");
                 let mut chat_msg = edgequake_llm::ChatMessage::tool_result(tool_call_id, &text);
                 chat_msg.name = m.name.clone();
-                if let Some(Content::Parts(parts)) = &m.content {
-                    let images: Vec<edgequake_llm::ImageData> = parts
-                        .iter()
-                        .filter_map(|p| match p {
-                            ContentPart::ImageUrl { image_url } => {
-                                let url = &image_url.url;
-                                url.strip_prefix("data:image/png;base64,")
-                                    .map(|b64| edgequake_llm::ImageData::new(b64, "image/png"))
-                                    .or_else(|| {
-                                        url.strip_prefix("data:image/jpeg;base64,")
-                                            .map(|b64| edgequake_llm::ImageData::new(b64, "image/jpeg"))
-                                    })
-                            }
-                            _ => None,
-                        })
-                        .collect();
-                    if !images.is_empty() {
-                        chat_msg.images = Some(images);
-                    }
-                }
+                crate::multimodal_tool_content::enrich_tool_chat_message(
+                    &mut chat_msg,
+                    m,
+                    attach_computer_use_images,
+                    last_disk_image_idx == Some(idx),
+                );
                 out.push(chat_msg);
             }
         }
@@ -2532,6 +2612,7 @@ pub fn build_chat_messages_blocks(
     dynamic: &str,
     messages: &[Message],
     cache_config: Option<&CachePromptConfig>,
+    attach_computer_use_images: bool,
 ) -> Vec<edgequake_llm::ChatMessage> {
     let mut out = Vec::with_capacity(messages.len() + 2);
 
@@ -2550,7 +2631,7 @@ pub fn build_chat_messages_blocks(
         out.push(edgequake_llm::ChatMessage::system(dynamic));
     }
 
-    append_conversation_messages(&mut out, messages);
+    append_conversation_messages(&mut out, messages, attach_computer_use_images);
 
     // Cache breakpoints on last N user messages.
     // cache_system_prompt: false → system messages already handled above.
@@ -2592,6 +2673,7 @@ pub fn build_chat_messages(
     system_prompt: Option<&str>,
     messages: &[Message],
     cache_config: Option<&CachePromptConfig>,
+    attach_computer_use_images: bool,
 ) -> Vec<edgequake_llm::ChatMessage> {
     let mut out = Vec::with_capacity(messages.len() + 1);
 
@@ -2600,7 +2682,7 @@ pub fn build_chat_messages(
         out.push(edgequake_llm::ChatMessage::system(sys));
     }
 
-    append_conversation_messages(&mut out, messages);
+    append_conversation_messages(&mut out, messages, attach_computer_use_images);
 
     // Inject Anthropic cache_control breakpoints when prompt caching is enabled.
     // System message → always cacheable; last N user messages → breakpoints.
@@ -3027,6 +3109,41 @@ fn summarize_tool_result_preview(name: &str, tool_result: &str, is_error: bool) 
         }
     }
 
+    if tool_result.trim().starts_with("[tool_result_spill]") {
+        if name == "computer_use" {
+            for line in tool_result.lines() {
+                if line.starts_with("--- BEGIN PREVIEW") {
+                    continue;
+                }
+                if line.starts_with("--- END PREVIEW") {
+                    break;
+                }
+                let trimmed = line.trim();
+                if trimmed.is_empty() || trimmed.starts_with("tool:") || trimmed.starts_with("bytes:")
+                {
+                    continue;
+                }
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    if let Some(msg) = val.get("message").and_then(|v| v.as_str()) {
+                        return Some(truncate(msg, 88));
+                    }
+                    if let Some(summary) = val
+                        .get("text_summary")
+                        .or_else(|| val.get("summary"))
+                        .and_then(|v| v.as_str())
+                    {
+                        let first = summary.lines().next().unwrap_or(summary);
+                        return Some(truncate(first, 88));
+                    }
+                }
+                if trimmed.contains("capture mode=") {
+                    return Some(truncate(trimmed, 88));
+                }
+            }
+        }
+        return Some(truncate("[spilled — use read_file on artifact]", 88));
+    }
+
     if is_error {
         let line = extract_tool_error_text(tool_result);
         let line = if line.trim().is_empty() {
@@ -3035,6 +3152,26 @@ fn summarize_tool_result_preview(name: &str, tool_result: &str, is_error: bool) 
             line
         };
         return Some(truncate(&line, 88));
+    }
+
+    if name == "computer_use" {
+        if let Ok(value) = serde_json::from_str::<serde_json::Value>(tool_result) {
+            if let Some(msg) = value.get("message").and_then(|v| v.as_str()) {
+                return Some(truncate(msg.trim(), 88));
+            }
+            if value.get("_multimodal").and_then(|v| v.as_bool()) == Some(true) {
+                let summary = value
+                    .get("text_summary")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("capture");
+                let first = summary.lines().next().unwrap_or(summary);
+                return Some(truncate(first, 88));
+            }
+            if let Some(summary) = value.get("summary").and_then(|v| v.as_str()) {
+                let first = summary.lines().next().unwrap_or(summary);
+                return Some(truncate(first, 88));
+            }
+        }
     }
 
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(tool_result)
@@ -3304,7 +3441,16 @@ fn estimate_stream_prompt_tokens(
     messages: &[edgequake_llm::ChatMessage],
     tool_defs: &[edgequake_llm::ToolDefinition],
 ) -> usize {
-    estimate_tokens_from_json(&(messages, tool_defs))
+    use edgecrab_types::MULTIMODAL_IMAGE_TOKEN_ESTIMATE;
+
+    let mut total = estimate_tokens_from_json(tool_defs);
+    for m in messages {
+        total += estimate_tokens_from_text(&m.content);
+        if let Some(images) = &m.images {
+            total += images.len() * MULTIMODAL_IMAGE_TOKEN_ESTIMATE;
+        }
+    }
+    total
 }
 
 fn estimate_request_prompt_tokens(
@@ -3312,8 +3458,11 @@ fn estimate_request_prompt_tokens(
     messages: &[Message],
     tool_defs: &[edgequake_llm::ToolDefinition],
 ) -> usize {
-    let chat_messages = build_chat_messages(system_prompt, messages, None);
-    estimate_stream_prompt_tokens(&chat_messages, tool_defs)
+    let mut total = estimate_tokens_from_json(tool_defs);
+    if let Some(sp) = system_prompt {
+        total += estimate_tokens_from_text(sp);
+    }
+    total + crate::compression::estimate_tokens(messages)
 }
 
 async fn invoke_pre_api_request_hooks(
@@ -3442,7 +3591,7 @@ fn estimate_stream_completion_tokens(
     estimate_tokens_from_json(&(content, thinking, tool_calls))
 }
 
-fn estimate_tokens_from_json<T: serde::Serialize>(value: &T) -> usize {
+fn estimate_tokens_from_json<T: serde::Serialize + ?Sized>(value: &T) -> usize {
     let serialized = match serde_json::to_string(value) {
         Ok(serialized) => serialized,
         Err(_) => return 0,
@@ -4049,6 +4198,41 @@ fn remember_tool_suppression(
 ///       ├── parallel safe? ──→ JoinSet::spawn (concurrent)
 ///       └── sequential?    ──→ await inline (ordered)
 /// ```
+fn append_tool_result_to_session(
+    session: &mut SessionState,
+    dctx: &DispatchContext,
+    tool_call_id: &str,
+    tool_name: &str,
+    tool_result: &str,
+) {
+    let (provider, model) = dctx
+        .provider
+        .as_ref()
+        .map(|p| (p.name().to_string(), p.model().to_string()))
+        .unwrap_or_else(|| {
+            if let Some((p, m)) =
+                edgecrab_tools::vision_models::parse_provider_model_spec(&dctx.app_config_ref.active_model)
+            {
+                (p, m)
+            } else {
+                ("unknown".into(), dctx.app_config_ref.active_model.clone())
+            }
+        });
+    let store_images = crate::multimodal_tool_content::should_store_computer_use_images_in_session(
+        tool_name,
+        &provider,
+        &model,
+        &dctx.app_config_ref,
+        &session.tool_result_image_downgrades,
+    );
+    session.messages.push(Message::tool_result_for_session_policy(
+        tool_call_id,
+        tool_name,
+        tool_result,
+        store_images,
+    ));
+}
+
 async fn process_response(
     response: &edgequake_llm::LLMResponse,
     session: &mut SessionState,
@@ -4083,6 +4267,7 @@ async fn process_response(
         }
         session.messages.push(assistant_msg);
         session.session_tool_call_count += effective_tool_calls.len() as u32;
+        let tool_turn_start = session.messages.len();
 
         // Partition tools into parallel-safe and sequential
         let mut parallel_tasks = tokio::task::JoinSet::new();
@@ -4234,9 +4419,17 @@ async fn process_response(
                     received_parallel_ids.insert(tc_id.clone());
                     // Record for duplicate detection (FP11)
                     dedup_tracker.record(&tc_name, &args_json, &tool_result);
-                    session
-                        .messages
-                        .push(Message::tool_result_from_output(&tc_id, &tc_name, &tool_result));
+                    append_tool_result_to_session(
+                        session,
+                        dctx,
+                        &tc_id,
+                        &tc_name,
+                        &tool_result,
+                    );
+                    crate::compression::maybe_prune_computer_use_screenshots(
+                        &mut session.messages,
+                        dctx.app_config_ref.computer_use_keep_last_n_screenshots,
+                    );
                     session.messages.extend(injected_messages);
                 }
                 Err(e) => {
@@ -4341,12 +4534,41 @@ async fn process_response(
             }
             // Record for duplicate detection (FP11)
             dedup_tracker.record(&tc.function.name, &tc.function.arguments, &tool_result);
-            session.messages.push(Message::tool_result_from_output(
+            append_tool_result_to_session(
+                session,
+                dctx,
                 &tc.id,
                 &tc.function.name,
                 &tool_result,
-            ));
+            );
+            crate::compression::maybe_prune_computer_use_screenshots(
+                &mut session.messages,
+                dctx.app_config_ref.computer_use_keep_last_n_screenshots,
+            );
             session.messages.extend(injected_messages);
+        }
+
+        if dctx.app_config_ref.result_turn_budget_chars > 0 {
+            let spill_config = crate::tool_result_spill::SpillConfig {
+                enabled: dctx.app_config_ref.result_spill,
+                threshold: dctx.app_config_ref.result_spill_threshold,
+                preview_lines: dctx.app_config_ref.result_spill_preview_lines,
+            };
+            let spilled = crate::tool_result_spill::enforce_turn_budget(
+                &mut session.messages[tool_turn_start..],
+                dctx.app_config_ref.result_turn_budget_chars,
+                &spill_config,
+                &dctx.conversation_session_id,
+                &dctx.cwd,
+                &dctx.spill_seq,
+            );
+            if spilled > 0 {
+                tracing::info!(
+                    spilled,
+                    turn_budget = dctx.app_config_ref.result_turn_budget_chars,
+                    "per-turn tool result budget enforced"
+                );
+            }
         }
 
         if argument_loop_blocked {
@@ -5020,6 +5242,7 @@ and stop — do NOT call any tools.";
         session.cached_system_prompt.as_deref(),
         &session.messages,
         None, // No cache control for reflection turn
+        false, // reflection is text-only; never attach tool screenshots
     );
 
     let response = match provider
@@ -6510,15 +6733,72 @@ def register(ctx):
     #[test]
     fn build_chat_messages_prepends_system() {
         let messages = vec![Message::user("hi")];
-        let chat_msgs = build_chat_messages(Some("system prompt"), &messages, None);
+        let chat_msgs = build_chat_messages(Some("system prompt"), &messages, None, true);
         assert_eq!(chat_msgs.len(), 2);
     }
 
     #[test]
     fn build_chat_messages_no_system() {
         let messages = vec![Message::user("hi")];
-        let chat_msgs = build_chat_messages(None, &messages, None);
+        let chat_msgs = build_chat_messages(None, &messages, None, true);
         assert_eq!(chat_msgs.len(), 1);
+    }
+
+    #[test]
+    fn build_chat_messages_omits_computer_use_image_when_downgraded() {
+        use edgecrab_types::multimodal_disk_image_from_content;
+
+        let envelope = serde_json::json!({
+            "_multimodal": true,
+            "_image_path": "/tmp/test-capture.png",
+            "_image_mime": "image/png",
+            "text_summary": "capture summary",
+            "content": [{"type": "text", "text": "capture summary"}]
+        });
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test-capture.png");
+        std::fs::write(&path, b"\x89PNG\r\n\x1a\n").expect("png");
+        let body = envelope.to_string().replace("/tmp/test-capture.png", path.display().to_string().as_str());
+
+        let messages = vec![Message::tool_result("tc1", "computer_use", &body)];
+        let mut session = SessionState::default();
+        session
+            .tool_result_image_downgrades
+            .insert(("anthropic".into(), "claude-opus-4.6".into()));
+
+        let cfg = edgecrab_tools::config_ref::AppConfigRef::default();
+        let attach = crate::multimodal_tool_content::should_attach_computer_use_screenshot(
+            "anthropic",
+            "claude-opus-4.6",
+            &cfg,
+            &session.tool_result_image_downgrades,
+        );
+        assert!(!attach);
+        let chat = build_chat_messages(None, &messages, None, attach);
+        let tool = chat
+            .iter()
+            .find(|m| m.role == edgequake_llm::ChatRole::Tool)
+            .expect("tool");
+        assert!(tool.images.is_none());
+        assert!(multimodal_disk_image_from_content(&tool.content).is_some());
+    }
+
+    #[test]
+    fn build_chat_messages_attaches_disk_capture_when_policy_allows() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test-capture.png");
+        std::fs::write(&path, b"\x89PNG\r\n\x1a\n").expect("png");
+        let body = format!(
+            r#"{{"_multimodal":true,"_image_path":"{}","_image_mime":"image/png","text_summary":"capture summary","content":[{{"type":"text","text":"capture summary"}}]}}"#,
+            path.display()
+        );
+        let messages = vec![Message::tool_result("tc1", "computer_use", &body)];
+        let chat = build_chat_messages(None, &messages, None, true);
+        let tool = chat
+            .iter()
+            .find(|m| m.role == edgequake_llm::ChatRole::Tool)
+            .expect("tool");
+        assert!(tool.images.as_ref().is_some_and(|imgs| !imgs.is_empty()));
     }
 
     #[test]
@@ -6529,7 +6809,7 @@ def register(ctx):
                 .as_str(),
         )];
         let cfg = CachePromptConfig::default();
-        let chat_msgs = build_chat_messages(Some("system prompt"), &messages, Some(&cfg));
+        let chat_msgs = build_chat_messages(Some("system prompt"), &messages, Some(&cfg), true);
         // System + user = 2 messages; cache breakpoints should be set
         assert_eq!(chat_msgs.len(), 2);
         // System message should have cache_control set
@@ -6541,7 +6821,7 @@ def register(ctx):
     #[test]
     fn build_chat_messages_blocks_emits_two_system_messages() {
         let msgs = vec![Message::user("hello")];
-        let out = build_chat_messages_blocks("STABLE", "DYNAMIC", &msgs, None);
+        let out = build_chat_messages_blocks("STABLE", "DYNAMIC", &msgs, None, true);
         // stable + dynamic + user = 3 messages
         assert_eq!(out.len(), 3);
     }
@@ -6549,7 +6829,7 @@ def register(ctx):
     #[test]
     fn build_chat_messages_blocks_stable_has_cache_control() {
         let msgs: Vec<Message> = vec![];
-        let out = build_chat_messages_blocks("STABLE CONTENT", "DYNAMIC CONTENT", &msgs, None);
+        let out = build_chat_messages_blocks("STABLE CONTENT", "DYNAMIC CONTENT", &msgs, None, true);
         assert_eq!(out.len(), 2);
         assert!(
             out[0].cache_control.is_some(),
@@ -6564,7 +6844,7 @@ def register(ctx):
     #[test]
     fn build_chat_messages_blocks_dynamic_has_no_cache_control() {
         let msgs: Vec<Message> = vec![];
-        let out = build_chat_messages_blocks("", "DYNAMIC ONLY", &msgs, None);
+        let out = build_chat_messages_blocks("", "DYNAMIC ONLY", &msgs, None, true);
         // Only dynamic message — no stable block
         assert_eq!(out.len(), 1);
         assert!(
@@ -6577,7 +6857,7 @@ def register(ctx):
     fn build_chat_messages_blocks_with_cache_config_does_not_double_mark_system() {
         let msgs = vec![Message::user("hi")];
         let cfg = CachePromptConfig::default();
-        let out = build_chat_messages_blocks("STABLE", "DYNAMIC", &msgs, Some(&cfg));
+        let out = build_chat_messages_blocks("STABLE", "DYNAMIC", &msgs, Some(&cfg), true);
         // stable[0] already has cache_control set by us, not apply_cache_control
         assert!(out[0].cache_control.is_some());
         // dynamic[1] must NOT get cache_control even with cache config active
@@ -7230,14 +7510,14 @@ def register(ctx):
             Message::assistant_with_tool_calls("sure", vec![tc]),
             Message::tool_result("tc-abc", "read_file", "contents"),
         ];
-        let chat_msgs = build_chat_messages(None, &messages, None);
+        let chat_msgs = build_chat_messages(None, &messages, None, true);
         // user + assistant_with_tools + tool_result = 3 messages
         assert_eq!(chat_msgs.len(), 3);
     }
 
     #[test]
     fn build_chat_messages_empty_input() {
-        let chat_msgs = build_chat_messages(None, &[], None);
+        let chat_msgs = build_chat_messages(None, &[], None, true);
         assert_eq!(
             chat_msgs.len(),
             0,

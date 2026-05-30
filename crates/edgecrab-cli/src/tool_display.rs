@@ -103,6 +103,7 @@ pub enum ToolCategory {
     Memory,
     Plan,
     Ai,
+    Desktop,
     Mcp,
     Ha,
     Other,
@@ -120,6 +121,7 @@ impl ToolCategory {
             ToolCategory::Memory => Color::Rgb(110, 195, 135), // sage green
             ToolCategory::Plan => Color::Rgb(140, 170, 255),  // periwinkle
             ToolCategory::Ai => Color::Rgb(185, 145, 240),    // violet
+            ToolCategory::Desktop => Color::Rgb(95, 195, 255), // macOS sky — distinct from browser teal
             ToolCategory::Mcp => Color::Rgb(130, 165, 210),   // steel blue
             ToolCategory::Ha => Color::Rgb(100, 195, 145),    // green
             ToolCategory::Other => Color::Rgb(170, 180, 205), // gray
@@ -154,6 +156,9 @@ pub fn tool_category(name: &str) -> ToolCategory {
     }
     if name == "todo" || name == "manage_todo_list" {
         return ToolCategory::Plan;
+    }
+    if name == "computer_use" {
+        return ToolCategory::Desktop;
     }
     if name.contains("vision")
         || name.contains("tts")
@@ -408,6 +413,9 @@ fn tool_emoji(tool_name: &str) -> &'static str {
     if n.contains("vision") || n.contains("image") || n.contains("photo") {
         return "👁️";
     }
+    if n == "computer_use" {
+        return "🖥️";
+    }
     if n.contains("mcp") {
         return "◎";
     }
@@ -557,6 +565,7 @@ pub fn tool_label(tool_name: &str) -> String {
         "delegate_task" => "delegate".into(),
         "clarify" => "clarify".into(),
         "checkpoint" => "checkpoint".into(),
+        "computer_use" => "desktop".into(),
         "pdf_to_markdown" => "pdf".into(),
         "ha_list_entities" => "ha entities".into(),
         "ha_get_state" => "ha state".into(),
@@ -740,6 +749,7 @@ pub fn extract_tool_preview_width(
             .get("code")
             .and_then(|v| v.as_str())
             .map(|code| oneline(code.lines().next().unwrap_or_default())),
+        "computer_use" => Some(computer_use_arg_preview(&obj)),
         "browser_snapshot" => Some(
             if obj.get("full").and_then(|v| v.as_bool()).unwrap_or(false) {
                 "full page".into()
@@ -1000,6 +1010,42 @@ fn build_verbose_content_stat(tool_name: &str, args_json: &str) -> Option<String
             }
             if let Some(t) = timeout {
                 parts.push(format!("timeout: {t}s"));
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join(" · "))
+            }
+        }
+        "computer_use" => {
+            let action = obj.get("action").and_then(|v| v.as_str()).unwrap_or("");
+            let mut parts: Vec<String> = Vec::new();
+            if action == "capture" {
+                let mode = obj.get("mode").and_then(|v| v.as_str()).unwrap_or("som");
+                parts.push(mode.into());
+                if let Some(app) = obj.get("app").and_then(|v| v.as_str()) {
+                    parts.push(app.into());
+                }
+                if let Some(q) = obj.get("query").and_then(|v| v.as_str()).filter(|q| !q.is_empty()) {
+                    parts.push(format!("q={}", quoted_preview(q, 20)));
+                }
+            } else if action == "type" {
+                if let Some(t) = obj.get("text").and_then(|v| v.as_str()) {
+                    parts.push(quoted_preview(t, 32));
+                }
+                if let Some(el) = obj.get("element").and_then(|v| v.as_u64()) {
+                    parts.push(format!("#{el}"));
+                }
+            } else if matches!(action, "click" | "double_click" | "right_click") {
+                if let Some(el) = obj.get("element").and_then(|v| v.as_u64()) {
+                    parts.push(format!("#{el}"));
+                }
+            } else if action == "launch_app" {
+                if let Some(b) = obj.get("bundle_id").and_then(|v| v.as_str()) {
+                    parts.push(b.into());
+                } else if let Some(a) = obj.get("app").and_then(|v| v.as_str()) {
+                    parts.push(a.into());
+                }
             }
             if parts.is_empty() {
                 None
@@ -1857,7 +1903,341 @@ fn format_execute_code_result(val: &serde_json::Value, max_cols: usize) -> Strin
     )
 }
 
-/// Format a `web_search` JSON result: `N results · first-title`.
+/// Compact arg preview for `computer_use` (running + done lines).
+fn computer_use_arg_preview(obj: &serde_json::Map<String, serde_json::Value>) -> String {
+    let action = obj.get("action").and_then(|v| v.as_str()).unwrap_or("?");
+    let app = obj
+        .get("app")
+        .or_else(|| obj.get("bundle_id"))
+        .and_then(|v| v.as_str());
+    match action {
+        "capture" => {
+            let mode = obj.get("mode").and_then(|v| v.as_str()).unwrap_or("som");
+            match app {
+                Some(a) => format!("{mode} · {a}"),
+                None => format!("{mode} capture"),
+            }
+        }
+        "launch_app" => {
+            let target = obj
+                .get("bundle_id")
+                .or_else(|| obj.get("app"))
+                .or_else(|| obj.get("name"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("launch {target}")
+        }
+        "navigate" => {
+            let url = obj
+                .get("url")
+                .or_else(|| obj.get("text"))
+                .and_then(|v| v.as_str())
+                .map(|u| quoted_preview(u, 28))
+                .unwrap_or_else(|| "…".into());
+            match app {
+                Some(a) => format!("nav {url} · {a}"),
+                None => format!("nav {url}"),
+            }
+        }
+        "focus_app" => format!("focus {}", app.unwrap_or("?")),
+        "click" | "double_click" | "right_click" | "middle_click" => {
+            let el = obj
+                .get("element")
+                .and_then(|v| v.as_u64())
+                .map(|n| format!("#{n}"))
+                .unwrap_or_default();
+            let ax = obj
+                .get("ax_action")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty() && *s != "press")
+                .map(|a| format!(":{a}"))
+                .unwrap_or_default();
+            format!("{action}{el}{ax}")
+        }
+        "type" => {
+            let text = obj
+                .get("text")
+                .and_then(|v| v.as_str())
+                .map(|t| quoted_preview(t, 22))
+                .unwrap_or_else(|| "…".into());
+            let el = obj
+                .get("element")
+                .and_then(|v| v.as_u64())
+                .map(|n| format!(" #{n}"))
+                .unwrap_or_default();
+            format!("type {text}{el}")
+        }
+        "key" => {
+            let keys = obj
+                .get("keys")
+                .or_else(|| obj.get("key"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("?");
+            format!("key {keys}")
+        }
+        "scroll" => {
+            let dir = obj.get("direction").and_then(|v| v.as_str()).unwrap_or("down");
+            format!("scroll {dir}")
+        }
+        "set_value" => {
+            let el = obj.get("element").and_then(|v| v.as_u64()).unwrap_or(0);
+            format!("set #{el}")
+        }
+        "drag" => format!(
+            "drag #{}→#{}",
+            obj.get("from_element").and_then(|v| v.as_u64()).unwrap_or(0),
+            obj.get("to_element").and_then(|v| v.as_u64()).unwrap_or(0)
+        ),
+        "wait" => format!(
+            "wait {}s",
+            obj.get("seconds").and_then(|v| v.as_f64()).unwrap_or(1.0)
+        ),
+        "list_apps" => "list apps".into(),
+        _ => app.map(|a| format!("{action} {a}")).unwrap_or_else(|| action.into()),
+    }
+}
+
+/// Shorten desktop action messages for the done-line (no ✓/✗ — gutter supplies that).
+fn shorten_desktop_message(msg: &str) -> String {
+    let mut s = oneline(msg);
+    if let Some(stripped) = s.strip_suffix(" without raising window.") {
+        s = stripped.to_string();
+    }
+    if let Some(stripped) = s.strip_suffix(" without raising window") {
+        s = stripped.to_string();
+    }
+    if let Some(idx) = s.find("RECOVERY:") {
+        let head = s[..idx].trim().trim_end_matches('.');
+        let recovery = s[idx..].trim();
+        if head.is_empty() {
+            return recovery.to_string();
+        }
+        return format!("{head} ⇢ {recovery}");
+    }
+    s
+}
+
+fn desktop_error_hint(msg: &str) -> &'static str {
+    if msg.contains("element_index") || msg.contains("out of range") || msg.contains("do not transfer")
+    {
+        " · stale index"
+    } else if msg.contains("RECOVERY:") || msg.contains("launch_app") {
+        " · see ⇢ hint"
+    } else if msg.contains("No active window") || msg.contains("No on-screen window") {
+        " · launch/focus first"
+    } else {
+        ""
+    }
+}
+
+/// Build a one-line capture summary from structured JSON (text-only / aux-routed).
+fn format_capture_json_line(val: &serde_json::Value) -> Option<String> {
+    let app = val.get("app").and_then(|v| v.as_str()).filter(|s| !s.is_empty())?;
+    let mode = val.get("mode").and_then(|v| v.as_str()).unwrap_or("som");
+    let w = val.get("width").and_then(|v| v.as_u64()).unwrap_or(0);
+    let h = val.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
+    let title = val
+        .get("window_title")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty() && !s.starts_with('<'));
+    let n = val.get("total_elements").and_then(|v| v.as_u64()).or_else(|| {
+        val.get("elements")
+            .and_then(|v| v.as_array())
+            .map(|a| a.len() as u64)
+    });
+    let dims = if w == 0 && h == 0 {
+        "0×0 ⚠".to_string()
+    } else {
+        format!("{w}×{h}")
+    };
+    let mut parts = vec![format!("{mode}")];
+    if let Some(t) = title {
+        parts.push(format!("{app} \"{t}\""));
+    } else {
+        parts.push(app.to_string());
+    }
+    parts.push(dims);
+    if let Some(count) = n {
+        parts.push(format!("{count} elt{}", if count == 1 { "" } else { "s" }));
+    }
+    Some(parts.join(" · "))
+}
+
+/// Format a `computer_use` result for the TUI activity line.
+///
+/// Design goals:
+/// - One-line, glanceable: action verb + key fact (✓/✗ come from the done-line gutter).
+/// - Failures show **why** + **how to recover** (cua-driver `RECOVERY:` hints).
+/// - Captures show `Notes "Title" · 1568×909 · 12 elts` instead of raw JSON.
+fn format_computer_use_result(val: &serde_json::Value, max_cols: usize) -> String {
+    // ── Multimodal capture envelope (vision-capable models) ─────────────────
+    if val.get("_multimodal").and_then(|v| v.as_bool()) == Some(true) {
+        let summary = val
+            .get("text_summary")
+            .and_then(|v| v.as_str())
+            .or_else(|| {
+                val.get("content")
+                    .and_then(|c| c.as_array())
+                    .and_then(|parts| {
+                        parts.iter().find_map(|p| {
+                            (p.get("type").and_then(|t| t.as_str()) == Some("text"))
+                                .then(|| p.get("text").and_then(|t| t.as_str()))
+                                .flatten()
+                        })
+                    })
+            })
+            .unwrap_or("capture");
+        let pretty = format_capture_after_summary(summary);
+        let suffix = if val.get("_image_path").is_some() || val.get("screenshot_path").is_some() {
+            " 📷"
+        } else {
+            ""
+        };
+        let prefix = if pretty.contains("0×0") || pretty.contains("0x0 ⚠") {
+            "⚠ "
+        } else {
+            ""
+        };
+        return unicode_trunc(&format!("{prefix}{pretty}{suffix}"), max_cols);
+    }
+
+    // ── Text-only / aux capture object ──────────────────────────────────────
+    if let Some(line) = format_capture_json_line(val) {
+        let prefix = if line.contains('⚠') { "⚠ " } else { "" };
+        let omit = val.get("screenshot_omitted").and_then(|v| v.as_bool()) == Some(true);
+        let suffix = if omit { " (no img)" } else { "" };
+        return unicode_trunc(&format!("{prefix}{line}{suffix}"), max_cols);
+    }
+
+    // ── Action result (click/type/key/focus_app/launch_app/…) ───────────────
+    if let Some(ok) = val.get("ok").and_then(|v| v.as_bool()) {
+        if !ok {
+            let raw = val
+                .get("message")
+                .and_then(|v| v.as_str())
+                .or_else(|| val.get("error").and_then(|v| v.as_str()))
+                .unwrap_or("failed");
+            let compact = shorten_desktop_message(raw);
+            let hint = desktop_error_hint(&compact);
+            return unicode_trunc(&format!("{compact}{hint}"), max_cols);
+        }
+        if let Some(msg) = val.get("message").and_then(|v| v.as_str())
+            && !msg.is_empty()
+        {
+            let trimmed = msg.trim_start_matches(['✓', '✅', ' ']).trim_start();
+            return unicode_trunc(&shorten_desktop_message(trimmed), max_cols);
+        }
+        return unicode_trunc("ok", max_cols);
+    }
+
+    // ── list_apps ───────────────────────────────────────────────────────────
+    if let Some(apps) = val.get("apps").and_then(|v| v.as_array()) {
+        let n = apps.len();
+        let header = if n == 1 { "1 app".to_string() } else { format!("{n} apps") };
+        // Show first 2 names so the agent / user can see "did Safari come back?"
+        let first_two: Vec<&str> = apps
+            .iter()
+            .take(2)
+            .filter_map(|a| a.get("name").and_then(|v| v.as_str()))
+            .collect();
+        let body = if first_two.is_empty() {
+            header
+        } else {
+            format!("{header}: {}", first_two.join(", "))
+        };
+        return unicode_trunc(&body, max_cols);
+    }
+
+    // ── Text-only capture (Copilot / aux-vision-routed) ─────────────────────
+    if let Some(summary) = val.get("summary").and_then(|v| v.as_str()) {
+        return unicode_trunc(&prettify_capture_summary(summary), max_cols);
+    }
+
+    unicode_trunc(&oneline(&val.to_string()), max_cols)
+}
+
+/// Convert a verbose `capture` summary block to a single dense line.
+///
+/// Example input (multimodal `text_summary` or text-only `summary`):
+/// ```text
+/// capture mode=som 1567x1065 app=Safari window="Start Page"
+/// 12 interactable element(s):
+///   #45 AXButton …
+/// ```
+///
+/// Output: `Safari "Start Page" · 1567x1065 · 12 elts`
+fn prettify_capture_summary(summary: &str) -> String {
+    let mut lines = summary.lines();
+    let first = lines.next().unwrap_or(summary);
+    // Heuristic extraction — keep it cheap; first line is from our own builder.
+    let app = first
+        .split_once(" app=")
+        .and_then(|(_, rest)| rest.split_whitespace().next())
+        .unwrap_or("");
+    let dims = if first.contains("0x0 ⚠") {
+        "0×0 ⚠".to_string()
+    } else {
+        first
+            .split_whitespace()
+            .find(|tok| {
+                tok.chars().any(|c| c == 'x')
+                    && tok.chars().all(|c| c.is_ascii_digit() || c == 'x' || *tok == "0x0")
+            })
+            .unwrap_or("")
+            .to_string()
+    };
+    let window_title = first
+        .split_once("window=\"")
+        .and_then(|(_, rest)| rest.split_once('"'))
+        .map(|(t, _)| t)
+        .unwrap_or("");
+    let elements = lines
+        .next()
+        .and_then(|l| l.split_whitespace().next())
+        .and_then(|n| n.parse::<u32>().ok());
+
+    let mut parts: Vec<String> = Vec::with_capacity(4);
+    if !app.is_empty() {
+        if !window_title.is_empty() {
+            parts.push(format!("{app} \"{window_title}\""));
+        } else {
+            parts.push(app.to_string());
+        }
+    } else if !window_title.is_empty() {
+        parts.push(format!("\"{window_title}\""));
+    }
+    if !dims.is_empty() {
+        parts.push(dims.to_string());
+    }
+    if let Some(n) = elements {
+        parts.push(format!("{n} elt{}", if n == 1 { "" } else { "s" }));
+    }
+    if parts.is_empty() {
+        return oneline(first);
+    }
+    let line = parts.join(" · ");
+    if line.contains("0×0") || first.contains("0x0 ⚠") {
+        format!("⚠ {line}")
+    } else {
+        line
+    }
+}
+
+/// `capture_after=true` embeds prior action + fresh capture in one summary block.
+fn format_capture_after_summary(summary: &str) -> String {
+    if let Some((head, cap)) = summary.split_once("\n\n") {
+        let action = head
+            .strip_prefix('[')
+            .and_then(|s| s.split_once(']'))
+            .map(|(a, _)| a.trim())
+            .unwrap_or(head);
+        let action = action.split_whitespace().next().unwrap_or(action);
+        let cap_pretty = prettify_capture_summary(cap);
+        return format!("{action} → {cap_pretty}");
+    }
+    prettify_capture_summary(summary)
+}
+
 fn format_web_search_result(val: &serde_json::Value, max_cols: usize) -> String {
     let results = val
         .get("results")
@@ -2110,10 +2490,70 @@ fn format_todo_result(v: &serde_json::Value, max_cols: usize) -> String {
 /// - One central function (`format_tool_result`) replaces all direct `unicode_trunc(result, …)` calls.
 /// - Per-tool helpers are private; callers only know `format_tool_result`.
 /// - Adding a new tool formatter requires only a new `match` arm — no call-site changes.
+/// Parse a `[tool_result_spill]` stub and return a TUI-friendly one-liner.
+fn format_tool_result_spill_stub(tool_name: &str, stub: &str, max_cols: usize) -> String {
+    let mut lines = stub.lines();
+    let _header = lines.next();
+    let mut artifact: Option<&str> = None;
+    let mut preview_lines: Vec<&str> = Vec::new();
+    let mut in_preview = false;
+    for line in lines {
+        if let Some(rest) = line.strip_prefix("artifact: ") {
+            artifact = Some(rest.trim());
+            continue;
+        }
+        if line.starts_with("--- BEGIN PREVIEW") {
+            in_preview = true;
+            continue;
+        }
+        if line.starts_with("--- END PREVIEW") {
+            break;
+        }
+        if in_preview {
+            preview_lines.push(line);
+        }
+    }
+
+    if tool_name == "computer_use" {
+        let preview = preview_lines.join("\n");
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(preview.trim()) {
+            return format_computer_use_result(&val, max_cols);
+        }
+        if preview.contains("capture mode=") || preview.contains("capture ") {
+            let pretty = prettify_capture_summary(&preview);
+            return unicode_trunc(&format!("📷 {pretty} (spilled)"), max_cols);
+        }
+        if let Some(msg) = preview_lines
+            .iter()
+            .find_map(|l| {
+                serde_json::from_str::<serde_json::Value>(l.trim())
+                    .ok()
+                    .and_then(|v| v.get("message").and_then(|m| m.as_str()).map(str::to_string))
+            })
+        {
+            return unicode_trunc(&shorten_desktop_message(&msg), max_cols);
+        }
+    }
+
+    let hint = artifact
+        .map(|p| format!(" (artifact: {p})"))
+        .unwrap_or_default();
+    let first = preview_lines
+        .iter()
+        .find(|l| !l.trim().is_empty())
+        .map(|l| l.trim())
+        .unwrap_or("large result");
+    unicode_trunc(&format!("{first}{hint}"), max_cols)
+}
+
 pub fn format_tool_result(tool_name: &str, result: &str, max_cols: usize) -> String {
     let result_trimmed = result.trim();
     if result_trimmed.is_empty() {
         return String::new();
+    }
+
+    if result_trimmed.starts_with("[tool_result_spill]") {
+        return format_tool_result_spill_stub(tool_name, result_trimmed, max_cols);
     }
 
     // ── 1. terminal — structured header line ────────────────────────────
@@ -2133,6 +2573,7 @@ pub fn format_tool_result(tool_name: &str, result: &str, max_cols: usize) -> Str
             "web_extract" => return format_web_extract_result(&val, max_cols),
             "web_crawl" => return format_web_crawl_result(&val, max_cols),
             "session_search" => return format_session_search_result(&val, max_cols),
+            "computer_use" => return format_computer_use_result(&val, max_cols),
             _ if tool_name.starts_with("ha_") => return format_ha_result(&val, max_cols),
             // R18: memory_write / memory alias JSON result
             "memory_write" | "memory" if val.get("ok") == Some(&serde_json::Value::Bool(true)) => {
@@ -2930,6 +3371,94 @@ mod tests {
         let out = format_tool_result("run_process", json, 80);
         assert!(out.contains("proc-42"), "got: {out}");
         assert!(out.contains("started"), "got: {out}");
+    }
+
+    #[test]
+    fn test_format_tool_result_computer_use_capture() {
+        let json = r#"{"_multimodal":true,"text_summary":"capture mode=som 1920x1080 app=Safari window=\"Start Page\"\n3 interactable element(s):","_image_path":"/tmp/x.png"}"#;
+        let out = format_tool_result("computer_use", json, 80);
+        assert!(out.contains("Safari"), "got: {out}");
+        assert!(out.contains("Start Page"), "got: {out}");
+        assert!(out.contains("1920x1080"), "got: {out}");
+        assert!(out.contains("3 elt"), "got: {out}");
+        assert!(out.contains("📷"), "got: {out}");
+        assert!(!out.contains("interactable element"), "got: {out}");
+    }
+
+    #[test]
+    fn test_format_tool_result_computer_use_degraded_capture_warns() {
+        let json = r#"{"mode":"vision","width":0,"height":0,"app":"Notes","window_title":"Notes","total_elements":0,"summary":"capture mode=vision 0x0 ⚠ use mode=som for element indices app=Notes window=\"Notes\"\n0 interactable element(s):"}"#;
+        let out = format_tool_result("computer_use", json, 80);
+        assert!(out.contains('⚠'), "degraded capture should warn, got: {out}");
+    }
+
+    #[test]
+    fn test_format_tool_result_computer_use_failure_carries_recovery_hint() {
+        let json = r#"{"ok":false,"action":"focus_app","message":"No on-screen window found for app 'Safari'. RECOVERY: launch_app(bundle_id=\"com.apple.Safari\", urls=[\"about:blank\"]) then retry focus_app."}"#;
+        let out = format_tool_result("computer_use", json, 200);
+        assert!(out.contains('⇢'), "recovery should use compact arrow, got: {out}");
+        assert!(out.contains("launch_app"), "got: {out}");
+    }
+
+    #[test]
+    fn test_format_tool_result_spill_stub_computer_use_key() {
+        let stub = "[tool_result_spill]\n\
+            tool: computer_use\n\
+            lines: 1\n\
+            bytes: 64\n\
+            artifact: .edgecrab/artifacts/ses1/computer_use_001.md\n\
+            showing: 1/1 lines (first 100%)\n\
+            \n\
+            --- BEGIN PREVIEW (1 lines) ---\n\
+            {\"ok\":true,\"action\":\"key\",\"message\":\"Pressed return on pid 28182.\"}\n\
+            --- END PREVIEW ---\n";
+        let out = format_tool_result("computer_use", stub, 80);
+        assert!(
+            out.to_ascii_lowercase().contains("return"),
+            "spill stub should decode key message, got: {out}"
+        );
+        assert!(
+            !out.contains("[tool_result_spill]"),
+            "should not show raw spill marker, got: {out}"
+        );
+    }
+
+    #[test]
+    fn test_format_tool_result_computer_use_action_success_compact() {
+        let json = r#"{"ok":true,"action":"key","message":"Pressed cmd+l on pid 28182."}"#;
+        let out = format_tool_result("computer_use", json, 80);
+        assert!(!out.starts_with('✓'), "gutter supplies status icon, got: {out}");
+        assert!(out.contains("cmd+l"), "got: {out}");
+    }
+
+    #[test]
+    fn test_computer_use_arg_preview_capture_som() {
+        let args = r#"{"action":"capture","mode":"som","app":"Notes","query":"body"}"#;
+        let preview = extract_tool_preview("computer_use", args);
+        assert!(preview.contains("som"), "got: {preview}");
+        assert!(preview.contains("Notes"), "got: {preview}");
+    }
+
+    #[test]
+    fn test_computer_use_category_is_desktop() {
+        assert_eq!(tool_category("computer_use"), ToolCategory::Desktop);
+    }
+
+    #[test]
+    fn test_format_tool_result_computer_use_structured_capture_json() {
+        let json = r#"{"mode":"som","width":1568,"height":909,"app":"Notes","window_title":"Notes - 1,820 notes","total_elements":42}"#;
+        let out = format_tool_result("computer_use", json, 100);
+        assert!(out.contains("Notes"), "got: {out}");
+        assert!(out.contains("1568"), "got: {out}");
+        assert!(out.contains("42 elt"), "got: {out}");
+    }
+
+    #[test]
+    fn test_format_tool_result_computer_use_list_apps_shows_names() {
+        let json = r#"{"apps":[{"name":"Google Chrome","pid":28182},{"name":"Mail","pid":11837},{"name":"Finder","pid":1}]}"#;
+        let out = format_tool_result("computer_use", json, 80);
+        assert!(out.contains("3 apps"), "got: {out}");
+        assert!(out.contains("Google Chrome"), "got: {out}");
     }
 
     #[test]

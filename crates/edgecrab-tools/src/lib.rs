@@ -82,9 +82,13 @@ pub use toolsets::{
 };
 pub use tools::computer_use::permissions_status;
 pub use tools::computer_use::{
+    provider_accepts_multimodal_tool_result, should_route_capture_to_aux_vision,
     ComputerUseReportContext, ComputerUseStatusConfig, collect_snapshot, computer_command_overlay,
-    computer_command_usage, format_computer_command, format_computer_enable_result,
-    is_computer_use_toolset_active, open_computer_use_settings,
+    computer_command_usage, computer_status_one_liner, format_computer_command,
+    format_computer_enable_result,
+    format_computer_setup_report, install_cua_driver, is_computer_use_toolset_active,
+    open_computer_use_settings, parse_install_args, render_install_report,
+    COMPUTER_USE_GUIDANCE_COMPACT,
 };
 
 #[cfg(test)]

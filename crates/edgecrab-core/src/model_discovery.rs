@@ -163,17 +163,7 @@ fn adapters() -> Vec<&'static dyn ModelDiscoveryAdapter> {
 }
 
 pub fn normalize_discovery_provider(provider: &str) -> String {
-    let provider = provider.trim().to_ascii_lowercase();
-    let canonical = match provider.as_str() {
-        "gemini" => "google".to_string(),
-        "copilot" | "vscode-copilot" | "vscode" => "copilot".to_string(),
-        "lm-studio" | "lm_studio" => "lmstudio".to_string(),
-        "open-router" => "openrouter".to_string(),
-        "grok" => "xai".to_string(),
-        "nvidia-nim" | "nim" => "nvidia".to_string(),
-        "aws-bedrock" | "aws_bedrock" | "aws bedrock" => "bedrock".to_string(),
-        other => other.to_string(),
-    };
+    let canonical = ModelCatalog::catalog_provider_id(provider);
 
     for adapter in adapters() {
         if adapter.canonical_name() == canonical || adapter.aliases().contains(&canonical.as_str())

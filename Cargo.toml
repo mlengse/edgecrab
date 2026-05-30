@@ -138,7 +138,34 @@ insta = "1"
 criterion = "0.5"
 tokio-test = "0.4"
 
+# ── Release ───────────────────────────────────────────────────────────────────
+# Optimised for binaries shipped to users (crates.io / GitHub releases / Docker).
+# All fields are explicit so that `.cargo/config.toml [build] incremental = true`
+# cannot accidentally turn incremental ON for release (which would break LTO).
 [profile.release]
-lto = true
-codegen-units = 1
-strip = true
+opt-level = 3
+lto = "fat"               # whole-program inlining across all crates
+codegen-units = 1         # single CGU = best inlining at the cost of link time
+strip = "symbols"         # smallest binary; backtraces stay (file/line via DWARF dropped)
+debug = false
+debug-assertions = false
+overflow-checks = false
+incremental = false       # incremental + LTO is unsupported and slower in practice
+panic = "unwind"          # MUST stay unwind — catch_unwind is used in CLI panic hook + tool sandbox
+rpath = false
+
+# Faster release iteration when you don't need maximum runtime perf.
+# Skips LTO and uses parallel codegen — link is much faster.
+[profile.release-fast]
+inherits = "release"
+lto = false
+codegen-units = 16
+incremental = true
+
+# ── Dev ───────────────────────────────────────────────────────────────────────
+[profile.dev]
+debug = 1
+split-debuginfo = "unpacked"
+
+[profile.dev.build-override]
+opt-level = 3

@@ -101,6 +101,24 @@ pub fn maybe_spill(
         return SpillOutcome::Inline(result);
     }
 
+    // computer_use results NEVER spill (Hermes parity).
+    //
+    // Why blanket exemption (not just multimodal):
+    //  1) Multimodal envelopes already store the PNG path-only (no inline base64),
+    //     so size is bounded by the AX element list itself (~5-35 KB).
+    //  2) Text-only / aux-vision-routed captures (Copilot path) produce pure JSON
+    //     without `_multimodal: true`. Spilling these replaces the entire tool
+    //     output with a `[tool_result_spill]` stub that tells the agent to
+    //     `read_file` — which it then interprets as a separate artifact, breaking
+    //     the action → observation → next-action loop fundamental to computer_use.
+    //  3) Hermes never spills computer_use; matching that surface preserves the
+    //     ReAct invariant: the LLM sees what its last action produced.
+    //  4) Capture summaries are bounded by `max_elements` (default 100, hard cap
+    //     1000), so unbounded growth is not a concern.
+    if tool_name == "computer_use" {
+        return SpillOutcome::Inline(result);
+    }
+
     // Compute artifact directory and path
     let safe_name = sanitize_tool_name(tool_name);
     let seq_num = seq.next();
@@ -171,6 +189,79 @@ pub fn maybe_spill(
     }
 }
 
+/// Hermes layer-3: after all tools in one assistant turn, spill largest results until
+/// aggregate tool payload is under `turn_budget_chars`. `computer_use` is never spilled.
+///
+/// Returns the number of tool messages rewritten to spill stubs.
+pub fn enforce_turn_budget(
+    messages: &mut [edgecrab_types::Message],
+    turn_budget_chars: usize,
+    spill_config: &SpillConfig,
+    session_id: &str,
+    cwd: &std::path::Path,
+    seq: &SpillSequence,
+) -> usize {
+    use edgecrab_types::Role;
+
+    if turn_budget_chars == 0 || !spill_config.enabled {
+        return 0;
+    }
+
+    let mut total: usize = 0;
+    let mut candidates: Vec<(usize, usize)> = Vec::new();
+    for (i, msg) in messages.iter().enumerate() {
+        if msg.role != Role::Tool {
+            continue;
+        }
+        let body = msg.text_content();
+        let size = body.len();
+        total += size;
+        if msg.name.as_deref() == Some("computer_use") {
+            continue;
+        }
+        if body.contains("[tool_result_spill]") {
+            continue;
+        }
+        candidates.push((i, size));
+    }
+
+    if total <= turn_budget_chars {
+        return 0;
+    }
+
+    candidates.sort_by_key(|(_, size)| std::cmp::Reverse(*size));
+    let mut spilled = 0usize;
+    for (idx, size) in candidates {
+        if total <= turn_budget_chars {
+            break;
+        }
+        let tool_name = messages[idx].name.as_deref().unwrap_or("tool");
+        let tool_call_id = messages[idx]
+            .tool_call_id
+            .as_deref()
+            .unwrap_or("budget");
+        let body = messages[idx].text_content();
+        match maybe_spill(
+            tool_name,
+            tool_call_id,
+            body,
+            session_id,
+            cwd,
+            spill_config,
+            seq,
+        ) {
+            SpillOutcome::Spilled { stub, .. } => {
+                total = total.saturating_sub(size).saturating_add(stub.len());
+                messages[idx] =
+                    edgecrab_types::Message::tool_result(tool_call_id, tool_name, &stub);
+                spilled += 1;
+            }
+            SpillOutcome::Inline(_) => {}
+        }
+    }
+    spilled
+}
+
 // ─── Internal helpers ────────────────────────────────────────────────
 
 /// Sanitize a tool name for use as a filename component.
@@ -214,9 +305,68 @@ fn write_artifact(dir: &Path, path: &Path, content: &str) -> std::io::Result<()>
 ///
 /// Returns (preview_text, actual_line_count_shown).
 fn build_preview(result: &str, max_lines: usize) -> (String, usize) {
-    let lines: Vec<&str> = result.lines().take(max_lines).collect();
-    let count = lines.len();
-    (lines.join("\n"), count)
+    let sanitized = sanitize_preview_source(result);
+    let preview = truncate_preview_chars(&sanitized, max_lines, MAX_PREVIEW_CHARS);
+    let count = preview.lines().count().max(1);
+    (preview, count)
+}
+
+/// Maximum characters in a spill stub preview (Hermes uses ~1500).
+const MAX_PREVIEW_CHARS: usize = 2_048;
+
+/// Maximum characters per line in preview (guards single-line JSON/base64 blobs).
+const MAX_PREVIEW_LINE_CHARS: usize = 512;
+
+fn sanitize_preview_source(result: &str) -> String {
+    if let Some(summary) = edgecrab_types::multimodal_text_summary(result) {
+        return summary;
+    }
+    redact_data_urls(result)
+}
+
+fn redact_data_urls(text: &str) -> String {
+    const PREFIXES: &[&str] = &[
+        "data:image/png;base64,",
+        "data:image/jpeg;base64,",
+        "data:image/jpg;base64,",
+        "data:image/webp;base64,",
+    ];
+    let mut out = text.to_string();
+    for prefix in PREFIXES {
+        while let Some(start) = out.find(prefix) {
+            let rest = &out[start + prefix.len()..];
+            let end = rest
+                .find(|c: char| c.is_whitespace() || c == '"' || c == '}')
+                .unwrap_or(rest.len());
+            let redacted = format!("[image data: {end} bytes redacted from preview]");
+            out.replace_range(start..start + prefix.len() + end, &redacted);
+        }
+    }
+    out
+}
+
+fn truncate_preview_chars(text: &str, max_lines: usize, max_chars: usize) -> String {
+    let mut lines = Vec::new();
+    let mut total = 0usize;
+    for line in text.lines().take(max_lines) {
+        let clipped = if line.chars().count() > MAX_PREVIEW_LINE_CHARS {
+            let mut s: String = line.chars().take(MAX_PREVIEW_LINE_CHARS).collect();
+            s.push('…');
+            s
+        } else {
+            line.to_string()
+        };
+        total += clipped.len() + 1;
+        if total > max_chars {
+            lines.push("… [preview truncated — read artifact for full output]".into());
+            break;
+        }
+        lines.push(clipped);
+    }
+    if lines.is_empty() {
+        return "[empty tool result]".into();
+    }
+    lines.join("\n")
 }
 
 /// Ensure `.gitignore` in `cwd` contains `.edgecrab-artifacts/`.
@@ -464,6 +614,80 @@ mod tests {
     }
 
     #[test]
+    fn preview_redacts_multimodal_to_text_summary() {
+        let huge = "A".repeat(50_000);
+        let json = format!(
+            r#"{{"_multimodal":true,"text_summary":"capture mode=som 1920x1080","content":[{{"type":"text","text":"capture mode=som"}},{{"type":"image_url","image_url":{{"url":"data:image/png;base64,{huge}"}}}}]}}"#
+        );
+        let (preview, _) = build_preview(&json, 80);
+        assert!(preview.contains("capture mode=som 1920x1080"));
+        assert!(!preview.contains(&huge));
+        assert!(preview.len() < 500);
+    }
+
+    #[test]
+    fn preview_redacts_inline_data_urls() {
+        let huge = "B".repeat(20_000);
+        let input = format!("prefix data:image/png;base64,{huge} suffix");
+        let (preview, _) = build_preview(&input, 5);
+        assert!(preview.contains("redacted"));
+        assert!(!preview.contains(&huge));
+    }
+
+    #[test]
+    fn computer_use_text_only_capture_never_spills() {
+        // Regression: Copilot-routed (text-only) captures used to spill ⇒ agent
+        // saw `[tool_result_spill]` stub and was told to read_file — breaking
+        // the ReAct loop. Hermes parity: computer_use never spills.
+        let tmp = TempDir::new().expect("tempdir");
+        let seq = SpillSequence::new();
+        let config = test_config(true, 100, 5);
+        // Plain JSON, no _multimodal envelope (this is the text-only path).
+        let big_elements = "x".repeat(8_000);
+        let result = format!(
+            r#"{{"mode":"som","app":"Safari","window_title":"Start Page","elements":["{big_elements}"],"summary":"capture mode=som 1567x1065 app=Safari"}}"#
+        );
+        assert!(result.len() > 5_000, "fixture must exceed default threshold");
+        match maybe_spill(
+            "computer_use",
+            "tc-text",
+            result.clone(),
+            "ses1",
+            tmp.path(),
+            &config,
+            &seq,
+        ) {
+            SpillOutcome::Inline(s) => assert_eq!(s, result),
+            SpillOutcome::Spilled { .. } => {
+                panic!("computer_use text-only capture must not spill")
+            }
+        }
+    }
+
+    #[test]
+    fn computer_use_multimodal_not_spilled() {
+        let tmp = TempDir::new().expect("tempdir");
+        let seq = SpillSequence::new();
+        let config = test_config(true, 100, 5);
+        let huge = "A".repeat(50_000);
+        let result = format!(
+            r#"{{"_multimodal":true,"text_summary":"capture","content":[{{"type":"image_url","image_url":{{"url":"data:image/png;base64,{huge}"}}}}]}}"#
+        );
+        match maybe_spill(
+            "computer_use",
+            "tc1",
+            result,
+            "ses1",
+            tmp.path(),
+            &config,
+            &seq,
+        ) {
+            SpillOutcome::Inline(s) => assert!(s.contains("_multimodal")),
+            SpillOutcome::Spilled { .. } => panic!("computer_use multimodal must not spill"),
+        }
+    }
+
+    #[test]
     fn single_line_result_spills() {
         let tmp = TempDir::new().expect("tempdir");
         let seq = SpillSequence::new();
@@ -577,5 +801,39 @@ mod tests {
             let n = seq.next();
             assert!(seen.insert(n), "duplicate sequence number: {n}");
         }
+    }
+
+    #[test]
+    fn enforce_turn_budget_spills_largest_non_computer_use() {
+        use edgecrab_types::{Message, Role};
+
+        let tmp = TempDir::new().expect("tempdir");
+        let seq = SpillSequence::new();
+        let config = test_config(true, 100, 5);
+        let big = "x".repeat(500);
+        let mut messages = vec![
+            Message::tool_result("t1", "computer_use", r#"{"_multimodal":true,"text_summary":"ok"}"#),
+            Message::tool_result("t2", "terminal", &big),
+            Message::tool_result("t3", "file_read", "small"),
+        ];
+        let spilled = enforce_turn_budget(
+            &mut messages,
+            200,
+            &config,
+            "ses-budget",
+            tmp.path(),
+            &seq,
+        );
+        assert_eq!(spilled, 1);
+        let terminal = messages
+            .iter()
+            .find(|m| m.name.as_deref() == Some("terminal"))
+            .expect("terminal");
+        assert!(terminal.text_content().contains("[tool_result_spill]"));
+        let cu = messages
+            .iter()
+            .find(|m| m.name.as_deref() == Some("computer_use"))
+            .expect("cu");
+        assert!(!cu.text_content().contains("[tool_result_spill]"));
     }
 }

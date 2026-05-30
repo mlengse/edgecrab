@@ -2030,6 +2030,7 @@ dependencies = [
  "async-trait",
  "aws-config",
  "aws-sdk-bedrock",
+ "base64 0.22.1",
  "chrono",
  "dirs 5.0.1",
  "dotenvy",

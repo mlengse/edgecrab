@@ -55,7 +55,8 @@ pub fn provider_accepts_multimodal_tool_result(provider: &str, model: &str) -> O
     }
 
     if p == "vscode-copilot" {
-        return Some(true);
+        // Copilot enforces strict context limits; inline tool-result images blow the window.
+        return Some(false);
     }
 
     Some(false)
@@ -137,9 +138,62 @@ mod tests {
     }
 
     #[test]
+    fn copilot_routes_to_aux_or_text_only() {
+        let cfg = AppConfigRef::default();
+        assert!(should_route_capture_to_aux_vision(
+            "copilot",
+            "gpt-5-mini",
+            &cfg
+        ));
+    }
+
+    #[test]
     fn anthropic_accepts_tool_images() {
         assert_eq!(
             provider_accepts_multimodal_tool_result("anthropic", "claude-opus-4.6"),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn gemini_3_accepts_tool_images() {
+        assert_eq!(
+            provider_accepts_multimodal_tool_result("gemini", "gemini-3-pro-preview"),
+            Some(true)
+        );
+        assert_eq!(
+            provider_accepts_multimodal_tool_result("google", "gemini-flash-3"),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn gemini_2_does_not_accept_tool_images() {
+        assert_eq!(
+            provider_accepts_multimodal_tool_result("gemini", "gemini-2.0-flash"),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn provider_rejects_multimodal_tool_results_routes_to_aux() {
+        let cfg = AppConfigRef::default();
+        assert!(should_route_capture_to_aux_vision(
+            "custom-provider",
+            "vision-model",
+            &cfg
+        ) || should_route_capture_to_aux_vision("openai", "gpt-3.5-turbo", &cfg));
+        assert!(should_route_capture_to_aux_vision(
+            "copilot",
+            "gpt-4.1",
+            &cfg
+        ));
+    }
+
+    #[test]
+    fn openrouter_aggregator_accepts_tool_images() {
+        assert_eq!(
+            provider_accepts_multimodal_tool_result("openrouter", "anthropic/claude-sonnet-4"),
             Some(true)
         );
     }

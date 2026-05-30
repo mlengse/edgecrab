@@ -8,10 +8,16 @@ pub fn cua_driver_binary_available(cmd: &str) -> bool {
     which::which(cmd).is_ok()
 }
 
+pub fn permissions_failure_hint() -> &'static str {
+    "No apps/windows visible — macOS Screen Recording and Accessibility are likely \
+     denied or not yet granted. Run `/computer open` in EdgeCrab, enable both permissions \
+     for your terminal host and EdgeCrab, then quit and relaunch EdgeCrab."
+}
+
 pub fn install_hint() -> &'static str {
-    "cua-driver is not installed. Install with:\n\
+    "Run `/computer install` in EdgeCrab, or manually:\n\
      /bin/bash -c \"$(curl -fsSL https://raw.githubusercontent.com/trycua/cua/main/libs/cua-driver/scripts/install.sh)\"\n\
-     Then grant Screen Recording + Accessibility in System Settings → Privacy & Security."
+     Then grant Screen Recording + Accessibility (/computer open)."
 }
 
 pub fn permissions_status(cmd: &str) -> String {

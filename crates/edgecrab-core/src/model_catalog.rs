@@ -22,6 +22,19 @@ use serde::{Deserialize, Serialize};
 
 // ─── Types ───────────────────────────────────────────────────────────
 
+/// Fully resolved `provider/model` spec: catalog metadata + runtime provider id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResolvedModelSpec {
+    /// Canonical catalog display (`copilot/gpt-5-mini`).
+    pub display: String,
+    /// Key in `model_catalog_default.yaml` (`copilot`, `google`, …).
+    pub catalog_provider: String,
+    /// Provider id for `create_provider_for_model` (`vscode-copilot`, `gemini`, …).
+    pub runtime_provider: String,
+    pub model_name: String,
+    pub context_window: u64,
+}
+
 /// Performance tier for UI grouping and smart routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -161,6 +174,52 @@ impl ModelCatalog {
     }
 
     // ─── Query helpers ───────────────────────────────────────────────
+
+    /// Map user, runtime, or discovery aliases to catalog provider keys.
+    pub fn catalog_provider_id(raw: &str) -> String {
+        match raw.trim().to_ascii_lowercase().as_str() {
+            "claude" => "anthropic".to_string(),
+            "gemini" => "google".to_string(),
+            "copilot" | "vscode-copilot" | "vscode" => "copilot".to_string(),
+            "grok" => "xai".to_string(),
+            "lm-studio" | "lm_studio" => "lmstudio".to_string(),
+            "open-router" | "open_router" => "openrouter".to_string(),
+            "nvidia-nim" | "nim" => "nvidia".to_string(),
+            "vertex" | "vertex-ai" | "vertex_ai" => "vertexai".to_string(),
+            "azure-openai" | "azure_openai" | "azureopenai" => "azure".to_string(),
+            "aws-bedrock" | "aws_bedrock" | "aws bedrock" => "bedrock".to_string(),
+            other => other.to_string(),
+        }
+    }
+
+    /// Resolve a `provider/model` string against the catalog (aliases accepted).
+    pub fn resolve_spec(spec: &str) -> Option<ResolvedModelSpec> {
+        let spec = spec.trim();
+        if spec.is_empty() {
+            return None;
+        }
+        let (provider_raw, model_name) = spec.split_once('/')?;
+        if model_name.is_empty() {
+            return None;
+        }
+        let model_name =
+            edgecrab_tools::vision_models::normalize_model_name(provider_raw, model_name);
+        let catalog_provider = Self::catalog_provider_id(provider_raw);
+        let context_window = Self::context_window(&catalog_provider, &model_name)?;
+        let runtime_provider = edgecrab_tools::vision_models::normalize_provider_name(provider_raw);
+        Some(ResolvedModelSpec {
+            display: format!("{catalog_provider}/{model_name}"),
+            catalog_provider,
+            runtime_provider,
+            model_name,
+            context_window,
+        })
+    }
+
+    /// Context window for a display spec, accepting provider aliases.
+    pub fn context_window_for_spec(spec: &str) -> Option<u64> {
+        Self::resolve_spec(spec).map(|resolved| resolved.context_window)
+    }
 
     /// List all provider IDs in alphabetical order.
     pub fn provider_ids() -> Vec<String> {
@@ -330,6 +389,33 @@ mod tests {
     fn flat_catalog_not_empty() {
         let flat = ModelCatalog::flat_catalog();
         assert!(!flat.is_empty());
+    }
+
+    #[test]
+    fn resolve_spec_accepts_copilot_runtime_alias() {
+        let resolved = ModelCatalog::resolve_spec("copilot/claude-haiku-4.5")
+            .expect("copilot haiku should resolve");
+        assert_eq!(resolved.catalog_provider, "copilot");
+        assert_eq!(resolved.runtime_provider, "vscode-copilot");
+        assert_eq!(resolved.display, "copilot/claude-haiku-4.5");
+        assert_eq!(resolved.model_name, "claude-haiku-4.5");
+        assert_eq!(resolved.context_window, 200_000);
+    }
+
+    #[test]
+    fn resolve_spec_accepts_vscode_copilot_alias() {
+        let resolved = ModelCatalog::resolve_spec("vscode-copilot/gpt-5-mini")
+            .expect("vscode-copilot alias should resolve");
+        assert_eq!(resolved.catalog_provider, "copilot");
+        assert_eq!(resolved.runtime_provider, "vscode-copilot");
+        assert_eq!(resolved.display, "copilot/gpt-5-mini");
+    }
+
+    #[test]
+    fn catalog_provider_id_normalizes_aliases() {
+        assert_eq!(ModelCatalog::catalog_provider_id("vscode-copilot"), "copilot");
+        assert_eq!(ModelCatalog::catalog_provider_id("gemini"), "google");
+        assert_eq!(ModelCatalog::catalog_provider_id("claude"), "anthropic");
     }
 
     #[test]

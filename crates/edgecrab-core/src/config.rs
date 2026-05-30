@@ -308,6 +308,11 @@ impl AppConfig {
         {
             self.tools.result_spill_preview_lines = n;
         }
+        if let Ok(val) = std::env::var("EDGECRAB_TOOL_RESULT_TURN_BUDGET")
+            && let Ok(n) = val.parse()
+        {
+            self.tools.result_turn_budget_chars = n;
+        }
         if let Ok(val) = std::env::var("EDGECRAB_MAX_WRITE_PAYLOAD_KIB")
             && let Ok(n) = val.parse()
         {
@@ -823,6 +828,14 @@ pub struct ToolsConfig {
     pub result_spill_threshold: usize,
     /// Number of preview lines kept in the stub (default: 80).
     pub result_spill_preview_lines: usize,
+    /// Max aggregate chars for all tool results in one assistant turn (default: 200_000).
+    /// `0` disables per-turn budget enforcement (Hermes `enforce_turn_budget`).
+    #[serde(default = "default_result_turn_budget_chars")]
+    pub result_turn_budget_chars: usize,
+}
+
+fn default_result_turn_budget_chars() -> usize {
+    200_000
 }
 
 impl Default for ToolsConfig {
@@ -840,6 +853,7 @@ impl Default for ToolsConfig {
             result_spill: true,
             result_spill_threshold: 16_384,
             result_spill_preview_lines: 80,
+            result_turn_budget_chars: default_result_turn_budget_chars(),
         }
     }
 }
@@ -1976,7 +1990,7 @@ impl Default for ComputerUseConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            keep_last_n_screenshots: 3,
+            keep_last_n_screenshots: 1,
             confirm_destructive: true,
             cua_driver_cmd: "cua-driver".into(),
         }

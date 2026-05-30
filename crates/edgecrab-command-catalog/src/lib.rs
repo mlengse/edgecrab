@@ -592,10 +592,10 @@ pub const BUILTIN_SLASH_COMMANDS: &[SlashCommandSpec] = &[
     },
     SlashCommandSpec {
         name: "computer",
-        aliases: &[],
-        description: "Computer use status, permissions, enable, and setup",
+        aliases: &["cu", "desktop", "cua"],
+        description: "Computer use status, permissions, enable, and setup (macOS + cua-driver)",
         category: "Advanced",
-        args_hint: "[status|permissions|open|enable|disable|help]",
+        args_hint: "[setup|install|status|permissions|open|enable|disable|help]",
         cli: true,
         gateway: true,
     },

@@ -11,6 +11,7 @@ use super::backend::{ActionResult, CaptureResult, ComputerUseBackend};
 pub struct NoopBackend {
     pub calls: Vec<(String, serde_json::Value)>,
     started: bool,
+    pending_url: Option<String>,
 }
 
 impl NoopBackend {
@@ -63,10 +64,15 @@ impl ComputerUseBackend for NoopBackend {
         button: &str,
         click_count: u32,
         _modifiers: Option<&[String]>,
+        ax_action: Option<&str>,
     ) -> Result<ActionResult, String> {
         self.record(
             "click",
-            json!({ "element": element, "x": x, "y": y, "button": button, "click_count": click_count }),
+            json!({
+                "element": element, "x": x, "y": y,
+                "button": button, "click_count": click_count,
+                "ax_action": ax_action,
+            }),
         );
         Ok(ActionResult {
             ok: true,
@@ -112,8 +118,8 @@ impl ComputerUseBackend for NoopBackend {
         })
     }
 
-    async fn type_text(&mut self, text: &str) -> Result<ActionResult, String> {
-        self.record("type", serde_json::json!({ "text": text }));
+    async fn type_text(&mut self, text: &str, element: Option<u32>) -> Result<ActionResult, String> {
+        self.record("type", serde_json::json!({ "text": text, "element": element }));
         Ok(ActionResult {
             ok: true,
             action: "type".into(),
@@ -159,6 +165,54 @@ impl ComputerUseBackend for NoopBackend {
             ok: true,
             action: "set_value".into(),
             message: String::new(),
+            meta: HashMap::new(),
+        })
+    }
+
+    fn set_pending_browser_url(&mut self, url: &str) {
+        self.pending_url = Some(url.to_string());
+    }
+
+    fn take_pending_browser_url(&mut self) -> Option<String> {
+        self.pending_url.take()
+    }
+
+    async fn navigate_url(&mut self, url: &str) -> Result<ActionResult, String> {
+        self.open_browser_url(None, None, url, "navigate").await
+    }
+
+    async fn open_browser_url(
+        &mut self,
+        app: Option<&str>,
+        bundle_id: Option<&str>,
+        url: &str,
+        via_action: &str,
+    ) -> Result<ActionResult, String> {
+        self.record(
+            "open_browser_url",
+            serde_json::json!({ "app": app, "bundle_id": bundle_id, "url": url, "via": via_action }),
+        );
+        Ok(ActionResult {
+            ok: true,
+            action: via_action.into(),
+            message: format!("noop open {url}"),
+            meta: HashMap::new(),
+        })
+    }
+
+    async fn launch_app(
+        &mut self,
+        target: &str,
+        urls: Option<&[String]>,
+    ) -> Result<ActionResult, String> {
+        self.record(
+            "launch_app",
+            serde_json::json!({ "target": target, "urls": urls }),
+        );
+        Ok(ActionResult {
+            ok: true,
+            action: "launch_app".into(),
+            message: format!("Launched {target}."),
             meta: HashMap::new(),
         })
     }

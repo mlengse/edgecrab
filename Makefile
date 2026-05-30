@@ -16,8 +16,8 @@
 
 .DEFAULT_GOAL := help
 .PHONY: help \
-        build build-debug build-termux run run-release check fmt fmt-check lint test test-lsp ci \
-        install uninstall \
+        build build-debug build-fast build-native build-termux dev run run-release check fmt fmt-check lint test test-lsp ci \
+        install install-fast install-native uninstall \
         test-python test-node test-sdks \
         publish-rust publish-rust-dry \
         publish-python publish-python-dry \
@@ -79,14 +79,30 @@ help: ## Show this help screen
 ## Build
 # ══════════════════════════════════════════════════════════════════════════════
 
-build: ## Build optimised release binary
-	$(call log,cargo build --release)
-	@cargo build --release
+build: ## Build optimised portable release binary (full LTO, single CGU). Use for distribution.
+	$(call log,cargo build --release -p edgecrab-cli)
+	@cargo build --release -p edgecrab-cli
 	$(call ok,Binary ready: $(BINARY))
+	@printf "$(DIM)  Size: %s\n$(RESET)" "$$(du -h $(BINARY) | cut -f1)"
 
-build-debug: ## Build debug binary
-	$(call log,cargo build)
-	@cargo build
+build-fast: ## Release-grade binary without LTO (faster link; ~5-10%% slower runtime). Use during release-mode iteration.
+	$(call log,cargo build --profile release-fast -p edgecrab-cli)
+	@cargo build --profile release-fast -p edgecrab-cli
+	$(call ok,Binary ready: target/release-fast/edgecrab)
+
+build-native: ## Maximum-perf release binary tuned for THIS machine's CPU (NOT PORTABLE).
+	$(call log,cargo build --release -p edgecrab-cli  [RUSTFLAGS=-C target-cpu=native])
+	@RUSTFLAGS="-C target-cpu=native" cargo build --release -p edgecrab-cli
+	$(call ok,Binary ready: $(BINARY)  (do not ship — uses host-specific instructions))
+
+dev: ## Fast debug build of CLI only (preferred during development)
+	$(call log,cargo build -p edgecrab-cli)
+	@cargo build -p edgecrab-cli
+	$(call ok,Debug binary ready: target/debug/edgecrab)
+
+build-debug: ## Build debug binary (alias for dev)
+	$(call log,cargo build -p edgecrab-cli)
+	@cargo build -p edgecrab-cli
 
 build-termux: ## Cross-compile for Termux/Android (aarch64-linux-android)
 	$(call log,cargo build --release --target aarch64-linux-android --features termux)
@@ -101,9 +117,9 @@ run-release: ## Run the edgecrab CLI from the workspace root (release build). Pa
 	$(call log,cargo run --release -p edgecrab-cli --bin edgecrab -- $(ARGS))
 	@cargo run --release -p edgecrab-cli --bin edgecrab -- $(ARGS)
 
-check: ## Fast compile-check (no binary produced)
-	$(call log,cargo check)
-	@cargo check
+check: ## Fast compile-check of CLI (no binary produced)
+	$(call log,cargo check -p edgecrab-cli)
+	@cargo check -p edgecrab-cli
 
 # ══════════════════════════════════════════════════════════════════════════════
 ## Code quality
@@ -136,10 +152,20 @@ ci: fmt-check lint test-lsp test test-sdks ## Full CI gate: fmt → lint → LSP
 ## Install
 # ══════════════════════════════════════════════════════════════════════════════
 
-install: build ## Install edgecrab to ~/.cargo/bin
-	$(call log,cargo install --path crates/edgecrab-cli)
-	@cargo install --path crates/edgecrab-cli
+install: ## Install edgecrab to ~/.cargo/bin using the full release profile (LTO, slowest build, fastest runtime)
+	$(call log,cargo install --path crates/edgecrab-cli --locked)
+	@cargo install --path crates/edgecrab-cli --locked
 	$(call ok,Installed: $$(which edgecrab))
+
+install-fast: ## Install edgecrab to ~/.cargo/bin using release-fast (no LTO; ~3-4x faster build, ~5-10%% slower runtime)
+	$(call log,cargo install --path crates/edgecrab-cli --profile release-fast --locked)
+	@cargo install --path crates/edgecrab-cli --profile release-fast --locked
+	$(call ok,Installed: $$(which edgecrab)  [release-fast profile])
+
+install-native: ## Install edgecrab to ~/.cargo/bin tuned for THIS machine's CPU (NOT PORTABLE — local-only)
+	$(call log,RUSTFLAGS='-C target-cpu=native' cargo install --path crates/edgecrab-cli --locked)
+	@RUSTFLAGS="-C target-cpu=native" cargo install --path crates/edgecrab-cli --locked
+	$(call ok,Installed: $$(which edgecrab)  [native CPU tuning])
 
 uninstall: ## Remove edgecrab from ~/.cargo/bin
 	$(call warn,Removing edgecrab from ~/.cargo/bin ...)

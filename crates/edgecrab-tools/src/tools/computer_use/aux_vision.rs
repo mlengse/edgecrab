@@ -3,20 +3,10 @@
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use serde_json::json;
 
-use super::backend::{CaptureResult, UIElement};
-use super::response::cache_dir;
+use super::backend::CaptureResult;
+use super::response::{cache_dir, element_to_json};
 use crate::registry::ToolContext;
 use crate::tools::vision::analyze_local_image;
-
-fn element_to_json(e: &UIElement) -> serde_json::Value {
-    json!({
-        "index": e.index,
-        "role": e.role,
-        "label": e.label,
-        "bounds": [e.bounds.0, e.bounds.1, e.bounds.2, e.bounds.3],
-        "app": e.app,
-    })
-}
 
 /// Pre-analyse a capture PNG via auxiliary vision; return text-only JSON on success.
 pub async fn route_capture_through_aux_vision(

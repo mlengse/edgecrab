@@ -19,6 +19,7 @@ pub mod config;
 pub mod error;
 pub mod harness;
 pub mod message;
+pub mod multimodal;
 pub mod tool;
 pub mod trajectory;
 pub mod usage;
@@ -30,6 +31,11 @@ pub use harness::{
     VerificationSummary,
 };
 pub use message::{Content, ContentPart, ImageUrl, Message, Role};
+pub use multimodal::{
+    capture_has_image_reference, is_multimodal_tool_json, multimodal_disk_image_from_content,
+    multimodal_has_image, multimodal_text_summary, parse_multimodal_value,
+    strip_inline_images_from_tool_output, MULTIMODAL_IMAGE_TOKEN_ESTIMATE,
+};
 pub use tool::{FunctionCall, ToolCall, ToolSchema};
 pub use trajectory::Trajectory;
 pub use usage::{Cost, Usage};

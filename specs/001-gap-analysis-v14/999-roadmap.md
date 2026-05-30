@@ -11,14 +11,16 @@ since wall-clock estimates are unreliable across team sizes.
 
 The six top-impact, foundational items. Run as parallel work streams.
 
-| # | Folder | Effort | Stream | Depends on |
-|---|--------|--------|--------|------------|
-| 1 | [001-persistent-goals/](001-persistent-goals/) | M | Core | — |
-| 2 | [002-file-mutation-verifier/](002-file-mutation-verifier/) | M | Tools | — |
-| 3 | [003-lsp-write-diagnostics/](003-lsp-write-diagnostics/) | M | Tools | 002 |
-| 4 | [004-prompt-prefix-cache/](004-prompt-prefix-cache/) | M | Core | — |
-| 5 | [005-session-handoff/](005-session-handoff/) | L | Gateway | — |
-| 6 | [006-checkpoints-v2/](006-checkpoints-v2/) | L | Core | — |
+| # | Folder | Effort | Stream | Depends on | Status |
+|---|--------|--------|--------|------------|--------|
+| 1 | [001-persistent-goals/](001-persistent-goals/) | M | Core | — | ✅ DONE |
+| 2 | [002-file-mutation-verifier/](002-file-mutation-verifier/) | M | Tools | — | ✅ DONE |
+| 3 | [003-lsp-write-diagnostics/](003-lsp-write-diagnostics/) | M | Tools | 002 | ✅ DONE |
+| 4 | [004-prompt-prefix-cache/](004-prompt-prefix-cache/) | M | Core | — | ✅ DONE |
+| 5 | [005-session-handoff/](005-session-handoff/) | L | Gateway | — | ✅ DONE |
+| 6 | [006-checkpoints-v2/](006-checkpoints-v2/) | L | Core | — | ✅ DONE |
+
+**✅ Phase 1 is fully shipped** — all six carry a `proof/` folder.
 
 **Parallelisation**: 3 streams. Stream A (Core): 001 → 004 → 006.
 Stream B (Tools): 002 → 003. Stream C (Gateway): 005.
@@ -30,14 +32,14 @@ green.
 
 ## Phase 2 — Tier A "Strategic Capabilities"
 
-| # | Folder | Effort | Depends on |
-|---|--------|--------|------------|
-| 7 | [007-multi-agent-kanban/](007-multi-agent-kanban/) | L | — |
-| 8 | [008-openai-compat-proxy/](008-openai-compat-proxy/) | M | **024 (OAuth providers)** |
-| 9 | [009-pluggable-providers-plugins/](009-pluggable-providers-plugins/) | L | — |
-| 10 | [010-mcp-sse-oauth-parallel/](010-mcp-sse-oauth-parallel/) | L | — |
-| 11 | [011-computer-use/](011-computer-use/) | XL | — |
-| 12 | [012-video-tools/](012-video-tools/) | M | — |
+| # | Folder | Effort | Depends on | Status |
+|---|--------|--------|------------|--------|
+| 7 | [007-multi-agent-kanban/](007-multi-agent-kanban/) | L | — | ○ OPEN |
+| 8 | [008-openai-compat-proxy/](008-openai-compat-proxy/) | M | **024 (OAuth providers)** | ○ OPEN |
+| 9 | [009-pluggable-providers-plugins/](009-pluggable-providers-plugins/) | L | — | ○ OPEN |
+| 10 | [010-mcp-sse-oauth-parallel/](010-mcp-sse-oauth-parallel/) | L | — | ✅ DONE |
+| 11 | [011-computer-use/](011-computer-use/) | XL | — | ✅ DONE |
+| 12 | [012-video-tools/](012-video-tools/) | M | — | ○ OPEN |
 
 **Critical dependency**: Folder 008 (proxy) cannot ship until
 Folder 024 (OAuth) is done. Pull 024 forward to early Phase 2.
@@ -155,6 +157,25 @@ Each is independently shippable in 1–3 days.
 
 ---
 
+## Phase 5 — v0.15 Refresh (Tier D, new gaps)
+
+| # | Folder | Effort | Depends on | Status |
+|---|--------|--------|------------|--------|
+| 31 | [031-promptware-brainworm-defense/](031-promptware-brainworm-defense/) | M | supersedes 017 | ○ OPEN |
+| 32 | [032-secrets-manager/](032-secrets-manager/) | M | — | ○ OPEN |
+| 33 | [033-skill-bundles/](033-skill-bundles/) | S | existing skills system | ○ OPEN |
+
+**Priority**: 031 first — it is a security/trust item that also pays down
+the four-way threat-pattern DRY debt and absorbs Phase-3 item 017. 033 is
+a quick win on top of the existing skill loader. 032 layers a
+`SecretResolver` seam under the provider factory without breaking `.env`.
+
+**Sequencing note**: do 031 step 1 (consolidate the four threat-pattern
+sources into `edgecrab-security`) as a pure refactor *before* any new
+pattern work — it is the highest-leverage, lowest-risk move.
+
+---
+
 ## Risk Concentration
 
 | Risk | Owner Phase |
@@ -164,6 +185,8 @@ Each is independently shippable in 1–3 days.
 | Trusted-taps key UX | 028 (Phase 4) |
 | Pareto router quality | 029 (Phase 4) |
 | Bot Framework JWT edge cases | 026 (Phase 4) |
+| Tool-output delimiter / cache interaction | 031 (Phase 5) |
+| Secret backend availability fallback | 032 (Phase 5) |
 
 ---
 

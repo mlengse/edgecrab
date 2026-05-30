@@ -5,8 +5,10 @@
 
 mod aux_vision;
 mod backend;
+mod browsers;
 mod cua_backend;
 mod dispatch;
+mod install;
 #[cfg(test)]
 mod manual_e2e;
 mod mcp;
@@ -16,13 +18,12 @@ mod response;
 mod safety;
 mod schema;
 mod status;
+mod text_input;
+pub mod guidance;
 mod vision_routing;
 
 #[cfg(test)]
 mod tests;
-
-use std::sync::OnceLock;
-use tokio::sync::Mutex;
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -33,23 +34,23 @@ use crate::registry::{ToolContext, ToolHandler};
 
 pub use permissions::{check_requirements, permissions_status};
 pub use response::parse_multimodal_tool_output;
+pub use install::{install_cua_driver, parse_install_args, render_install_report, CuaDriverInstallResult};
+pub use guidance::{COMPUTER_USE_GUIDANCE_COMPACT, COMPUTER_USE_GUIDANCE_FULL};
 pub use status::{
     ComputerUseReportContext, ComputerUseStatusConfig, collect_snapshot, computer_command_overlay,
+    computer_status_one_liner,
     computer_command_usage, format_computer_command, format_computer_enable_result,
-    is_computer_use_toolset_active, open_computer_use_settings,
+    format_computer_setup_report, is_computer_use_toolset_active, open_computer_use_settings,
+};
+pub use vision_routing::{
+    provider_accepts_multimodal_tool_result, should_route_capture_to_aux_vision,
 };
 
-static BACKEND: OnceLock<Mutex<Box<dyn backend::ComputerUseBackend>>> = OnceLock::new();
-
-fn backend_name() -> String {
-    std::env::var("EDGECRAB_COMPUTER_USE_BACKEND")
-        .unwrap_or_else(|_| "cua".to_string())
-        .to_ascii_lowercase()
-}
+mod backend_pool;
 
 #[cfg(test)]
-pub fn reset_backend_for_tests() {
-    // Tests set EDGECRAB_COMPUTER_USE_BACKEND=noop before first call.
+pub async fn reset_backend_for_tests() {
+    backend_pool::reset_pool_for_tests().await;
 }
 
 pub struct ComputerUseTool;
@@ -76,7 +77,10 @@ impl ToolHandler for ComputerUseTool {
         if !ctx.config.computer_use_enabled {
             return false;
         }
-        if backend_name() == "noop" {
+        if std::env::var("EDGECRAB_COMPUTER_USE_BACKEND")
+            .map(|v| v.eq_ignore_ascii_case("noop"))
+            .unwrap_or(false)
+        {
             return true;
         }
         permissions::check_requirements(&ctx.config.computer_use_cua_cmd)
@@ -125,26 +129,19 @@ impl ToolHandler for ComputerUseTool {
 
         let home = ctx.config.edgecrab_home.clone();
         let cmd = ctx.config.computer_use_cua_cmd.clone();
+        let session_id = ctx.session_id.clone();
         let action_owned = action;
         let args_owned = args;
 
-        if BACKEND.get().is_none() {
-            let name = backend_name();
-            let mut backend: Box<dyn backend::ComputerUseBackend> = if name == "noop" {
-                Box::new(noop::NoopBackend::new())
-            } else {
-                Box::new(cua_backend::CuaDriverBackend::new(&cmd))
-            };
-            backend.start().await.map_err(|e| ToolError::ExecutionFailed {
+        let handle = backend_pool::session_handle(&session_id, &cmd)
+            .await
+            .map_err(|e| ToolError::ExecutionFailed {
                 tool: "computer_use".into(),
                 message: e,
             })?;
-            let _ = BACKEND.set(Mutex::new(backend));
-        }
-        let mutex = BACKEND.get().ok_or_else(|| ToolError::Other("backend init failed".into()))?;
-        let mut guard = mutex.lock().await;
+        let mut backend = handle.lock().await;
         dispatch::dispatch_action(
-            guard.as_mut(),
+            backend.as_mut(),
             &action_owned,
             &args_owned,
             &home,

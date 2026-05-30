@@ -200,9 +200,7 @@ impl Default for CompressionParams {
 impl CompressionParams {
     /// Resolve compression parameters for the active model/configuration.
     pub fn from_model_config(model: &str, cfg: &CompressionConfig) -> Self {
-        let context_window = model
-            .split_once('/')
-            .and_then(|(provider, name)| ModelCatalog::context_window(provider, name))
+        let context_window = ModelCatalog::context_window_for_spec(model)
             .map(|tokens| tokens as usize)
             .unwrap_or(DEFAULT_CONTEXT_WINDOW);
 
@@ -234,14 +232,41 @@ pub enum CompressionStatus {
 /// tokenizer dependency) and good enough for the compression
 /// threshold check. Exact counts come from the API response.
 pub fn estimate_tokens(messages: &[Message]) -> usize {
-    messages
-        .iter()
-        .map(|m| {
-            let text_len = m.text_content().len();
-            // ~4 chars per token + overhead per message
-            (text_len / 4) + 4
-        })
-        .sum()
+    messages.iter().map(estimate_message_tokens).sum()
+}
+
+/// Per-message token estimate including image blocks (flat ~1500/image).
+pub fn estimate_message_tokens(m: &Message) -> usize {
+    use edgecrab_types::{Content, ContentPart, MULTIMODAL_IMAGE_TOKEN_ESTIMATE, Role};
+
+    let text_len = m.text_content().len();
+    let mut tokens = (text_len / 4) + 4;
+
+    if let Some(Content::Parts(parts)) = &m.content {
+        tokens += parts
+            .iter()
+            .filter(|p| matches!(p, ContentPart::ImageUrl { .. }))
+            .count()
+            * MULTIMODAL_IMAGE_TOKEN_ESTIMATE;
+    }
+
+    if m.role == Role::Tool
+        && m.name.as_deref() == Some("computer_use")
+        && let Some(Content::Text(text)) = &m.content
+        && (edgecrab_types::multimodal_has_image(text)
+            || edgecrab_types::multimodal_disk_image_from_content(text).is_some())
+    {
+        tokens += MULTIMODAL_IMAGE_TOKEN_ESTIMATE;
+    }
+
+    tokens
+}
+
+/// Prune stale computer_use screenshots in place (call after each capture tool result).
+pub fn maybe_prune_computer_use_screenshots(messages: &mut Vec<Message>, keep_last_n: u32) {
+    if keep_last_n > 0 {
+        *messages = prune_computer_use_screenshots(messages, keep_last_n);
+    }
 }
 
 /// Check if compression is needed.
@@ -607,9 +632,10 @@ fn computer_use_message_has_screenshot(msg: &Message) -> bool {
         return false;
     }
     match &msg.content {
-        Some(Content::Parts(parts)) => parts.iter().any(|p| matches!(p, ContentPart::ImageUrl { .. })),
-        Some(Content::Text(text)) => text.contains("\"_multimodal\":true")
-            || text.contains("\"_multimodal\": true"),
+        Some(Content::Parts(parts)) => parts
+            .iter()
+            .any(|p| matches!(p, ContentPart::ImageUrl { .. })),
+        Some(Content::Text(text)) => edgecrab_types::capture_has_image_reference(text),
         _ => false,
     }
 }
@@ -643,15 +669,8 @@ fn strip_computer_use_screenshot_images(msg: &Message) -> Message {
             }
         }
         Some(Content::Text(text)) => {
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(
-                text.lines().next().unwrap_or(text.as_str()),
-            ) && value.get("_multimodal") == Some(&serde_json::Value::Bool(true))
-            {
-                let summary = value
-                    .get("text_summary")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .to_string();
+            if edgecrab_types::is_multimodal_tool_json(text) {
+                let summary = edgecrab_types::multimodal_text_summary(text).unwrap_or_default();
                 let body = if summary.is_empty() {
                     "[screenshot pruned — retained text summary only]".into()
                 } else {

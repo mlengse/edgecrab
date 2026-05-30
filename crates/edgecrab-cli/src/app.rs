@@ -7193,6 +7193,22 @@ impl App {
         self.open_document_overlay(title, subtitle, body, "≡", Color::Rgb(130, 210, 255));
     }
 
+    /// Full-screen report for `/computer` — matches Desktop tool accent in the activity log.
+    fn open_computer_overlay(
+        &mut self,
+        title: impl Into<String>,
+        subtitle: impl Into<String>,
+        body: impl Into<String>,
+    ) {
+        self.open_document_overlay(
+            title,
+            subtitle,
+            body,
+            "🖥",
+            Color::Rgb(95, 195, 255),
+        );
+    }
+
     fn normalize_skill_identifier(identifier: &str) -> String {
         identifier.trim().replace('\\', "/")
     }
@@ -7940,6 +7956,19 @@ impl App {
                 ("status", "Show browser connection status"),
                 ("tabs", "List open browser tabs"),
                 ("recording", "Toggle recording: recording on | off"),
+            ],
+            "computer" | "cu" | "desktop" | "cua" => &[
+                ("setup", "Guided wizard: install → enable → open settings"),
+                ("install", "Download and install cua-driver from GitHub"),
+                ("install upgrade", "Refresh cua-driver to the latest release"),
+                ("status", "Readiness checklist (default) — run until READY"),
+                ("permissions", "Driver + Accessibility + Screen Recording checklist"),
+                ("open", "Open Accessibility and Screen Recording in System Settings"),
+                ("enable", "Persist computer_use.enabled and activate toolset"),
+                ("on", "Alias for enable"),
+                ("disable", "Turn off computer_use in config"),
+                ("off", "Alias for disable"),
+                ("help", "Slash commands, setup flow, and agent examples"),
             ],
             // ── Cron scheduler ────────────────────────────────────────────────
             "cron" | "schedule" => &[
@@ -21698,20 +21727,35 @@ impl App {
         }
 
         let sub = args.trim().to_ascii_lowercase();
-        match sub.as_str() {
+        let sub = if sub.is_empty() { "status".to_string() } else { sub };
+        let first = sub.split_whitespace().next().unwrap_or("status");
+        let summary = edgecrab_tools::computer_status_one_liner(&status_cfg, &ctx);
+
+        match first {
             "enable" | "on" | "disable" | "off" => {
-                let enabled = matches!(sub.as_str(), "enable" | "on");
+                let enabled = matches!(first, "enable" | "on");
                 if let Some(agent) = self.agent.as_ref() {
                     let agent = Arc::clone(agent);
                     self.block_on_agent(async move { agent.set_computer_use_enabled(enabled).await });
                 }
                 let persist_result = edgecrab_core::AppConfig::persist_computer_use_enabled(enabled);
+                let saved = persist_result.is_ok();
                 let body = edgecrab_tools::format_computer_enable_result(
                     enabled,
-                    persist_result.is_ok(),
-                    persist_result.err().as_ref().map(|e| e.to_string()).as_deref(),
+                    saved,
+                    persist_result.err().map(|e| e.to_string()).as_deref(),
                 );
-                self.open_report_overlay(
+                let line = if saved {
+                    if enabled {
+                        "🖥 Computer Use enabled — saved to ~/.edgecrab/config.yaml"
+                    } else {
+                        "🖥 Computer Use disabled — saved to ~/.edgecrab/config.yaml"
+                    }
+                } else {
+                    "🖥 Computer Use — failed to save config (see report)"
+                };
+                self.push_output(line, OutputRole::System);
+                self.open_computer_overlay(
                     if enabled {
                         "Computer Use Enabled"
                     } else {
@@ -21721,17 +21765,78 @@ impl App {
                     body,
                 );
             }
+            "setup" => {
+                let install =
+                    edgecrab_tools::install_cua_driver(&status_cfg.cua_driver_cmd, false);
+                let persist_result = edgecrab_core::AppConfig::persist_computer_use_enabled(true);
+                if persist_result.is_ok() {
+                    if let Some(agent) = self.agent.as_ref() {
+                        let agent = Arc::clone(agent);
+                        self.block_on_agent(async move { agent.set_computer_use_enabled(true).await });
+                    }
+                    if !ctx.enabled_toolsets.iter().any(|t| t.eq_ignore_ascii_case("computer_use")) {
+                        ctx.enabled_toolsets.push("computer_use".into());
+                    }
+                }
+                let open_notes = edgecrab_tools::open_computer_use_settings();
+                let body = edgecrab_tools::format_computer_setup_report(
+                    &status_cfg,
+                    &ctx,
+                    &install,
+                    Some(persist_result.is_ok()),
+                    &open_notes,
+                );
+                let summary = edgecrab_tools::computer_status_one_liner(&status_cfg, &ctx);
+                self.push_output(
+                    format!(
+                        "🖥 Computer Use setup — driver install {}, config {}\n{summary}",
+                        if install.ok() { "ok" } else { "needs attention" },
+                        if persist_result.is_ok() { "saved" } else { "not saved" },
+                    ),
+                    OutputRole::System,
+                );
+                self.open_computer_overlay(
+                    "Computer Use — Setup Wizard",
+                    "Install → enable → permissions → checklist",
+                    body,
+                );
+            }
             "help" => {
-                self.open_report_overlay(
+                self.push_output(summary, OutputRole::System);
+                self.open_computer_overlay(
                     "Computer Use — Help",
                     "Background macOS desktop control via cua-driver",
                     edgecrab_tools::computer_command_usage(),
                 );
             }
+            other if edgecrab_tools::parse_install_args(other).0 => {
+                let upgrade = edgecrab_tools::parse_install_args(other).1;
+                let result =
+                    edgecrab_tools::install_cua_driver(&status_cfg.cua_driver_cmd, upgrade);
+                let body = edgecrab_tools::render_install_report(&result);
+                self.push_output(
+                    format!(
+                        "🖥 cua-driver {} — {}",
+                        if upgrade { "upgrade" } else { "install" },
+                        if result.ok() { "completed" } else { "see report for details" }
+                    ),
+                    OutputRole::System,
+                );
+                self.open_computer_overlay(
+                    if upgrade {
+                        "Computer Use — Upgrade"
+                    } else {
+                        "Computer Use — Install"
+                    },
+                    "cua-driver from GitHub (trycua/cua)",
+                    body,
+                );
+            }
             _ => {
                 let (title, subtitle, body) =
                     edgecrab_tools::computer_command_overlay(&sub, &status_cfg, &ctx);
-                self.open_report_overlay(title, subtitle, body);
+                self.push_output(summary, OutputRole::System);
+                self.open_computer_overlay(title, subtitle, body);
             }
         }
     }
@@ -36145,6 +36250,18 @@ kind = "skill"
         let names: Vec<&str> = hints.iter().map(|(name, _)| *name).collect();
         assert!(names.contains(&"toggle"));
         assert!(names.contains(&"status"));
+    }
+
+    #[test]
+    fn command_arg_hints_computer_includes_setup_and_status() {
+        let hints = App::command_arg_hints("computer");
+        assert!(!hints.is_empty());
+        let names: Vec<&str> = hints.iter().map(|(name, _)| *name).collect();
+        assert!(names.contains(&"setup"));
+        assert!(names.contains(&"status"));
+        assert!(names.contains(&"permissions"));
+        assert!(names.contains(&"open"));
+        assert_eq!(hints, App::command_arg_hints("cu"));
     }
 
     /// After typing "/sessions " (with trailing space) update_completion should

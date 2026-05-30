@@ -49,39 +49,51 @@ manual_e2e.rs         — #[ignore] live capture test
 Shared helpers: `analyze_local_image` (vision.rs), `format_computer_command` / `computer_command_overlay`,
 `AppConfig::persist_computer_use_enabled`, `Agent::set_computer_use_enabled`.
 
-## Brutal Assessment vs Hermes
+## Brutal Assessment vs Hermes (2026-05-24 refresh)
 
-### Exceeds Hermes on UX
+### What EdgeCrab does better
 
-- **Structured readiness report** with `[ok]` / `[warn]` / `[fail]` markers and next-steps — Hermes prints ad-hoc strings.
-- **TUI overlay panel** — Hermes TUI/gateway lack an equivalent polished status surface.
-- **`/computer open`** — one command opens both Screen Recording and Accessibility panes.
-- **`/computer enable`** — one command enables config + toolset + live session (Hermes requires manual config + toolset edit).
-- **`edgecrab doctor`** integration when feature is enabled.
+- **Operator UX**: `/computer setup|install|status|open`, TUI overlay, doctor — Hermes is CLI-string oriented.
+- **Rust MCP client**: Simpler than Hermes `_AsyncBridge` + daemon thread; native async.
+- **Screenshot disk cache** with `screenshot_path` in envelope — useful for debugging.
 
-### Parity with Hermes core
+### Honest gaps (before this pass)
 
-| Area | Verdict |
-|------|---------|
-| cua-driver MCP backend | **Parity** |
-| Action surface + schema | **Parity** |
-| Safety + screenshot pruning | **Parity** |
-| Aux vision routing (#24015) | **Parity** |
-| `_multimodal` envelope | **Parity** |
+| Issue | Root cause | Severity |
+|-------|------------|----------|
+| **Sticky focus lost** | `capture()` always retargeted frontmost window → `key` hit ExpressVPN (pid 1391) after `focus_app` Safari (99826) | **Critical** |
+| **Wrong z-order** | Sorted by `window_id` not `z_index` | High |
+| **`list_apps` always `[]`** | Only parsed JSON arrays; cua-driver returns text lines | High |
+| **268k token blow-up** | Spill preview included full base64 line; multimodal spilled → no images | Critical |
+| **No `COMPUTER_USE_GUIDANCE`** | Agent not told `app=Safari` on capture | High |
+| **Triple pruning** | Every-turn prune + spill + compression (Hermes also messy) | Medium |
+| **Global backend singleton** | No lifecycle `stop()`, serializes parallel tools | Medium |
+| **Element bounds always 0** | Parser incomplete | Medium |
+| **`raise_window` no-op** | Schema lies | Low (intentional) |
 
-### Remaining honest gaps
+### Fixes in this pass
 
-| Gap | Severity | Notes |
-|-----|----------|-------|
-| Screen Recording TCC preflight | Low | No public macOS API — same as Hermes; manual verify required |
-| Live click/type e2e in CI | Medium | `manual_e2e` test exists but `#[ignore]`; run locally |
-| Bundled macOS computer-use skill | Low | Hermes ships `apple-macos-computer-use` skill; EdgeCrab relies on tool schema |
-| Linux/Windows phases | N/A | Hermes also macOS-only for this tool |
+1. **Sticky window context** — `capture()` preserves `active_pid`/`active_window_id` or `last_app` when `app=` omitted; `capture_after` uses `targeted_app()` (Hermes parity).
+2. **z_index sort** — frontmost window selection matches Hermes.
+3. **`list_apps` text parsing** — Hermes-compatible regex.
+4. **Spill exempts `computer_use` multimodal** — images reach `tool_result_from_output`; preview uses `text_summary` only.
+5. **`edgecrab_types::multimodal`** — DRY parse helpers shared by message, spill, tools.
+6. **`COMPUTER_USE_GUIDANCE`** — injected when `computer_use` tool active.
 
-## Verdict
+### Still not Hermes-parity (honest backlog)
 
-**Feature complete for Phase 1.** Matches Hermes tool behavior and **exceeds on operator UX** for setup,
-diagnostics, and enablement. Production-ready for opt-in macOS users with cua-driver.
+- Per-turn aggregate spill budget (`enforce_turn_budget`)
+- Provider session cache for “reject multimodal tool content” 400 recovery
+- `raise_window` implementation (if cua-driver supports it)
+- Element bounds from AX tree
+- Screenshot cache TTL / max files
+- Session-scoped backend instead of `OnceLock` singleton
+- Bundled `apple-macos-computer-use` skill
+- Image-aware token estimator in compression (flat 1500/image)
+
+### Verdict
+
+**Core tool parity: yes. Production polish: now much closer.** The screenshot failure (ExpressVPN vs Safari) was a **first-principles state bug**, not “the model is dumb” — we were driving the wrong PID. Fix that before blaming permissions or vision routing.
 
 ## Quick Start
 

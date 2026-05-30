@@ -113,7 +113,7 @@ pub async fn run_shadow_judge(
     //   - `cache_config = None`: do NOT write new cache_control markers; existing
     //     markers on the slice produce server-side cache HITs for free.
     let mut chat_messages =
-        build_chat_messages(Some(SHADOW_JUDGE_SYSTEM_PROMPT), context_slice, None);
+        build_chat_messages(Some(SHADOW_JUDGE_SYSTEM_PROMPT), context_slice, None, false);
 
     // Append the judge query as the final user message.
     // This message is NEVER propagated to session.messages.

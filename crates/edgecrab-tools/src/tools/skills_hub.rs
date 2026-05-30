@@ -1796,13 +1796,26 @@ mod tests {
 
     #[test]
     fn search_optional_falls_back_to_embedded_catalog() {
+        // Per the build.rs optimization, the skills bundle is only embedded in
+        // release builds (~7.5 MB → empty stub for ~2x faster debug compiles).
+        // In debug builds the embedded catalog is empty, so the search returns
+        // nothing — assert behavior conditional on the active profile.
         let missing = PathBuf::from("/definitely/missing/edgecrab-optional-skills");
         let results = search_optional_skills(&missing, "fastmcp");
-        assert!(
-            results
-                .iter()
-                .any(|result| result.identifier == "official/mcp/fastmcp")
-        );
+        if cfg!(debug_assertions) {
+            assert!(
+                results.is_empty(),
+                "debug builds have an empty embedded skill bundle; got {} hits",
+                results.len()
+            );
+        } else {
+            assert!(
+                results
+                    .iter()
+                    .any(|result| result.identifier == "official/mcp/fastmcp"),
+                "release builds must include the official/mcp/fastmcp embedded skill"
+            );
+        }
     }
 
     #[test]

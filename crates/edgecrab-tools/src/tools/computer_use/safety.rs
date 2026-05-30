@@ -22,6 +22,8 @@ pub const DESTRUCTIVE_ACTIONS: &[&str] = &[
     "key",
     "set_value",
     "focus_app",
+    "launch_app",
+    "navigate",
 ];
 
 static BLOCKED_KEY_COMBOS: &[&[&str]] = &[
@@ -160,6 +162,9 @@ pub async fn ensure_destructive_approved(
     if approval_runtime::yolo_enabled_for_session(&session) {
         return Ok(());
     }
+    if approval_runtime::computer_use_action_approved(&session, action) {
+        return Ok(());
+    }
     let Some(tx) = &ctx.approval_tx else {
         // Gateway/CLI without UI: allow (Hermes default when no callback).
         return Ok(());
@@ -186,7 +191,15 @@ pub async fn ensure_destructive_approved(
         ))?
     };
     match response {
-        ApprovalResponse::Once | ApprovalResponse::Session | ApprovalResponse::Always => Ok(()),
+        ApprovalResponse::Once => Ok(()),
+        ApprovalResponse::Session => {
+            approval_runtime::approve_computer_use_action_for_session(&session, action);
+            Ok(())
+        }
+        ApprovalResponse::Always => {
+            approval_runtime::set_yolo_for_session(&session, true);
+            Ok(())
+        }
         ApprovalResponse::Deny => Err(ToolError::PermissionDenied(
             "computer_use action denied by user.".into(),
         )),

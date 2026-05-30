@@ -12,6 +12,19 @@ fn next_id() -> u64 {
     REQUEST_ID.fetch_add(1, Ordering::Relaxed)
 }
 
+/// Per-request deadline for a cua-driver RPC. Without this, a wedged daemon
+/// makes `read_line` block indefinitely (observed as multi-minute stalls before
+/// cua-driver's own internal timeout fires). Override via
+/// `EDGECRAB_CUA_DRIVER_TIMEOUT_SECS`.
+fn rpc_timeout() -> std::time::Duration {
+    let secs = std::env::var("EDGECRAB_CUA_DRIVER_TIMEOUT_SECS")
+        .ok()
+        .and_then(|s| s.trim().parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(60);
+    std::time::Duration::from_secs(secs)
+}
+
 #[derive(Debug)]
 pub struct McpToolResult {
     pub data: Value,
@@ -101,15 +114,46 @@ impl CuaMcpSession {
             "params": params
         }))
         .await?;
-        let response = self.read_line().await?;
-        if let Some(err) = response.get("error") {
-            return Err(err
-                .get("message")
-                .and_then(|m| m.as_str())
-                .unwrap_or("MCP error")
-                .to_string());
+
+        // Read until we see the response whose `id` matches this request, with an
+        // overall deadline. Lines without a matching id (notifications, or stale
+        // responses from an earlier timed-out request) are skipped so the stream
+        // never desynchronizes.
+        let timeout = rpc_timeout();
+        let deadline = tokio::time::Instant::now() + timeout;
+        loop {
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(format!(
+                    "cua-driver request '{method}' timed out after {}s (daemon unresponsive)",
+                    timeout.as_secs()
+                ));
+            }
+            let response = match tokio::time::timeout(remaining, self.read_line()).await {
+                Ok(line) => line?,
+                Err(_) => {
+                    return Err(format!(
+                        "cua-driver request '{method}' timed out after {}s (daemon unresponsive)",
+                        timeout.as_secs()
+                    ));
+                }
+            };
+
+            // Skip anything that isn't the response to *this* request id.
+            match response.get("id").and_then(Value::as_u64) {
+                Some(rid) if rid == id => {
+                    if let Some(err) = response.get("error") {
+                        return Err(err
+                            .get("message")
+                            .and_then(|m| m.as_str())
+                            .unwrap_or("MCP error")
+                            .to_string());
+                    }
+                    return Ok(response.get("result").cloned().unwrap_or(Value::Null));
+                }
+                _ => continue,
+            }
         }
-        Ok(response.get("result").cloned().unwrap_or(Value::Null))
     }
 
     pub async fn call_tool(&mut self, name: &str, args: Value) -> Result<McpToolResult, String> {
