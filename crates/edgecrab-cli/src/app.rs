@@ -29386,8 +29386,8 @@ impl App {
     }
 
     fn render_web_setup_tui(&self, frame: &mut Frame, area: Rect) {
-        use crate::web_setup_tui::{WebSetupScreen, provider_label, row_prefix};
-        use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph, Wrap};
+        use crate::web_setup_tui::WebSetupScreen;
+        use ratatui::widgets::{Block, Borders, List, Paragraph, Wrap};
 
         frame.render_widget(Clear, area);
         let chunks = picker_three_layout(area);
@@ -29397,11 +29397,17 @@ impl App {
         let accent = crate::web_command::WEB_ACCENT;
 
         let title = match setup.screen {
-            WebSetupScreen::Configure => " /web ",
+            WebSetupScreen::Configure => " /web — search priority ",
             WebSetupScreen::ConfirmAuto => " Reset to auto? ",
         };
+
+        let header_lines = if setup.screen == WebSetupScreen::Configure {
+            vec![setup.status_line(), setup.chain_summary_line()]
+        } else {
+            vec![setup.status_line()]
+        };
         frame.render_widget(
-            Paragraph::new(setup.status_line()).block(
+            Paragraph::new(header_lines).block(
                 Block::default()
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(Color::Rgb(180, 130, 50)))
@@ -29410,59 +29416,29 @@ impl App {
             chunks[0],
         );
 
-        let list_items: Vec<ListItem> = if setup.screen == WebSetupScreen::ConfirmAuto {
+        let list_items = if setup.screen == WebSetupScreen::ConfirmAuto {
             vec![ListItem::new(Line::from(Span::styled(
                 "  Clear custom chain and use auto (best configured backend)?",
                 Style::default().fg(Color::Rgb(255, 210, 150)),
             )))]
         } else {
-            setup
-                .search_backend_ids
-                .iter()
-                .enumerate()
-                .map(|(i, id)| {
-                    let is_cursor = i == setup.list_cursor;
-                    let row = setup
-                        .provider_rows
-                        .iter()
-                        .find(|r| r["id"].as_str() == Some(id.as_str()));
-                    let bg = if is_cursor {
-                        Color::Rgb(55, 42, 18)
-                    } else {
-                        Color::Reset
-                    };
-                    let label = row.map(provider_label).unwrap_or_else(|| id.clone());
-                    let prefix = row_prefix(setup, i);
-                    ListItem::new(Line::from(vec![
-                        selector_marker(is_cursor, accent, Some(bg)),
-                        Span::styled(
-                            format!(" {prefix}{label}"),
-                            Style::default().fg(if is_cursor {
-                                Color::White
-                            } else {
-                                Color::Rgb(230, 200, 150)
-                            }),
-                        ),
-                    ]))
-                })
-                .collect()
+            setup.build_list_items(accent)
         };
 
         frame.render_widget(
-            List::new(list_items)
-                .block(
-                    Block::default()
-                        .borders(Borders::LEFT | Borders::RIGHT)
-                        .title(" Search backends (▶=primary  1,2=fallback) "),
-                ),
+            List::new(list_items).block(
+                Block::default()
+                    .borders(Borders::LEFT | Borders::RIGHT)
+                    .title(" Providers "),
+            ),
             body[0],
         );
 
         let mut detail = setup.selected_provider_detail();
         if setup.screen == WebSetupScreen::ConfirmAuto {
             detail = vec![
-                Line::from("Reset removes your custom primary and fallback order."),
-                Line::from("EdgeCrab picks the best backend that has credentials."),
+                Line::from("Reset removes your custom priority order."),
+                Line::from("EdgeCrab picks the best backends that have credentials."),
                 Line::from(""),
                 Line::from("y or Enter — confirm   n or Esc — cancel"),
             ];

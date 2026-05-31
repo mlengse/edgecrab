@@ -86,18 +86,20 @@ pub fn web_menu_status_hint(report: &WebDiagnosticsReport) -> String {
 pub fn web_command_usage() -> String {
     r#"WEB SEARCH — /web
 
-  /web              Open configurator (pick primary + fallbacks)
+  /web              Open priority chain editor
   /web help         This message
 
-In the configurator
-  Enter     Set primary backend (saves immediately)
-  Space     Toggle fallback on/off
-  a         Reset to auto
-  r         Refresh status
+In the editor (one ordered list — tried top to bottom)
+  ↑↓        Move selection
+  [  ]      Move provider up/down in chain
+  Enter     Add highlighted provider to chain
+  x         Remove provider from chain
+  a         Reset to auto (best configured backends)
+  r         Refresh
   Esc       Close
 
 API keys: ~/.edgecrab/.env (BRAVE_API_KEY, SEARXNG_URL, TAVILY_API_KEY, …)
-ddgs needs no key but may be blocked — set a paid backend as primary.
+ddgs needs no key but may be blocked — put a keyed backend first in the chain.
 "#
     .to_string()
 }

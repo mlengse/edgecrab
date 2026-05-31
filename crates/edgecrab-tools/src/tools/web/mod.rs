@@ -6,6 +6,7 @@ pub mod search;
 pub use extract_crawl::{WebCrawlTool, WebExtractTool};
 pub use search::{
     SearchResult, WebSearchBackend, WebSearchChainUpdate, WebSearchTool, WebSectionUpdate,
+    ResolvedChain,
     capability_label, clear_web_search_chain_in_config, clear_web_section_overrides,
     collect_web_diagnostics, format_extract_doctor_detail, format_search_chain_summary,
     format_search_doctor_detail, format_web_setup_report, get_web_search_backend,
