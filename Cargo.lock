@@ -2349,6 +2349,7 @@ dependencies = [
  "cron",
  "dashmap",
  "dirs 5.0.1",
+ "edgecrab-core",
  "edgecrab-cron",
  "edgecrab-security",
  "edgecrab-state",

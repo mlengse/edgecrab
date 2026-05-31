@@ -699,6 +699,15 @@ pub const BUILTIN_SLASH_COMMANDS: &[SlashCommandSpec] = &[
         gateway: true,
     },
     SlashCommandSpec {
+        name: "web",
+        aliases: &[],
+        description: "Web search chain status and diagnostics",
+        category: "Tools",
+        args_hint: "[status|chain|doctor|help]",
+        cli: true,
+        gateway: true,
+    },
+    SlashCommandSpec {
         name: "lsp",
         aliases: &[],
         description: "Toggle LSP and post-write diagnostics on file mutations",

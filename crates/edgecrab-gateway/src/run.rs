@@ -2437,6 +2437,9 @@ impl Gateway {
                             "computer" => {
                                 Some(handle_computer_command(&msg))
                             }
+                            "web" => Some(edgecrab_tools::gateway_web_command_reply(
+                                msg.get_command_args(),
+                            )),
                             "commands" => {
                                 let page = msg
                                     .get_command_args()

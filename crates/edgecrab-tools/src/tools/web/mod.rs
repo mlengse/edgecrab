@@ -19,6 +19,7 @@ pub use search::{
     persist_web_backend_in_config, persist_web_search_chain_in_config,
     persist_web_section_in_config, print_provider_detail_cli, provider_detail_lines,
     register_web_search_backend, render_web_dashboard, reset_web_to_auto,
+    gateway_web_command_reply,
     web_command_overlay, web_command_usage, web_menu_status_hint, web_provider_picker_rows,
     web_search_is_available, web_status_one_liner,
 };

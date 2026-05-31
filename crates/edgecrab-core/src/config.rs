@@ -194,6 +194,7 @@ impl AppConfig {
 
         config.apply_env_overrides();
         config.moa = config.moa.sanitized();
+        edgecrab_tools::ensure_web_search_config_coherence_at(&path);
         Ok(config)
     }
 
@@ -203,6 +204,7 @@ impl AppConfig {
         let mut config: Self = Self::parse_compat_yaml(&content, path)?;
         config.apply_env_overrides();
         config.moa = config.moa.sanitized();
+        edgecrab_tools::ensure_web_search_config_coherence_at(path);
         Ok(config)
     }
 

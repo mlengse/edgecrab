@@ -105,6 +105,35 @@ fn e2e_startup_coherence_migrates_legacy_override() {
 }
 
 #[test]
+fn e2e_app_config_load_from_migrates_legacy_search_override() {
+    let _lock = registry_guard();
+    let dir = TempDir::new().expect("tempdir");
+    let path = dir.path().join("config.yaml");
+    persist_web_section_in_config(
+        &path,
+        &WebSectionUpdate {
+            backend: Some(String::new()),
+            search_backend: Some("brave".into()),
+            extract_backend: None,
+        },
+    )
+    .expect("legacy");
+    edgecrab_core::AppConfig::load_from(&path).expect("load");
+    assert!(search_section_override_from_path(&path).is_none());
+    let search = load_web_search_config_from_path(&path).expect("search");
+    assert_eq!(search.primary, "brave");
+}
+
+#[test]
+fn e2e_gateway_web_command_reply_non_empty() {
+    let _lock = registry_guard();
+    for sub in ["status", "chain", "doctor", "help"] {
+        let reply = edgecrab_tools::gateway_web_command_reply(sub);
+        assert!(!reply.is_empty(), "reply for {sub}");
+    }
+}
+
+#[test]
 fn e2e_default_chain_for_backend_matches_wizard() {
     assert_eq!(
         default_chain_for_backend("tavily"),

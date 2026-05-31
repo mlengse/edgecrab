@@ -5745,7 +5745,6 @@ impl App {
         );
 
         let runtime_config = edgecrab_core::AppConfig::load().unwrap_or_default();
-        edgecrab_tools::ensure_web_search_config_coherence();
         let terminal_caps = terminal_runtime_capabilities();
 
         let mut app = Self {

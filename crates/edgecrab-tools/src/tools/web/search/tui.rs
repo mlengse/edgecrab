@@ -5,7 +5,7 @@
 
 use super::provider_diagnostics::{
     WebDiagnosticsReport, WebProviderStatus, capability_label, collect_web_diagnostics,
-    format_extract_doctor_detail, format_search_doctor_detail,
+    format_extract_doctor_detail, format_search_doctor_detail, format_web_setup_report,
 };
 
 const CAP_LEGEND: &str = "Capabilities: S=search  E=extract  C=crawl";
@@ -452,6 +452,57 @@ pub fn web_command_overlay_from(
     }
 }
 
+const GATEWAY_WEB_REPLY_MAX: usize = 3_800;
+
+/// Compact `/web` reply for gateway chats (Telegram, Discord, …).
+pub fn gateway_web_command_reply(sub: &str) -> String {
+    let sub = sub.trim().to_ascii_lowercase();
+    let first = sub.split_whitespace().next().unwrap_or("status");
+    let report = collect_web_diagnostics();
+    let text = match first {
+        "help" => {
+            "🔍 Web commands (gateway):\n\
+             /web status  — readiness + chain summary\n\
+             /web chain   — fallback order\n\
+             /web doctor  — provider diagnostics\n\
+             /web help    — this message\n\
+             Edit chain on host: /web or `edgecrab setup web`"
+                .to_string()
+        }
+        "chain" | "fallback" | "fallbacks" => {
+            let (_, _, body) = web_command_overlay_from("chain", &report);
+            body
+        }
+        "doctor" | "diag" | "diagnostics" => {
+            format_web_setup_report(&report)
+        }
+        _ => {
+            format!(
+                "{}\n\nChain: {} ({}s timeout)",
+                web_status_one_liner_from(&report),
+                report.search_chain_summary,
+                report.search_chain_timeout_secs
+            )
+        }
+    };
+    if text.len() <= GATEWAY_WEB_REPLY_MAX {
+        text
+    } else {
+        format!("{}…\n\n(reply truncated — use `edgecrab setup web` on host for full report)", truncate_at_char_boundary(&text, GATEWAY_WEB_REPLY_MAX))
+    }
+}
+
+fn truncate_at_char_boundary(text: &str, max_bytes: usize) -> &str {
+    if text.len() <= max_bytes {
+        return text;
+    }
+    let mut end = max_bytes;
+    while end > 0 && !text.is_char_boundary(end) {
+        end -= 1;
+    }
+    &text[..end]
+}
+
 #[cfg(test)]
 mod tests {
     use super::super::registry::{reset_registry_for_tests, test_registry_lock};
@@ -502,5 +553,21 @@ mod tests {
         assert!(usage.contains("/web"));
         assert!(usage.contains("Enter"));
         assert!(usage.contains("Space"));
+    }
+
+    #[test]
+    fn gateway_web_reply_status_is_compact() {
+        let _lock = test_registry_lock();
+        reset_registry_for_tests();
+        let reply = gateway_web_command_reply("status");
+        assert!(reply.contains("🔍 Web"));
+        assert!(reply.contains("Chain:"));
+    }
+
+    #[test]
+    fn gateway_web_reply_help_lists_subcommands() {
+        let reply = gateway_web_command_reply("help");
+        assert!(reply.contains("/web chain"));
+        assert!(reply.contains("/web doctor"));
     }
 }

@@ -50,8 +50,8 @@ pub use setup::{
     reset_web_to_auto, search_override_warning, search_section_override_from_path,
 };
 pub use tui::{
-    render_web_dashboard, web_command_overlay, web_command_usage, web_menu_status_hint,
-    web_status_one_liner,
+    gateway_web_command_reply, render_web_dashboard, web_command_overlay, web_command_usage,
+    web_menu_status_hint, web_status_one_liner,
 };
 pub use tool::WebSearchTool;
 pub use web_config::{
