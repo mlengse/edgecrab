@@ -3,44 +3,45 @@
 **Tier:** A | **Impact:** 5 | **Value-per-Effort:** 3 | **Risk:** 3
 **Primitive moved:** Cost per useful turn (huge), Reach (massive)
 
-## Why It Matters (First Principles)
+## What This Feature Actually Is (v0.14 scope)
 
-There are two LLM ecosystems on Earth:
+EdgeCrab ships a **local OpenAI-shaped HTTP server** so third-party clients (Aider,
+Cline, OpenAI SDK, LiteLLM, etc.) can talk to `http://127.0.0.1:11434/v1` with a
+**local proxy bearer** while the proxy attaches **real upstream credentials**.
 
-1. **OpenAI-shaped HTTP API** — every third-party tool (Codex CLI, Aider,
-   Cline, Continue, Cursor, LiteLLM, LangChain, etc.) speaks this dialect.
-2. **OAuth-gated provider APIs** — Anthropic Claude Pro subscription,
-   ChatGPT Pro subscription, xAI SuperGrok, GitHub Copilot — accessible
-   only through their own OAuth flow inside their own clients.
+Two modes:
 
-A user who pays $200/month for Claude Pro can use it only inside Claude
-Desktop / Claude Code. If EdgeCrab exposes that OAuth-gated provider as a
-**local OpenAI-compatible endpoint** (`http://127.0.0.1:11434/v1`), the
-user can now wire their $200 subscription into Aider, Cline, the OpenAI
-Python SDK, LiteLLM — anything. This is the v0.14 "OpenAI-compat
-local proxy" feature and it is **transformative for cost**: it monetises
-a subscription the user already pays for.
+| Mode | Purpose | Status |
+|------|---------|--------|
+| **A — Credential forwarder** | Hermes-style verbatim HTTP proxy with OAuth/static bearer swap (`nous`, `xai`, `hermes_auth`, `static`) | **Implemented** — Hermes reference parity for Nous + xAI |
+| **B — Provider bridge** | OpenAI JSON ↔ `edgequake_llm::LLMProvider` (API keys from model catalog) | **Implemented** — no subscription OAuth translation |
 
-## The Gap
+**Not in 008:** Claude Pro / ChatGPT Pro / Copilot subscription unlock as OpenAI
+endpoints. Those require [024-oauth-providers/](../024-oauth-providers/) and are
+out of scope for the Hermes proxy reference (Hermes only ships `nous` + `xai`).
 
-EdgeCrab has zero proxy surface. The only way to use EdgeCrab is via the
-TUI, ACP adapter, or gateway. The model catalog supports many providers
-internally, but none of them are exposed externally as an OpenAI server.
+## Why It Matters
 
-## What EdgeCrab Gets Wrong Today
+Users already pay for Nous Portal or xAI SuperGrok but are locked into each vendor’s
+client. A localhost OpenAI-compat bridge lets the same subscription power Aider,
+Cline, or any OpenAI SDK app — without buying duplicate API keys.
 
-A power user with paid subscriptions to Claude Pro + ChatGPT Pro + xAI
-SuperGrok can use **none** of them inside their preferred coding tools.
-They are forced to either:
-- Use the official client (locked to one tool),
-- Pay extra for API access (defeats the subscription's purpose),
-- Glue together third-party gray-market proxies (security nightmare).
+## The Gap (before EdgeCrab)
+
+No external OpenAI server surface; only TUI, ACP, and gateway agent API.
+
+## What EdgeCrab Delivers Today
+
+- `edgecrab proxy` CLI + `/proxy` TUI wizard (ahead of Hermes CLI ergonomics)
+- `crates/edgecrab-proxy/` — axum server, forwarder, Nous quarantine/allowlist, xAI pool rotation
+- E2E: grok/xAI OAuth, Nous 401 retry, Nous quarantine, forward HTTP, CLI/slash commands
+- Stricter local auth than Hermes (file token + timing-safe Bearer; Hermes accepts any client bearer)
 
 ## Cross-References
 
-- [002-hermes-reference.md](002-hermes-reference.md)
-- [003-edgecrab-current-state.md](003-edgecrab-current-state.md)
+- [002-hermes-reference.md](002-hermes-reference.md) — ground-truth Hermes proxy
+- [003-edgecrab-current-state.md](003-edgecrab-current-state.md) — file map + tests
 - [004-implementation-plan.md](004-implementation-plan.md)
 - [005-acceptance-criteria.md](005-acceptance-criteria.md)
-- Depends on: [024-oauth-providers/](../024-oauth-providers/) (provides the OAuth backends to expose)
-- Composes with: [010-mcp-sse-oauth-parallel/](../010-mcp-sse-oauth-parallel/) (proxy can also expose MCP tools as OpenAI functions)
+- Depends on: [024-oauth-providers/](../024-oauth-providers/) for future Claude/Copilot adapters
+- Composes with: [010-mcp-sse-oauth-parallel/](../010-mcp-sse-oauth-parallel/)

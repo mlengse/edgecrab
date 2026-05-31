@@ -22,9 +22,9 @@
    │            │                                                     │
    │            ▼                                                     │
    │   ┌─────────────────────────────────────────────────┐            │
-   │   │ BackendResolver                                 │            │
+   │   │ resolve.rs + create_provider_for_model()        │            │
    │   │   model_alias  →  Arc<dyn LLMProvider>          │            │
-   │   │   (reuses edgecrab-core model_router)           │            │
+   │   │   (ModelCatalog + edgecrab-tools factory)       │            │
    │   └─────────────────────────────────────────────────┘            │
    └──────────────────────────────────────────────────────────────────┘
                                 │
@@ -104,6 +104,23 @@ Error response body matches OpenAI shape:
   `proxy.cors_allow_origins`.
 - Outbound provider calls respect `HTTPS_PROXY` / `HTTP_PROXY` env vars
   (see `edgecrab-security`).
+
+## Implementation Status (landed)
+
+| Planned path | Actual path |
+|--------------|-------------|
+| `translate/mod.rs` + per-backend | `wire/messages.rs`, `wire/sse.rs`, `backend/provider.rs` (Mode B via `LLMProvider`) |
+| `routes/chat.rs` | `server.rs` (single router module — YAGNI until embeddings split) |
+| `BackendResolver` | `resolve.rs` + `create_provider_for_model` |
+| Forwarder adapters | `backend/adapter.rs` + `backend/forwarder.rs` (`forward:<key>` aliases) |
+
+Run locally:
+
+```bash
+edgecrab proxy token set
+edgecrab proxy start --host 127.0.0.1 --port 11434
+# OPENAI_BASE_URL=http://127.0.0.1:11434/v1  OPENAI_API_KEY=<proxy-token>
+```
 
 ## Cross-References
 

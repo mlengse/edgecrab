@@ -193,6 +193,58 @@ edgecrab -C "continue-my-refactor"              # resume named session
 edgecrab -w "explore that perf idea"            # isolated git worktree
 ```
 
+### OpenAI-compatible proxy (Aider, Cline, OpenAI SDK)
+
+Expose EdgeCrab-configured LLM providers to third-party clients — **not** the full agent API
+(distinct from the gateway `api_server` platform):
+
+```bash
+# Grok / xAI OAuth (recommended path)
+edgecrab proxy setup grok             # writes config + token + client snippet
+edgecrab proxy doctor
+edgecrab proxy start --provider xai
+
+# Or step by step
+edgecrab proxy enable grok
+edgecrab proxy token set
+edgecrab proxy client                 # print OPENAI_API_BASE / Aider vars
+edgecrab proxy start --provider xai
+```
+
+Point any OpenAI client at `http://127.0.0.1:11434/v1` with `Authorization: Bearer <proxy-token>`.
+Map friendly names in `~/.edgecrab/config.yaml`:
+
+```yaml
+proxy:
+  port: 11434
+  model_aliases:
+    claude-sonnet: anthropic/claude-sonnet-4-20250514
+    gpt-4o: openai/gpt-4o
+    nous-portal: forward:nous          # Mode A — credential forwarder
+  forward_upstreams:
+    nous:
+      adapter: nous_portal          # OAuth refresh + invoke JWT (Hermes NousPortalAdapter)
+      auth_provider: nous
+      base_url: https://inference-api.nousresearch.com/v1
+      # Or read-only: adapter: hermes_auth
+      # Or static bearer: bearer_env: NOUS_API_KEY
+    xai:
+      adapter: xai_oauth
+      auth_provider: xai-oauth
+      base_url: https://api.x.ai/v1
+  default_forward_upstream: nous   # optional: GET /v1/models → upstream (Hermes-style)
+  cors_allow_origins: []           # e.g. ["http://localhost:3000"] for browser clients
+```
+
+**Aider** (`~/.aider.conf.yml`):
+
+```yaml
+openai-api-base: http://127.0.0.1:11434/v1
+openai-api-key: <your-proxy-token>
+```
+
+Default bind is loopback-only; use `--allow-public` only with a strong token.
+
 ---
 
 ## What EdgeCrab Can Do

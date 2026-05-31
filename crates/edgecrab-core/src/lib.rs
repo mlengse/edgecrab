@@ -38,8 +38,11 @@ pub use agent::{
 pub use completion_assessor::{CompletionContext, CompletionPolicy, DefaultCompletionPolicy};
 pub use compression::{PRUNED_TOOL_PLACEHOLDER, SUMMARY_PREFIX};
 pub use config::{
-    AppConfig, CliOverrides, GoalJudgeConfig, GoalsConfig, SmartRoutingYaml, ToolProgressMode,
-    edgecrab_home, ensure_edgecrab_home, gateway_image_cache_dir, gateway_media_dir,
+    AppConfig, CliOverrides, ForwardAdapterKind, ForwardUpstreamConfig, GoalJudgeConfig,
+    GoalsConfig, ProxyConfig,
+        SmartRoutingYaml,
+    ToolProgressMode, edgecrab_home, ensure_edgecrab_home, gateway_image_cache_dir,
+    gateway_media_dir,
 };
 pub use context_engine::{
     BuiltinCompressorEngine, ContextEngine, ContextEngineSessionCtx, MAX_ENGINE_TOOLS,

@@ -47,6 +47,9 @@ mod plugin_toggle;
 mod plugins;
 mod plugins_cmd;
 mod profile;
+mod proxy_cmd;
+mod proxy_hub;
+mod proxy_setup_tui;
 mod runtime;
 mod setup;
 mod skin_engine;
@@ -75,7 +78,7 @@ use tokio_util::sync::CancellationToken;
 use crate::logging::{LoggingMode, StderrMode, init_logging};
 use app::App;
 use cli_args::{
-    AcpCommand, AuthCommand, ClawCommand, CliArgs, Command, ConfigCommand, CronCommand,
+    AcpCommand, AuthCommand, ClawCommand,     CliArgs, Command, ConfigCommand, CronCommand,
     GatewayCommand, HonchoCommand, LogsCommand, McpCommand, MemoryCommand, OpenClawPresetArg,
     PairingCommand, PluginsCommand, ProfileCommand, SessionCommand, SkillConflictModeArg,
     SkillsCommand, ToolsCommand, WebhookCommand,
@@ -754,6 +757,10 @@ async fn run_subcommand(cmd: Command, args: &CliArgs) -> anyhow::Result<()> {
 
         Command::Cron { command } => {
             run_cron(command, args).await?;
+        }
+
+        Command::Proxy { command } => {
+            proxy_cmd::run(command).await?;
         }
 
         Command::Gateway { command } => {

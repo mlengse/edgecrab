@@ -4896,6 +4896,8 @@ pub struct App {
     stream_selector_cursor: usize,
     /// In-TUI web configurator (`/web`).
     web_setup: crate::web_setup_tui::WebSetupTui,
+    /// In-TUI OpenAI-compat proxy setup (`/proxy`).
+    proxy_setup: crate::proxy_setup_tui::ProxySetupTui,
     /// Status bar picker overlay (activated by `/statusbar` with no args)
     statusbar_selector_active: bool,
     /// Which row is highlighted in the statusbar picker (0=Visible, 1=Hidden)
@@ -5853,6 +5855,9 @@ impl App {
             stream_selector_active: false,
             stream_selector_cursor: 0,
             web_setup: crate::web_setup_tui::WebSetupTui::new(
+                edgecrab_core::edgecrab_home().join("config.yaml"),
+            ),
+            proxy_setup: crate::proxy_setup_tui::ProxySetupTui::new(
                 edgecrab_core::edgecrab_home().join("config.yaml"),
             ),
             statusbar_selector_active: false,
@@ -8061,6 +8066,15 @@ impl App {
                 ("tabs", "List open browser tabs"),
                 ("recording", "Toggle recording: recording on | off"),
             ],
+            "proxy" | "openai-proxy" | "grok-proxy" => &[
+                ("setup", "Open in-TUI preset wizard (Grok / Nous)"),
+                ("enable grok", "Enable xAI Grok preset + proxy token"),
+                ("enable nous", "Enable Nous Portal preset"),
+                ("status", "Listen URL, aliases, upstreams (report)"),
+                ("doctor", "Preflight token + OAuth checks"),
+                ("client", "Client env snippet (token redacted)"),
+                ("help", "Usage for /proxy and edgecrab proxy CLI"),
+            ],
             "computer" | "cu" | "desktop" | "cua" => &[
                 ("setup", "Guided wizard: install → enable → open settings"),
                 ("install", "Download and install cua-driver from GitHub"),
@@ -9635,6 +9649,22 @@ impl App {
                     self.needs_redraw = true;
                 }
                 crate::web_setup_tui::WebSetupAction::None => {}
+            }
+            return;
+        }
+
+        if self.proxy_setup.active {
+            let action = self.proxy_setup.handle_key(key);
+            match action {
+                crate::proxy_setup_tui::ProxySetupAction::Close => {
+                    self.proxy_setup.close();
+                    self.needs_redraw = true;
+                }
+                crate::proxy_setup_tui::ProxySetupAction::Redraw
+                | crate::proxy_setup_tui::ProxySetupAction::ConfigSaved => {
+                    self.needs_redraw = true;
+                }
+                crate::proxy_setup_tui::ProxySetupAction::None => {}
             }
             return;
         }
@@ -12342,6 +12372,9 @@ impl App {
             }
             CommandResult::WebCommand(args) => {
                 self.handle_web_command(args);
+            }
+            CommandResult::ProxyCommand(args) => {
+                self.handle_proxy_command(args);
             }
             CommandResult::ShowHistory => {
                 self.handle_show_history();
@@ -16911,6 +16944,71 @@ impl App {
             _ => {
                 self.push_output(
                     format!("Unknown /web subcommand `{first}`. Try /web help."),
+                    OutputRole::System,
+                );
+            }
+        }
+    }
+
+    /// Open the proxy setup TUI (`/proxy`) or text subcommands.
+    fn open_proxy_config(&mut self) {
+        self.document_overlay = None;
+        self.web_setup.close();
+        self.proxy_setup.open();
+        self.needs_redraw = true;
+    }
+
+    fn handle_proxy_command(&mut self, args: String) {
+        let trimmed = args.trim();
+        let first = trimmed.to_ascii_lowercase();
+        let first = first.split_whitespace().next().unwrap_or("");
+        match first {
+            "help" => {
+                self.push_output(crate::proxy_hub::usage(), OutputRole::System);
+            }
+            "status" => match crate::proxy_cmd::ProxySession::load() {
+                Ok(session) => self.open_report_overlay(
+                    "OpenAI Proxy",
+                    crate::proxy_hub::listen_url(session.proxy()),
+                    crate::proxy_hub::format_status(&session),
+                ),
+                Err(e) => self.push_output(format!("Proxy: {e}"), OutputRole::Error),
+            },
+            "doctor" | "diag" => match crate::proxy_cmd::ProxySession::load() {
+                Ok(session) => {
+                    let (_, body) = crate::proxy_hub::format_doctor(&session);
+                    self.open_report_overlay("Proxy Doctor", "Preflight checks", body);
+                }
+                Err(e) => self.push_output(format!("Proxy: {e}"), OutputRole::Error),
+            },
+            "client" => match crate::proxy_cmd::ProxySession::load() {
+                Ok(session) => match crate::proxy_hub::client_report(&session, false) {
+                    Ok(body) => self.open_report_overlay(
+                        "Proxy Client",
+                        "OPENAI_API_BASE / model (token redacted)",
+                        body,
+                    ),
+                    Err(e) => self.push_output(format!("Proxy: {e}"), OutputRole::Error),
+                },
+                Err(e) => self.push_output(format!("Proxy: {e}"), OutputRole::Error),
+            },
+            "enable" => {
+                let preset = trimmed
+                    .split_whitespace()
+                    .nth(1)
+                    .unwrap_or("grok");
+                match crate::proxy_cmd::ProxySession::load() {
+                    Ok(mut session) => match crate::proxy_hub::enable_by_name(&mut session, preset) {
+                        Ok(msg) => self.push_output(msg, OutputRole::System),
+                        Err(e) => self.push_output(format!("Proxy: {e}"), OutputRole::Error),
+                    },
+                    Err(e) => self.push_output(format!("Proxy: {e}"), OutputRole::Error),
+                }
+            }
+            "setup" | "configure" | "edit" | "" => self.open_proxy_config(),
+            _ => {
+                self.push_output(
+                    format!("Unknown /proxy subcommand `{first}`. Try /proxy help."),
                     OutputRole::System,
                 );
             }
@@ -23142,6 +23240,10 @@ impl App {
 
         if self.web_setup.active {
             self.render_web_setup_tui(frame, frame.area());
+        }
+
+        if self.proxy_setup.active {
+            self.render_proxy_setup_tui(frame, frame.area());
         }
 
         // Stream picker overlay (compact centered popup)
@@ -29567,6 +29669,73 @@ impl App {
             ))
         } else {
             crate::web_setup_tui::WebSetupTui::help_line()
+        };
+        frame.render_widget(Paragraph::new(help), chunks[2]);
+    }
+
+    fn render_proxy_setup_tui(&self, frame: &mut Frame, area: Rect) {
+        use crate::proxy_setup_tui::ProxySetupScreen;
+        use ratatui::widgets::{Block, Borders, List, Paragraph, Wrap};
+
+        frame.render_widget(Clear, area);
+        let chunks = picker_three_layout(area);
+        let body = picker_two_cols(chunks[1], 38);
+
+        let setup = &self.proxy_setup;
+        let accent = crate::proxy_hub::PROXY_ACCENT;
+
+        let title = match setup.screen {
+            ProxySetupScreen::PickPreset => " /proxy — OpenAI bridge (Grok / Nous) ",
+            ProxySetupScreen::ConfirmEnable => " Enable upstream? ",
+        };
+
+        frame.render_widget(
+            Paragraph::new(setup.status_line()).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(accent))
+                    .title(title),
+            ),
+            chunks[0],
+        );
+
+        let list_items = if setup.screen == ProxySetupScreen::ConfirmEnable {
+            vec![ListItem::new(Line::from(Span::styled(
+                "  Confirm enable preset and create proxy token?",
+                Style::default().fg(Color::Rgb(180, 220, 255)),
+            )))]
+        } else {
+            setup.build_list_items(accent)
+        };
+
+        frame.render_widget(
+            List::new(list_items).block(
+                Block::default()
+                    .borders(Borders::LEFT | Borders::RIGHT)
+                    .title(" Presets "),
+            ),
+            body[0],
+        );
+
+        let detail = if setup.screen == ProxySetupScreen::ConfirmEnable {
+            setup.confirm_lines()
+        } else {
+            setup.detail_lines()
+        };
+
+        frame.render_widget(
+            Paragraph::new(detail).wrap(Wrap { trim: true }).block(
+                Block::default()
+                    .borders(Borders::LEFT | Borders::RIGHT)
+                    .title(" Details "),
+            ),
+            body[1],
+        );
+
+        let help = if setup.screen == ProxySetupScreen::ConfirmEnable {
+            crate::proxy_setup_tui::ProxySetupTui::confirm_help_line()
+        } else {
+            crate::proxy_setup_tui::ProxySetupTui::help_line()
         };
         frame.render_widget(Paragraph::new(help), chunks[2]);
     }

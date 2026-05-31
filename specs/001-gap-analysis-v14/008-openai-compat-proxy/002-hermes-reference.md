@@ -1,54 +1,67 @@
-# 008 — Hermes Reference
+# 008 — Hermes Reference (ground truth)
+
+Hermes agent repo: `hermes-agent/hermes_cli/proxy/`.  
+**Only two forward upstreams:** `nous` (Nous Portal) and `xai` (SuperGrok).  
+There is **no** Hermes proxy adapter for Claude Pro, ChatGPT Pro, or Copilot.
 
 | Concern | Hermes file |
 |---------|-------------|
-| Proxy entry point | `hermes proxy` CLI subcommand (registered in `hermes-agent/hermes_cli/main.py` → handler module) |
-| HTTP server | FastAPI/Starlette app exposing `/v1/chat/completions`, `/v1/models`, `/v1/embeddings` (opt) |
-| Provider adapter | `hermes-agent/hermes_cli/providers.py` + `hermes-agent/agent/anthropic_adapter.py` translate OpenAI request → native provider call → OpenAI response |
-| OAuth providers | `hermes-agent/hermes_cli/auth.py` + `copilot_auth.py` + xAI/Claude Pro auth modules |
-| Streaming SSE | OpenAI SSE format on the wire, even when the underlying provider streams differently |
-| Model alias map | `claude-3-5-sonnet-claudepro` → Claude Pro OAuth backend; `gpt-5-chatgptpro` → ChatGPT Pro OAuth backend |
+| CLI | `hermes_cli/proxy/cli.py` — `start`, `status`, `providers` |
+| HTTP server | `hermes_cli/proxy/server.py` — aiohttp, default port **8645** |
+| Adapters registry | `hermes_cli/proxy/adapters/__init__.py` — `ADAPTERS = {nous, xai}` |
+| Nous Portal | `hermes_cli/proxy/adapters/nous_portal.py` — JWT refresh, 401 retry, quarantine, path allowlist |
+| xAI Grok | `hermes_cli/proxy/adapters/xai.py` — OIDC refresh, credential pool on 429 |
+| Base trait | `hermes_cli/proxy/adapters/base.py` — `UpstreamAdapter`, `UpstreamCredential` |
+| OAuth storage | `hermes_cli/auth.py` — `~/.hermes/auth.json`, flock, Nous refresh helpers |
 
-## Wire-Level Behaviour
+## Wire-Level Behaviour (Mode A only)
 
 ```
 Client (Aider, Cline, OpenAI SDK)
-       │
-       │ POST /v1/chat/completions
-       │ Authorization: Bearer <local-token>
-       │ body: { model, messages, tools, stream: true }
-       │
+       │  POST /v1/chat/completions
+       │  Authorization: Bearer <any string — ignored for upstream>
        ▼
-hermes proxy (localhost:port)
-       │  validate local Bearer
-       │  resolve model alias → backend provider
-       │  translate OpenAI tool schema → provider native schema
-       │  open provider session (OAuth token from keychain)
-       │
+hermes proxy start [--provider nous|xai]   # default provider: nous
+       │  attach real OAuth bearer to upstream
        ▼
-Backend (Claude Pro, ChatGPT Pro, xAI Grok, Copilot)
-       │
-       │ streaming tokens
-       │
+Nous inference-api.nousresearch.com  OR  xAI api.x.ai
        ▼
-proxy re-emits as OpenAI-format SSE
-       │
-       ▼
-Client receives indistinguishable OpenAI stream
+OpenAI-shaped JSON/SSE returned verbatim (no tool-schema translation in proxy)
 ```
 
-## Local Auth
+## Local Client Auth
 
-Local Bearer token stored in `~/.hermes/proxy-token` (mode 0600). All
-incoming requests must present it (defence against same-machine attacks).
+Hermes: **any** Bearer on the client is accepted; the proxy replaces upstream auth.  
+EdgeCrab: requires `~/.edgecrab/proxy-token` (or `proxy.token_path`) — stricter same-machine policy.
 
-## Tool / Function Calling Translation
+## Nous Parity Checklist (EdgeCrab `backend/nous/`)
 
-The hardest part: OpenAI uses `tools: [{type:"function", function:{name,parameters}}]`
-and `tool_calls: [{id, function:{name, arguments}}]`. Provider-native shapes
-differ (Anthropic, Gemini). The translation table is a pure function in
-the adapter module — see Hermes' `tool_backend_helpers.py` style.
+| Hermes behaviour | EdgeCrab |
+|------------------|----------|
+| Inference URL allowlist | `inference_url.rs` + `NOUS_INFERENCE_BASE_URL` |
+| Terminal refresh → quarantine state + pool | `quarantine.rs` |
+| `auth.json` cross-process lock | `auth_lock.rs` |
+| 401 → force JWT refresh | `adapter.rs` retry credential |
+| Allowed paths set | forwarder path checks |
+
+## xAI Parity Checklist
+
+| Hermes behaviour | EdgeCrab |
+|------------------|----------|
+| OIDC refresh | `backend/xai/refresh.rs` |
+| 429 → rotate credential pool | `backend/xai/adapter.rs` |
+| `/responses` route | forwarder + adapter base URL |
+
+## EdgeCrab vs Hermes (intentional deltas)
+
+| Topic | Hermes | EdgeCrab |
+|-------|--------|----------|
+| Default port | 8645 | 11434 (Ollama convention) |
+| Default `--provider` | `nous` | none (dual-mode); use `--provider` or `proxy.default_forward_upstream` |
+| CLI surface | `start` / `status` / `providers` | + `setup`, `enable`, `doctor`, `client`, `token`, TUI `/proxy` |
+| Mode B API-key bridge | not present | `wire/` + `LLMProvider` |
+| Provider OAuth login | `hermes auth add …` | Nous: `edgecrab auth add nous` (024); xAI still `hermes auth add xai-oauth` until 024 xAI login |
 
 ## Cross-References
 
-- [001-overview.md](001-overview.md) · [004-implementation-plan.md](004-implementation-plan.md)
+- [001-overview.md](001-overview.md) · [003-edgecrab-current-state.md](003-edgecrab-current-state.md) · [005-acceptance-criteria.md](005-acceptance-criteria.md)

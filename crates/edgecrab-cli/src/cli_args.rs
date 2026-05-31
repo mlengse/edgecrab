@@ -447,6 +447,22 @@ pub enum Command {
         command: CronCommand,
     },
 
+    /// Local OpenAI-compatible proxy for raw LLM inference (subscription bridge)
+    ///
+    /// Equivalent to `hermes proxy`. Exposes configured providers at `/v1/chat/completions`
+    /// without running the agent loop.
+    #[command(
+        about = "OpenAI-compatible local inference proxy",
+        long_about = "OpenAI-compatible local inference proxy for Aider, Cline, and OpenAI SDK.\n\n\
+                      Quick start (Grok): edgecrab proxy setup grok && edgecrab proxy start --provider xai\n\
+                      Doctor: edgecrab proxy doctor\n\
+                      Clients: http://127.0.0.1:11434/v1 with the local proxy token (not provider OAuth)."
+    )]
+    Proxy {
+        #[command(subcommand)]
+        command: Option<ProxyCommand>,
+    },
+
     #[command(
         about = "Run or manage the messaging gateway",
         long_about = "Run or manage the messaging gateway\n\nCommon workflow:\n  edgecrab gateway configure\n  edgecrab gateway start\n  edgecrab gateway status"
@@ -1049,6 +1065,68 @@ pub enum CheckpointsCommand {
         #[arg(short, long)]
         force: bool,
     },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum ProxyCommand {
+    /// Guided setup: enable upstream, token, and print client snippet
+    Setup {
+        /// Preset: grok, xai, or nous
+        provider: Option<String>,
+        /// Non-interactive: apply without confirmation
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Add a built-in upstream preset to config.yaml (grok, xai, nous)
+    Enable {
+        provider: String,
+    },
+    /// Preflight: token, upstream auth, config
+    Doctor,
+    /// Print OPENAI_API_BASE / Aider snippet for clients
+    Client {
+        #[arg(long)]
+        show_token: bool,
+    },
+    /// Run the proxy server in the foreground (Ctrl+C to stop)
+    Start {
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, default_value_t = 11_434)]
+        port: u16,
+        /// Allow binding to non-loopback addresses (requires proxy token)
+        #[arg(long)]
+        allow_public: bool,
+        /// Hermes-style: forward all allowed `/v1/*` routes to this upstream key
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// Show proxy configuration and token path status
+    Status,
+    /// List configured forward upstreams (Hermes `proxy providers`)
+    #[command(name = "upstreams", alias = "providers")]
+    Upstreams,
+    /// Manage the local client bearer token
+    Token {
+        #[command(subcommand)]
+        command: ProxyTokenCommand,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum ProxyTokenCommand {
+    /// Write or generate the proxy token
+    Set {
+        /// Token value (generated when omitted)
+        token: Option<String>,
+    },
+    /// Print the current token (redacted unless --show)
+    Show {
+        #[arg(long)]
+        show: bool,
+    },
+    /// Generate a new token
+    Rotate,
 }
 
 #[derive(Subcommand, Debug, Clone)]

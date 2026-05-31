@@ -533,6 +533,47 @@ When the agent includes `MEDIA:/path/to/file` in its response, `DeliveryRouter` 
 
 ---
 
+## OpenAI-Compatible Proxy (edgecrab-proxy)
+
+Local **provider bridge** (not the gateway agent API): exposes configured LLM
+providers to OpenAI-shaped clients (Aider, OpenAI SDK, LiteLLM).
+
+```bash
+/proxy                          # TUI setup wizard (default in EdgeCrab TUI)
+/proxy enable grok              # inline enable without opening TUI
+edgecrab proxy setup grok       # guided: config + token + client snippet
+edgecrab proxy enable grok      # add xai_oauth upstream to config.yaml
+edgecrab proxy doctor           # preflight (token + OAuth auth.json)
+edgecrab proxy client           # OPENAI_API_BASE / Aider env snippet
+edgecrab proxy start --provider xai
+edgecrab proxy upstreams        # list forward upstreams (alias: providers)
+edgecrab proxy status
+```
+
+TUI hub: `edgecrab-cli/src/proxy_hub.rs` + `proxy_setup_tui.rs` (shared with CLI `proxy_cmd/`).
+
+| Module | Purpose |
+|--------|---------|
+| `edgecrab-proxy/src/server.rs` | axum: `/v1/chat/completions`, `/v1/models`, `/health` |
+| `wire/messages.rs` | OpenAI messages/tools → `edgequake_llm::ChatMessage` |
+| `wire/sse.rs` | `StreamChunk` → OpenAI SSE + `[DONE]` |
+| `backend/provider.rs` | Mode B: `LLMProvider::chat_with_tools` (+ stream fallback) |
+| `backend/adapter.rs` | `UpstreamAdapter` trait (Hermes `adapters/base.py`) |
+| `backend/forwarder.rs` | Mode A: verbatim forward + upstream bearer swap |
+| `backend/nous/` | `NousPortalAdapter` — OAuth refresh + 401 retry |
+| `backend/xai/` | `XaiGrokAdapter` — OIDC refresh + pool rotate on 429 |
+| `backend/auth_store.rs` | `HermesAuthFileAdapter` — read-only auth.json bearer |
+| `auth.rs` | Bearer check vs `proxy.token_path` |
+
+Mode A `proxy.forward_upstreams.<key>.adapter`: `static` | `hermes_auth` | `nous_portal` | `xai_oauth`.
+Hermes builtins: `nous`, `xai` (`edgecrab proxy upstreams` when config empty).
+
+Config keys: `proxy.bind`, `proxy.port`, `proxy.model_aliases`, `proxy.token_path`,
+`proxy.max_body_bytes`, `proxy.cors_allow_origins`. Distinct from gateway
+`api_server` which runs the full ReAct agent.
+
+---
+
 ## ACP Integration (edgecrab-acp)
 
 EdgeCrab implements [Agent Communication Protocol](https://github.com/i-am-bee/acp) (JSON-RPC 2.0 over stdio):

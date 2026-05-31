@@ -18,6 +18,7 @@ use crate::{gateway_setup, mcp_oauth, mcp_support};
 enum AuthTarget {
     Copilot,
     Mcp(String),
+    NousPortal,
     Provider(&'static ProviderAuthSpec),
 }
 
@@ -187,7 +188,7 @@ pub async fn run_capture(command: AuthCommand) -> anyhow::Result<String> {
     match command {
         AuthCommand::List => list_targets().await,
         AuthCommand::Status { target } => status_target(target.as_deref()).await,
-        AuthCommand::Add { target, token } => add_target(&target, token.as_deref()).await,
+        AuthCommand::Add { target, token } => add_target(&target, token).await,
         AuthCommand::Login { target } => {
             login_target_capture(target.as_deref().unwrap_or("copilot")).await
         }
@@ -243,6 +244,7 @@ pub async fn login_target_capture(raw_target: &str) -> anyhow::Result<String> {
             let summary = mcp_oauth::login_mcp_server(&name, |_| {}).await?;
             Ok(summary)
         }
+        AuthTarget::NousPortal => login_nous_portal_capture(None).await,
         AuthTarget::Provider(spec) => {
             if spec.interactive_login {
                 bail!(
@@ -258,6 +260,17 @@ pub async fn login_target_capture(raw_target: &str) -> anyhow::Result<String> {
             )
         }
     }
+}
+
+async fn login_nous_portal_capture(label: Option<&str>) -> anyhow::Result<String> {
+    let msg = edgecrab_proxy::login_nous_portal(
+        None,
+        &edgecrab_proxy::NousDeviceLoginOptions::default(),
+        label,
+    )
+    .await
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    Ok(msg)
 }
 
 pub async fn logout_target(raw_target: Option<&str>) -> anyhow::Result<()> {
@@ -346,6 +359,19 @@ async fn list_targets() -> anyhow::Result<String> {
         )
     )?;
 
+    {
+        let path = edgecrab_proxy::default_auth_path();
+        let probe = edgecrab_proxy::probe_oauth_auth(&edgecrab_proxy::RECIPE_NOUS);
+        let nous_ready = matches!(probe, edgecrab_proxy::AuthProbe::Ready);
+        writeln!(
+            out,
+            "nous       auth-file={} oauth={} ({})",
+            yes_no(path.exists() && nous_ready),
+            yes_no(nous_ready),
+            edgecrab_proxy::RECIPE_NOUS.display_name,
+        )?;
+    }
+
     for spec in PROVIDER_AUTH_SPECS {
         let stored = store.providers.contains_key(spec.canonical);
         let active = store.active_provider.as_deref() == Some(spec.canonical);
@@ -388,14 +414,24 @@ async fn status_target(raw_target: Option<&str>) -> anyhow::Result<String> {
         Some(target) => match resolve_target(target)? {
             AuthTarget::Copilot => show_copilot_status().await,
             AuthTarget::Mcp(name) => mcp_support::render_mcp_auth_guide(&name),
+            AuthTarget::NousPortal => show_nous_status(),
             AuthTarget::Provider(spec) => show_provider_status(spec),
         },
     }
 }
 
-async fn add_target(raw_target: &str, token: Option<&str>) -> anyhow::Result<String> {
+async fn add_target(raw_target: &str, token: Option<String>) -> anyhow::Result<String> {
     match resolve_target(raw_target)? {
+        AuthTarget::NousPortal => {
+            if token.is_some() {
+                bail!(
+                    "Nous Portal uses OAuth device login, not a static token. Run `edgecrab auth add nous` or `edgecrab auth login nous`"
+                );
+            }
+            login_nous_portal_capture(None).await
+        }
         AuthTarget::Copilot => {
+            let token = token.as_deref();
             let token = token.ok_or_else(|| {
                 anyhow!(
                     "`edgecrab auth add copilot` requires `--token <github-token>` or use `edgecrab auth login copilot`"
@@ -407,7 +443,7 @@ async fn add_target(raw_target: &str, token: Option<&str>) -> anyhow::Result<Str
             Ok("Saved the GitHub token for Copilot.".into())
         }
         AuthTarget::Mcp(name) => {
-            let token = token.ok_or_else(|| {
+            let token = token.as_deref().ok_or_else(|| {
                 anyhow!("`edgecrab auth add {raw_target}` requires `--token <bearer-token>`")
             })?;
             write_mcp_token(&name, token.trim())
@@ -415,7 +451,7 @@ async fn add_target(raw_target: &str, token: Option<&str>) -> anyhow::Result<Str
             Ok(format!("Stored bearer token for MCP server '{name}'."))
         }
         AuthTarget::Provider(spec) => {
-            let token = token.ok_or_else(|| {
+            let token = token.as_deref().ok_or_else(|| {
                 anyhow!(
                     "`edgecrab auth add provider/{}` requires `--token <secret>`",
                     spec.canonical,
@@ -463,6 +499,15 @@ async fn remove_target(raw_target: &str) -> anyhow::Result<String> {
         AuthTarget::Mcp(name) => {
             remove_mcp_token(&name);
             Ok(format!("Removed cached token for MCP server '{name}'."))
+        }
+        AuthTarget::NousPortal => {
+            let path = edgecrab_proxy::default_auth_path();
+            edgecrab_proxy::remove_provider_state(&path, "nous")
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            Ok(format!(
+                "Removed Nous Portal credentials from {}.",
+                path.display()
+            ))
         }
         AuthTarget::Provider(spec) => {
             for env_var in spec.env_vars {
@@ -538,6 +583,23 @@ async fn show_copilot_status() -> anyhow::Result<String> {
     Ok(out.trim_end().to_string())
 }
 
+fn show_nous_status() -> anyhow::Result<String> {
+    let path = edgecrab_proxy::default_auth_path();
+    let probe = edgecrab_proxy::probe_oauth_auth(&edgecrab_proxy::RECIPE_NOUS);
+    let mut out = String::from("nous (Nous Portal OAuth)\n");
+    writeln!(out, "auth-file:  {}", path.display())?;
+    writeln!(out, "status:     {}", edgecrab_proxy::auth_probe_message(&edgecrab_proxy::RECIPE_NOUS, probe))?;
+    writeln!(
+        out,
+        "login:      edgecrab auth add nous  |  edgecrab auth login nous"
+    )?;
+    writeln!(
+        out,
+        "proxy:      edgecrab proxy enable nous && edgecrab proxy start --provider nous"
+    )?;
+    Ok(out.trim_end().to_string())
+}
+
 fn show_provider_status(spec: &'static ProviderAuthSpec) -> anyhow::Result<String> {
     let store = auth_store()?;
     let stored = store.providers.get(spec.canonical);
@@ -572,6 +634,9 @@ fn resolve_target(raw_target: &str) -> anyhow::Result<AuthTarget> {
     }
     if target.eq_ignore_ascii_case("copilot") {
         return Ok(AuthTarget::Copilot);
+    }
+    if matches!(target, "nous" | "nous-portal" | "nous_portal") {
+        return Ok(AuthTarget::NousPortal);
     }
 
     let config = AppConfig::load()?;
@@ -674,7 +739,7 @@ fn copilot_cache_dir() -> anyhow::Result<std::path::PathBuf> {
 }
 
 fn auth_usage() -> &'static str {
-    "Usage: /auth [list|status [target]|add <target> --token <secret>|login [target]|remove <target>|reset [target]]\nTargets: copilot, provider/<name>, mcp/<server>, or a configured MCP server name"
+    "Usage: /auth [list|status [target]|add <target> [--token <secret>]|login [target]|remove <target>|reset [target]]\nTargets: copilot, nous, provider/<name>, mcp/<server>, or a configured MCP server name"
 }
 
 fn auth_store_path() -> PathBuf {
@@ -827,6 +892,12 @@ mod tests {
     fn resolves_provider_alias() {
         let target = resolve_provider("google").expect("provider alias");
         assert_eq!(target.canonical, "gemini");
+    }
+
+    #[test]
+    fn resolves_nous_auth_target() {
+        let target = resolve_target("nous").expect("nous target");
+        assert!(matches!(target, AuthTarget::NousPortal));
     }
 
     #[test]

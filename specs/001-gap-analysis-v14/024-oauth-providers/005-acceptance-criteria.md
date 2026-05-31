@@ -1,6 +1,14 @@
 # 024 — Acceptance Criteria
 
-## Functional
+## Nous Portal (implemented subset)
+
+- [x] `edgecrab auth add nous` runs device-code OAuth against Nous Portal.
+- [x] Tokens stored in `~/.edgecrab/auth.json` under `providers.nous` (Hermes-shaped).
+- [x] `edgecrab auth status nous` / `remove nous` / TUI `/auth` equivalents.
+- [x] Mock portal test: `device_flow_round_trip_mock_portal`.
+- [x] Proxy `NousPortal` adapter refresh-on-401 + invoke JWT (008 e2e).
+
+## Full 024 — Functional (not done)
 
 - [ ] `/login claude-pro` opens browser → PKCE round trip → token
       stored in `~/.edgecrab/oauth/claude-pro.json` (chmod 0600).

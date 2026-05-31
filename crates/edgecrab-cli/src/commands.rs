@@ -119,6 +119,8 @@ pub enum CommandResult {
     ShowConfig(String),
     /// Web search/extract wizard or status (`/web`, `/web setup`, `/web status`)
     WebCommand(String),
+    /// OpenAI-compat proxy setup TUI or reports (`/proxy`, `/proxy doctor`, …)
+    ProxyCommand(String),
     /// Show message history summary
     ShowHistory,
     /// Cycle tool progress display
@@ -985,6 +987,13 @@ impl CommandRegistry {
             aliases: &[],
             description: "Web hub — dashboard, setup, chain, diagnostics (/web help)",
             handler: |args| CommandResult::WebCommand(args.trim().to_string()),
+        });
+
+        self.register(Command {
+            name: "proxy",
+            aliases: &["openai-proxy", "grok-proxy"],
+            description: "OpenAI-compat proxy — Grok/xAI setup TUI (/proxy help)",
+            handler: |args| CommandResult::ProxyCommand(args.trim().to_string()),
         });
 
         self.register(Command {
@@ -2546,6 +2555,23 @@ mod tests {
                 assert!(options.purge_data);
             }
             _ => panic!("expected UninstallCommand"),
+        }
+    }
+
+    #[test]
+    fn dispatch_proxy_command() {
+        let reg = CommandRegistry::new();
+        match reg.dispatch("/proxy") {
+            Some(CommandResult::ProxyCommand(args)) => assert!(args.is_empty()),
+            _ => panic!("expected ProxyCommand for bare /proxy"),
+        }
+        match reg.dispatch("/proxy doctor") {
+            Some(CommandResult::ProxyCommand(args)) => assert_eq!(args, "doctor"),
+            _ => panic!("expected ProxyCommand::doctor"),
+        }
+        match reg.dispatch("/grok-proxy enable grok") {
+            Some(CommandResult::ProxyCommand(args)) => assert_eq!(args, "enable grok"),
+            _ => panic!("expected ProxyCommand via grok-proxy alias"),
         }
     }
 

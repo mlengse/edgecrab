@@ -2016,6 +2016,7 @@ dependencies = [
  "edgecrab-gateway",
  "edgecrab-migrate",
  "edgecrab-plugins",
+ "edgecrab-proxy",
  "edgecrab-state",
  "edgecrab-tools",
  "edgecrab-types",
@@ -2239,6 +2240,39 @@ dependencies = [
  "toml",
  "tracing",
  "zip",
+]
+
+[[package]]
+name = "edgecrab-proxy"
+version = "0.9.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "dirs 5.0.1",
+ "edgecrab-core",
+ "edgecrab-security",
+ "edgecrab-tools",
+ "edgecrab-types",
+ "edgequake-llm",
+ "futures",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "url",
+ "uuid",
 ]
 
 [[package]]

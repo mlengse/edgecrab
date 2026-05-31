@@ -42,6 +42,8 @@ pub struct AppConfig {
     pub skip_context_files: bool,
     pub skip_memory: bool,
     pub gateway: GatewayConfig,
+    /// Local OpenAI-compatible subscription proxy (`edgecrab proxy`).
+    pub proxy: ProxyConfig,
     pub mcp_servers: HashMap<String, McpServerConfig>,
     pub memory: MemoryConfig,
     pub skills: SkillsConfig,
@@ -1355,6 +1357,108 @@ pub struct WhatsAppGatewayConfig {
     pub reply_prefix: Option<String>,
     pub install_dependencies: bool,
     pub home_channel: Option<String>,
+}
+
+/// Configuration for `edgecrab proxy` — local OpenAI-compatible inference bridge.
+///
+/// Distinct from the gateway API server: the proxy forwards raw LLM traffic
+/// (no agent ReAct loop). See `edgecrab-proxy` crate.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ProxyConfig {
+    /// Bind address (default loopback).
+    pub bind: String,
+    /// TCP port (default 11434 — Ollama convention).
+    pub port: u16,
+    /// Path to the local bearer token clients must present.
+    pub token_path: Option<PathBuf>,
+    /// Model alias → `provider/model` spec for [`ModelCatalog`](crate::model_catalog::ModelCatalog).
+    pub model_aliases: HashMap<String, String>,
+    /// Mode A upstreams keyed by name; use model spec `forward:<key>` or alias → `forward:<key>`.
+    pub forward_upstreams: HashMap<String, ForwardUpstreamConfig>,
+    /// When set, `GET /v1/models` forwards to this upstream (Hermes single-adapter style).
+    #[serde(default)]
+    pub default_forward_upstream: Option<String>,
+    /// Comma-separated origins allowed when set (empty = no CORS).
+    pub cors_allow_origins: Vec<String>,
+    /// Max chat request body bytes.
+    pub max_body_bytes: usize,
+}
+
+/// How a forward upstream resolves credentials (extensible for 024 OAuth).
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardAdapterKind {
+    /// `bearer` / `bearer_env` inline credentials.
+    #[default]
+    Static,
+    /// Read `agent_key` from Hermes-format `auth.json` (`providers.<name>`).
+    HermesAuth,
+    /// Nous Portal OAuth with refresh + invoke JWT selection (Hermes `NousPortalAdapter`).
+    NousPortal,
+    /// xAI Grok OAuth via Hermes `auth.json` / credential pool (Hermes `XAIGrokAdapter`).
+    XaiOauth,
+}
+
+/// Static or env-backed upstream for Hermes-style credential forwarding (Mode A).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ForwardUpstreamConfig {
+    pub base_url: String,
+    #[serde(default)]
+    pub adapter: ForwardAdapterKind,
+    /// Provider id inside `auth.json` (defaults to upstream map key, e.g. `nous`).
+    #[serde(default)]
+    pub auth_provider: Option<String>,
+    /// Override auth store path (default: `~/.edgecrab/auth.json` then `~/.hermes/auth.json`).
+    #[serde(default)]
+    pub auth_path: Option<PathBuf>,
+    /// Env var holding the upstream bearer (e.g. `NOUS_API_KEY`).
+    #[serde(default)]
+    pub bearer_env: Option<String>,
+    /// Inline bearer for tests only — prefer `bearer_env` in production configs.
+    #[serde(default)]
+    pub bearer: Option<String>,
+    /// Shown when upstream is not authenticated (Hermes `auth_hint`).
+    #[serde(default)]
+    pub auth_hint: Option<String>,
+}
+
+impl Default for ForwardUpstreamConfig {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            adapter: ForwardAdapterKind::Static,
+            auth_provider: None,
+            auth_path: None,
+            bearer_env: None,
+            bearer: None,
+            auth_hint: None,
+        }
+    }
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            bind: "127.0.0.1".into(),
+            port: 11_434,
+            token_path: None,
+            model_aliases: HashMap::new(),
+            forward_upstreams: HashMap::new(),
+            default_forward_upstream: None,
+            cors_allow_origins: Vec::new(),
+            max_body_bytes: 4 * 1024 * 1024,
+        }
+    }
+}
+
+impl ProxyConfig {
+    /// Resolved token file path (`token_path` or `~/.edgecrab/proxy-token`).
+    pub fn resolved_token_path(&self) -> PathBuf {
+        self.token_path
+            .clone()
+            .unwrap_or_else(|| edgecrab_home().join("proxy-token"))
+    }
 }
 
 impl Default for WhatsAppGatewayConfig {

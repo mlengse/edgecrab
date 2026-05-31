@@ -73,24 +73,54 @@ pub fn resolve_proxy_url(platform_env_var: Option<&str>) -> Option<String> {
     None
 }
 
+fn is_loopback_url(url: &reqwest::Url) -> bool {
+    match url.host_str() {
+        Some("localhost") => true,
+        Some(host) => host
+            .parse::<std::net::IpAddr>()
+            .is_ok_and(|ip| ip.is_loopback()),
+        None => false,
+    }
+}
+
 /// Configure a [`reqwest::ClientBuilder`] with proxy support.
 ///
-/// If `proxy_url` is `Some`, adds the proxy. If `None`, does nothing.
-/// Logs a warning on invalid proxy URLs and skips proxy configuration.
+/// Uses a custom proxy selector so **loopback is always direct**, even when macOS system
+/// proxies or `HTTPS_PROXY` are set (fixes `edgecrab proxy` e2e mock stacks on `127.0.0.1`).
+/// If `proxy_url` is `None`, falls back to [`resolve_proxy_url`]. Logs and skips invalid URLs.
 pub fn apply_proxy_to_builder(
     mut builder: reqwest::ClientBuilder,
     proxy_url: Option<&str>,
 ) -> reqwest::ClientBuilder {
-    if let Some(url) = proxy_url {
-        match reqwest::Proxy::all(url) {
-            Ok(proxy) => {
-                debug!(url, "Configuring proxy for reqwest client");
-                builder = builder.proxy(proxy);
+    let effective = proxy_url
+        .map(str::to_string)
+        .or_else(|| resolve_proxy_url(None));
+    if let Some(url) = effective {
+        match reqwest::Url::parse(&url) {
+            Ok(proxy_target) => {
+                debug!(url = %url, "Configuring proxy (loopback direct)");
+                builder = builder.proxy(reqwest::Proxy::custom(move |req_url| {
+                    if is_loopback_url(req_url) {
+                        None
+                    } else {
+                        Some(proxy_target.clone())
+                    }
+                }));
             }
             Err(e) => {
-                warn!(url, error = %e, "Invalid proxy URL, proceeding without proxy");
+                warn!(url = %url, error = %e, "Invalid proxy URL, proceeding without proxy");
             }
         }
+    } else {
+        // No proxy configured — still install loopback bypass so reqwest system-proxy
+        // detection does not route 127.0.0.1 mock servers through corporate proxies.
+        builder = builder.proxy(reqwest::Proxy::custom(|req_url| {
+            if is_loopback_url(req_url) {
+                None
+            } else {
+                resolve_proxy_url(None).and_then(|url| reqwest::Url::parse(&url).ok())
+            }
+        }));
     }
     builder
 }
