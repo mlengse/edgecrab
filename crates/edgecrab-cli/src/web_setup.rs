@@ -1,9 +1,8 @@
-//! Web search / extract setup wizard — Hermes tools picker parity with richer UX.
+//! Web search / extract setup wizard — shares logic with `/web` via edgecrab-tools::setup.
 //!
 //! ```text
 //! edgecrab setup web     ← multi-step CLI wizard
-//! /web setup             ← same wizard from TUI (terminal handoff)
-//! /web status            ← diagnostics overlay in TUI
+//! /web                   ← in-TUI chain editor (web_setup_tui.rs)
 //! ```
 
 use std::io;
@@ -19,29 +18,6 @@ const BANNER: &str = r"
 ║        EdgeCrab — Web Search & Extract Setup         ║
 ╚══════════════════════════════════════════════════════╝
 ";
-
-/// Format a picker row label (name + badge + capabilities + configured marker).
-pub fn format_picker_label(row: &Value, configured: bool) -> String {
-    let name = row["name"].as_str().unwrap_or("Unknown");
-    let badge = row["badge"].as_str().filter(|b| !b.is_empty());
-    let caps = capability_suffix(row);
-    let mut label = match badge {
-        Some(b) => format!("{name}  [{b}]  {caps}"),
-        None => format!("{name}  {caps}"),
-    };
-    if configured {
-        label.push_str("  ✓");
-    }
-    label
-}
-
-fn capability_suffix(row: &Value) -> String {
-    edgecrab_tools::capability_label(
-        row["supports_search"].as_bool().unwrap_or(false),
-        row["supports_extract"].as_bool().unwrap_or(false),
-        row["supports_crawl"].as_bool().unwrap_or(false),
-    )
-}
 
 fn wizard_theme() -> ColorfulTheme {
     ColorfulTheme::default()
@@ -69,15 +45,14 @@ pub fn run(config_path: &Path) -> anyhow::Result<()> {
         let menu = [
             "Pick web backend (search / extract / both)",
             "Split: search backend vs extract backend",
-            "Configure search fallback chain (web_search.primary + fallbacks)",
-            "Reset to auto (clear web: overrides)",
-            "Reset search chain to auto (clear web_search primary/fallbacks)",
+            "Configure search priority chain",
+            "Reset to auto (clear web + search chain overrides)",
             "Refresh status",
             "Done — exit wizard",
         ];
         let choice = Select::with_theme(&wizard_theme())
             .with_prompt("What would you like to configure?")
-            .items(menu)
+            .items(&menu)
             .default(0)
             .interact()
             .map_err(dialoguer_err)?;
@@ -87,16 +62,10 @@ pub fn run(config_path: &Path) -> anyhow::Result<()> {
             1 => split_backend_flow(config_path)?,
             2 => configure_search_chain_flow(config_path)?,
             3 => {
-                edgecrab_tools::clear_web_section_overrides(config_path)?;
-                println!("\n  ✓ Cleared web.backend / search_backend / extract_backend");
-                println!("  ✓ Auto fallback chain + native extract are active again.\n");
+                edgecrab_tools::reset_web_to_auto(config_path)?;
+                println!("\n  ✓ Auto mode — EdgeCrab picks the best configured backends.\n");
             }
-            4 => {
-                edgecrab_tools::clear_web_search_chain_in_config(config_path)?;
-                println!("\n  ✓ Cleared web_search.primary / fallbacks");
-                println!("  ✓ Legacy availability chain is active again.\n");
-            }
-            5 => {}
+            4 => {}
             _ => break,
         }
     }
@@ -105,108 +74,72 @@ pub fn run(config_path: &Path) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn search_capable_backend_ids() -> Vec<String> {
-    edgecrab_tools::web_provider_picker_rows()
-        .into_iter()
-        .filter(|row| row["supports_search"].as_bool() == Some(true))
-        .filter_map(|row| row["id"].as_str().map(str::to_string))
-        .collect()
-}
-
 fn configure_search_chain_flow(config_path: &Path) -> anyhow::Result<()> {
-    let disk = edgecrab_tools::load_web_search_config_from_disk();
+    let mut editor = edgecrab_tools::WebChainEditor::load_from_disk();
     println!(
-        "\n  Current chain: {}\n",
-        edgecrab_tools::format_search_chain_summary(&disk)
+        "\n  Current chain ({}): {}\n",
+        editor.mode_label(),
+        editor.summary_arrow()
     );
-    println!("  Note: web.search_backend / web.backend override this chain when set.\n");
-
-    let backend_ids = search_capable_backend_ids();
-    if backend_ids.is_empty() {
-        anyhow::bail!("No search-capable backends registered");
+    println!("  Tip: run `/web` in the TUI for visual reordering.\n");
+    if let Some(w) = edgecrab_tools::search_override_warning() {
+        println!("  {w}\n");
     }
 
-    let primary_labels: Vec<String> = backend_ids
-        .iter()
-        .map(|id| {
-            let row = edgecrab_tools::web_provider_picker_rows()
-                .into_iter()
-                .find(|r| r["id"].as_str() == Some(id.as_str()));
-            match row {
-                Some(row) => {
-                    format_picker_label(&row, row["configured"].as_bool().unwrap_or(false))
-                }
-                None => id.clone(),
-            }
-        })
-        .collect();
-    let primary_refs: Vec<&str> = primary_labels.iter().map(String::as_str).collect();
-
-    let default_primary = backend_ids
-        .iter()
-        .position(|id| id == &disk.primary)
-        .unwrap_or(0);
-    let primary_idx = Select::with_theme(&wizard_theme())
-        .with_prompt("Primary search backend (web_search.primary)")
-        .items(&primary_refs)
-        .default(default_primary)
-        .interact()
-        .map_err(dialoguer_err)?;
-    let primary = backend_ids[primary_idx].clone();
-
-    let current_fallbacks = disk.fallbacks.join(", ");
-    let fallback_hint = if current_fallbacks.is_empty() {
-        "brave, ddgs".to_string()
-    } else {
-        current_fallbacks.clone()
-    };
-    let fallback_input: String = Input::with_theme(&wizard_theme())
-        .with_prompt("Fallback backends (comma-separated, tried in order)")
-        .default(fallback_hint)
+    let default_chain = editor.order.join(", ");
+    let chain_input: String = Input::with_theme(&wizard_theme())
+        .with_prompt("Priority order (comma-separated, tried left → right)")
+        .default(default_chain)
         .interact_text()
         .map_err(dialoguer_err)?;
-    let fallbacks: Vec<String> = fallback_input
+
+    let parsed: Vec<String> = chain_input
         .split(',')
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(str::to_string)
+        .map(str::to_ascii_lowercase)
         .collect();
 
+    if parsed.is_empty() {
+        anyhow::bail!("Chain must include at least one backend");
+    }
+
+    for id in &parsed {
+        if !editor.catalog.chain_eligible_ids.iter().any(|e| e == id) && id != "ddgs" {
+            anyhow::bail!(
+                "Unknown or unconfigured backend '{id}' — add API keys or use /web to see eligible providers"
+            );
+        }
+    }
+
+    editor.order = parsed;
+    editor.is_auto = false;
+
+    let disk = edgecrab_tools::load_web_search_config_from_disk();
     let timeout: u64 = Input::with_theme(&wizard_theme())
         .with_prompt("Request timeout (seconds)")
         .default(disk.timeout_secs.max(1))
         .interact_text()
         .map_err(dialoguer_err)?;
 
-    edgecrab_tools::persist_web_search_chain_in_config(
-        config_path,
-        &edgecrab_tools::WebSearchChainUpdate {
-            primary: Some(primary.clone()),
-            fallbacks: Some(fallbacks.clone()),
-            timeout_secs: Some(timeout),
-        },
-    )?;
+    edgecrab_tools::persist_search_chain_with_timeout(config_path, &editor.order, timeout)?;
 
-    let summary = edgecrab_tools::format_search_chain_summary(
-        &edgecrab_tools::load_web_search_config_from_path(config_path).unwrap_or(disk),
-    );
+    let summary = edgecrab_tools::chain_summary_after_save(config_path);
     println!("\n  ✓ Saved search chain: {summary}");
     println!("  ✓ Config: {}\n", config_path.display());
     Ok(())
 }
 
 fn pick_backend_flow(config_path: &Path) -> anyhow::Result<()> {
-    let rows = edgecrab_tools::web_provider_picker_rows();
-    if rows.is_empty() {
+    let catalog = edgecrab_tools::WebPickerCatalog::load();
+    if catalog.rows.is_empty() {
         anyhow::bail!("No web search providers registered");
     }
 
-    let labels: Vec<String> = rows
+    let labels: Vec<String> = catalog
+        .rows
         .iter()
-        .map(|row| {
-            let configured = row["configured"].as_bool().unwrap_or(false);
-            format_picker_label(row, configured)
-        })
+        .map(edgecrab_tools::format_picker_label)
         .collect();
     let label_refs: Vec<&str> = labels.iter().map(String::as_str).collect();
 
@@ -217,8 +150,8 @@ fn pick_backend_flow(config_path: &Path) -> anyhow::Result<()> {
         .interact()
         .map_err(dialoguer_err)?;
 
-    let row = &rows[idx];
-    print_provider_detail(row);
+    let row = &catalog.rows[idx];
+    edgecrab_tools::print_provider_detail_cli(row);
 
     let backend_id = row["id"]
         .as_str()
@@ -239,13 +172,13 @@ fn pick_backend_flow(config_path: &Path) -> anyhow::Result<()> {
 
     let routing = if supports_search && supports_extract {
         let options = [
-            "Both search + extract (web.backend)",
-            "Search only (web.search_backend)",
+            "Both search + extract",
+            "Search only (priority chain)",
             "Extract only (web.extract_backend)",
         ];
         Select::with_theme(&wizard_theme())
             .with_prompt("Apply backend to which tools?")
-            .items(options)
+            .items(&options)
             .default(0)
             .interact()
             .map_err(dialoguer_err)?
@@ -259,47 +192,57 @@ fn pick_backend_flow(config_path: &Path) -> anyhow::Result<()> {
 
     prompt_and_save_env_vars(row)?;
 
-    let update = match routing {
-        1 => edgecrab_tools::WebSectionUpdate {
-            backend: Some(String::new()),
-            search_backend: Some(backend_id.to_string()),
-            extract_backend: None,
-        },
-        2 => edgecrab_tools::WebSectionUpdate {
-            backend: Some(String::new()),
-            search_backend: None,
-            extract_backend: Some(backend_id.to_string()),
-        },
-        _ => edgecrab_tools::WebSectionUpdate {
-            backend: Some(backend_id.to_string()),
-            search_backend: Some(String::new()),
-            extract_backend: Some(String::new()),
-        },
-    };
+    match routing {
+        1 => {
+            edgecrab_tools::persist_search_backend_as_chain(config_path, backend_id)?;
+        }
+        2 => {
+            edgecrab_tools::persist_web_section_in_config(
+                config_path,
+                &edgecrab_tools::WebSectionUpdate {
+                    backend: Some(String::new()),
+                    search_backend: Some(String::new()),
+                    extract_backend: Some(backend_id.to_string()),
+                },
+            )?;
+        }
+        _ => {
+            edgecrab_tools::persist_search_backend_as_chain(config_path, backend_id)?;
+            edgecrab_tools::persist_web_section_in_config(
+                config_path,
+                &edgecrab_tools::WebSectionUpdate {
+                    backend: Some(String::new()),
+                    search_backend: Some(String::new()),
+                    extract_backend: Some(backend_id.to_string()),
+                },
+            )?;
+        }
+    }
 
-    edgecrab_tools::persist_web_section_in_config(config_path, &update)?;
     println!("\n  ✓ Saved web configuration to {}", config_path.display());
     Ok(())
 }
 
 fn split_backend_flow(config_path: &Path) -> anyhow::Result<()> {
-    let rows = edgecrab_tools::web_provider_picker_rows();
-    let search_rows: Vec<_> = rows
+    let catalog = edgecrab_tools::WebPickerCatalog::load();
+    let search_rows: Vec<_> = catalog
+        .rows
         .iter()
         .filter(|r| r["supports_search"].as_bool() == Some(true))
         .collect();
-    let extract_rows: Vec<_> = rows
+    let extract_rows: Vec<_> = catalog
+        .rows
         .iter()
         .filter(|r| r["supports_extract"].as_bool() == Some(true))
         .collect();
 
     let search_labels: Vec<String> = search_rows
         .iter()
-        .map(|r| format_picker_label(r, r["configured"].as_bool().unwrap_or(false)))
+        .map(|r| edgecrab_tools::format_picker_label(r))
         .collect();
     let search_refs: Vec<&str> = search_labels.iter().map(String::as_str).collect();
     let search_idx = Select::with_theme(&wizard_theme())
-        .with_prompt("Search backend (web.search_backend)")
+        .with_prompt("Search backend (priority chain)")
         .items(&search_refs)
         .default(0)
         .interact()
@@ -310,7 +253,7 @@ fn split_backend_flow(config_path: &Path) -> anyhow::Result<()> {
 
     let extract_labels: Vec<String> = extract_rows
         .iter()
-        .map(|r| format_picker_label(r, r["configured"].as_bool().unwrap_or(false)))
+        .map(|r| edgecrab_tools::format_picker_label(r))
         .collect();
     let extract_refs: Vec<&str> = extract_labels.iter().map(String::as_str).collect();
     let extract_idx = Select::with_theme(&wizard_theme())
@@ -328,40 +271,18 @@ fn split_backend_flow(config_path: &Path) -> anyhow::Result<()> {
         prompt_and_save_env_vars(extract_rows[extract_idx])?;
     }
 
+    edgecrab_tools::persist_search_backend_as_chain(config_path, search_id)?;
     edgecrab_tools::persist_web_section_in_config(
         config_path,
         &edgecrab_tools::WebSectionUpdate {
             backend: Some(String::new()),
-            search_backend: Some(search_id.to_string()),
+            search_backend: Some(String::new()),
             extract_backend: Some(extract_id.to_string()),
         },
     )?;
-    println!("\n  ✓ search={search_id}  extract={extract_id}\n");
+    let chain = edgecrab_tools::chain_summary_after_save(config_path);
+    println!("\n  ✓ search chain: {chain}  extract={extract_id}\n");
     Ok(())
-}
-
-fn print_provider_detail(row: &Value) {
-    let name = row["name"].as_str().unwrap_or("Unknown");
-    let tag = row["tag"].as_str().unwrap_or("");
-    let caps = capability_suffix(row);
-    println!("\n  ── {name} [{caps}] ──");
-    if !tag.is_empty() {
-        println!("  {tag}");
-    }
-    if let Some(envs) = row["env_vars"].as_array() {
-        for ev in envs {
-            let key = ev["key"].as_str().unwrap_or("");
-            if key.is_empty() {
-                continue;
-            }
-            let set = std::env::var(key)
-                .map(|v| !v.trim().is_empty())
-                .unwrap_or(false);
-            let mark = if set { "✓" } else { "·" };
-            println!("  {mark} {key}");
-        }
-    }
-    println!();
 }
 
 fn prompt_and_save_env_vars(row: &Value) -> anyhow::Result<()> {
@@ -409,21 +330,6 @@ fn prompt_and_save_env_vars(row: &Value) -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn format_picker_label_includes_capabilities() {
-        let row = serde_json::json!({
-            "name": "Firecrawl",
-            "badge": "paid",
-            "configured": false,
-            "supports_search": true,
-            "supports_extract": true,
-            "supports_crawl": true,
-        });
-        let label = format_picker_label(&row, false);
-        assert!(label.contains("Firecrawl"));
-        assert!(label.contains("S+E+C"));
-    }
 
     #[test]
     fn status_report_includes_providers() {

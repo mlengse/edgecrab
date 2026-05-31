@@ -193,7 +193,8 @@ async fn e2e_skips_unconfigured_searxng_falls_back_to_ddgs() {
         .expect("skip unconfigured searxng");
     let parsed: serde_json::Value = serde_json::from_str(&result).expect("json");
     assert_eq!(parsed["backend"], "ddgs");
-    assert_eq!(parsed["fallback_from"], "searxng");
+    // searxng is skipped before attempt — not a runtime fallback.
+    assert!(parsed["fallback_from"].is_null());
 }
 
 #[tokio::test]
@@ -434,6 +435,7 @@ async fn e2e_max_results_clamped_at_hermes_cap() {
     );
     let mut cfg = AppConfigRef::default();
     cfg.web_search.primary = "clamp-mock".into();
+    cfg.result_spill = false;
 
     let result = WebSearchTool
         .execute(

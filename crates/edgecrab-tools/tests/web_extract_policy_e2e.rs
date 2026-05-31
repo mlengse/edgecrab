@@ -7,10 +7,14 @@ use edgecrab_security::website_policy::invalidate_cache;
 use edgecrab_tools::ToolHandler;
 use edgecrab_tools::tools::web::WebExtractTool;
 use serde_json::json;
+use std::sync::Mutex;
 use tempfile::TempDir;
+
+static POLICY_E2E_LOCK: Mutex<()> = Mutex::new(());
 
 #[tokio::test]
 async fn e2e_web_extract_blocked_by_website_policy() {
+    let _lock = POLICY_E2E_LOCK.lock().expect("policy e2e lock");
     invalidate_cache();
     let dir = TempDir::new().expect("tempdir");
     std::fs::write(
@@ -37,6 +41,7 @@ security:
 
 #[tokio::test]
 async fn e2e_web_extract_allowed_when_policy_disabled() {
+    let _lock = POLICY_E2E_LOCK.lock().expect("policy e2e lock");
     invalidate_cache();
     let dir = TempDir::new().expect("tempdir");
     std::fs::write(

@@ -151,11 +151,10 @@ fn finalize_chain_names(
         if backend_is_configured(&name, &bc) {
             return Ok(vec![name]);
         }
-        tracing::warn!(
-            backend = %name,
-            "web_search: explicit backend not configured — falling back to configured chain"
-        );
-        return finalize_chain_names(auto_chain_for_cfg(cfg), cfg, ChainSelection::ConfigChain);
+        return Err(SearchError::hard(
+            "web_search",
+            super::backend_settings::not_configured_message(&name),
+        ));
     }
 
     let configured: Vec<String> = names
@@ -304,11 +303,6 @@ fn auto_chain_for_cfg(cfg: &WebSearchConfigRef) -> Vec<String> {
     chain
 }
 
-fn backend_ready(name: &str, disk: &WebSearchConfigRef) -> bool {
-    let cfg = lookup_backend_config(&disk.backends, name);
-    super::backend_settings::backend_is_enabled_in_edgecrab_home(name, &cfg)
-}
-
 /// Empty config when `web_search:` section is absent from config.yaml.
 pub fn empty_web_search_config() -> WebSearchConfigRef {
     WebSearchConfigRef {
@@ -342,22 +336,6 @@ pub struct WebSearchChainUpdate {
 
 fn normalize_chain_backend(name: &str) -> String {
     name.trim().to_ascii_lowercase()
-}
-
-fn dedupe_chain_backends(primary: &str, fallbacks: &[String]) -> Vec<String> {
-    let mut out = Vec::new();
-    let primary = normalize_chain_backend(primary);
-    if !primary.is_empty() && primary != "auto" {
-        out.push(primary);
-    }
-    for fb in fallbacks {
-        let fb = normalize_chain_backend(fb);
-        if fb.is_empty() || fb == "auto" || out.contains(&fb) {
-            continue;
-        }
-        out.push(fb);
-    }
-    out
 }
 
 /// Human-readable chain summary — reflects the chain that will actually run.

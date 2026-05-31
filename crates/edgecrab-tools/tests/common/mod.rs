@@ -107,6 +107,12 @@ pub fn register_ddgs_mock_success() {
     );
 }
 
+/// Mock DDGS as unavailable so chain tests do not hit the live network.
+pub fn register_ddgs_mock_fail() {
+    use edgecrab_tools::tools::web::search::backends::mock::MockMode;
+    register_mock("ddgs", MockMode::Network);
+}
+
 /// Build `n` mock hits for limit/clamp tests.
 pub fn many_mock_results(
     n: usize,

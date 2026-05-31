@@ -173,6 +173,18 @@ pub fn persist_web_section_in_config(
     std::fs::write(config_path, serialized)
 }
 
+/// Clear search-related `web:` overrides only — preserves `extract_backend`.
+pub fn clear_web_search_section_overrides(config_path: &Path) -> Result<(), std::io::Error> {
+    persist_web_section_in_config(
+        config_path,
+        &WebSectionUpdate {
+            backend: Some(String::new()),
+            search_backend: Some(String::new()),
+            extract_backend: None,
+        },
+    )
+}
+
 /// Clear all `web:` overrides (auto routing for search + extract).
 pub fn clear_web_section_overrides(config_path: &Path) -> Result<(), std::io::Error> {
     persist_web_section_in_config(
@@ -191,6 +203,26 @@ mod tests {
     use super::*;
     use std::io::Write;
     use tempfile::TempDir;
+
+    #[test]
+    fn clear_web_search_section_preserves_extract_backend() {
+        let dir = TempDir::new().expect("tempdir");
+        let path = dir.path().join("config.yaml");
+        persist_web_section_in_config(
+            &path,
+            &WebSectionUpdate {
+                backend: Some("tavily".into()),
+                search_backend: Some("brave".into()),
+                extract_backend: Some("exa".into()),
+            },
+        )
+        .expect("seed");
+        clear_web_search_section_overrides(&path).expect("clear search");
+        let cfg = load_web_tools_config_from_path(&path).expect("parse");
+        assert!(cfg.backend.is_empty());
+        assert!(cfg.search_backend.is_empty());
+        assert_eq!(cfg.extract_backend, "exa");
+    }
 
     #[test]
     fn load_web_section_extract_and_shared_backend() {

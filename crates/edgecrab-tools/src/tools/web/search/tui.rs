@@ -64,9 +64,8 @@ pub fn web_status_one_liner_from(report: &WebDiagnosticsReport) -> String {
     if report.search_ready {
         format!("🔍 Web ready — chain: {}", report.search_chain_summary)
     } else {
-        format!(
-            "🔍 Web needs a backend — run /web and press Enter on one with ✓ (or add keys to ~/.edgecrab/.env)"
-        )
+        "🔍 Web needs a backend — run /web and press Enter on one with ✓ (or add keys to ~/.edgecrab/.env)"
+            .to_string()
     }
 }
 
@@ -87,9 +86,14 @@ pub fn web_command_usage() -> String {
     r#"WEB SEARCH — /web
 
   /web              Open priority chain editor
+  /web status       Dashboard (search, extract, chain summary)
+  /web chain        Read-only fallback flow diagram
+  /web doctor       Diagnostics (keys, providers, readiness)
+  /web providers    Registered backends and capabilities
+  /web setup        Same as /web (chain editor)
   /web help         This message
 
-In the editor (one ordered list — tried top to bottom)
+In the chain editor (one ordered list — tried top to bottom)
   ↑↓        Move selection
   [  ]      Move provider up/down in chain
   Enter     Add highlighted provider to chain
@@ -97,6 +101,8 @@ In the editor (one ordered list — tried top to bottom)
   a         Reset to auto (best configured backends)
   r         Refresh
   Esc       Close
+
+In status/chain/doctor overlays: s setup  c chain  d doctor  p providers  h help  r refresh  Esc close
 
 API keys: ~/.edgecrab/.env (BRAVE_API_KEY, SEARXNG_URL, TAVILY_API_KEY, …)
 ddgs needs no key but may be blocked — put a keyed backend first in the chain.
@@ -297,7 +303,7 @@ fn render_chain_visual(report: &WebDiagnosticsReport) -> String {
          2. On timeout, 429, or 5xx → next fallback\n\
          3. ddgs is the no-key terminal fallback\n\
          \n\
-         Change chain: /web setup → Configure search fallback chain\n\
+         Change chain: /web (TUI editor) or `edgecrab setup web`\n\
          \n\
          Quick nav: s setup   r refresh   Esc close",
         report.search_chain_summary,
@@ -491,6 +497,8 @@ mod tests {
     #[test]
     fn help_lists_shortcuts() {
         let usage = web_command_usage();
+        assert!(usage.contains("/web status"));
+        assert!(usage.contains("/web chain"));
         assert!(usage.contains("/web"));
         assert!(usage.contains("Enter"));
         assert!(usage.contains("Space"));

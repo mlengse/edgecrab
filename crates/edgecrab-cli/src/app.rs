@@ -5745,6 +5745,7 @@ impl App {
         );
 
         let runtime_config = edgecrab_core::AppConfig::load().unwrap_or_default();
+        edgecrab_tools::ensure_web_search_config_coherence();
         let terminal_caps = terminal_runtime_capabilities();
 
         let mut app = Self {
@@ -7223,6 +7224,94 @@ impl App {
         self.document_overlay = None;
         self.web_setup.open();
         self.needs_redraw = true;
+    }
+
+    /// Read-only web hub overlay (`/web status`, `/web chain`, …).
+    fn open_web_hub_overlay(&mut self, sub: &str) {
+        self.web_setup.close();
+        let (title, subtitle, body) = edgecrab_tools::web_command_overlay(sub);
+        self.document_overlay = Some(DocumentOverlayState {
+            title,
+            subtitle,
+            body,
+            icon: "🔍".into(),
+            accent: crate::web_command::WEB_ACCENT,
+            scroll: 0,
+            kind: DocumentOverlayKind::Web,
+            web_sub: Some(sub.to_string()),
+        });
+        self.needs_redraw = true;
+    }
+
+    fn refresh_web_hub_overlay(&mut self, sub: &str) {
+        let (title, subtitle, body) = edgecrab_tools::web_command_overlay(sub);
+        if let Some(overlay) = self.document_overlay.as_mut() {
+            overlay.title = title;
+            overlay.subtitle = subtitle;
+            overlay.body = body;
+            overlay.web_sub = Some(sub.to_string());
+            overlay.scroll = 0;
+        } else {
+            self.open_web_hub_overlay(sub);
+        }
+        self.needs_redraw = true;
+    }
+
+    fn handle_document_overlay_key(&mut self, key: crossterm::event::KeyEvent) {
+        let (kind, web_sub) = self
+            .document_overlay
+            .as_ref()
+            .map(|o| (o.kind, o.web_sub.clone()))
+            .unwrap_or((DocumentOverlayKind::Generic, None));
+
+        if kind == DocumentOverlayKind::Web {
+            use crossterm::event::KeyCode;
+            match key.code {
+                KeyCode::Esc => self.close_document_overlay(),
+                KeyCode::Up => self.scroll_document_overlay(-1),
+                KeyCode::Down => self.scroll_document_overlay(1),
+                KeyCode::PageUp => self.scroll_document_overlay(-8),
+                KeyCode::PageDown => self.scroll_document_overlay(8),
+                KeyCode::Home => self.set_document_overlay_scroll(0),
+                KeyCode::End => self.set_document_overlay_scroll(u16::MAX),
+                KeyCode::Char('s') | KeyCode::Char('S') => {
+                    self.close_document_overlay();
+                    self.open_web_config();
+                }
+                KeyCode::Char('c') | KeyCode::Char('C') => {
+                    self.refresh_web_hub_overlay("chain");
+                }
+                KeyCode::Char('d') | KeyCode::Char('D') => {
+                    self.refresh_web_hub_overlay("doctor");
+                }
+                KeyCode::Char('p') | KeyCode::Char('P') => {
+                    self.refresh_web_hub_overlay("providers");
+                }
+                KeyCode::Char('h') | KeyCode::Char('H') => {
+                    self.refresh_web_hub_overlay("help");
+                }
+                KeyCode::Char('b') | KeyCode::Char('B') => {
+                    self.refresh_web_hub_overlay("status");
+                }
+                KeyCode::Char('r') | KeyCode::Char('R') => {
+                    let sub = web_sub.as_deref().unwrap_or("status");
+                    self.refresh_web_hub_overlay(sub);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        match key.code {
+            crossterm::event::KeyCode::Esc => self.close_document_overlay(),
+            crossterm::event::KeyCode::Up => self.scroll_document_overlay(-1),
+            crossterm::event::KeyCode::Down => self.scroll_document_overlay(1),
+            crossterm::event::KeyCode::PageUp => self.scroll_document_overlay(-8),
+            crossterm::event::KeyCode::PageDown => self.scroll_document_overlay(8),
+            crossterm::event::KeyCode::Home => self.set_document_overlay_scroll(0),
+            crossterm::event::KeyCode::End => self.set_document_overlay_scroll(u16::MAX),
+            _ => {}
+        }
     }
 
     fn normalize_skill_identifier(identifier: &str) -> String {
@@ -9546,16 +9635,7 @@ impl App {
         }
 
         if self.document_overlay.is_some() {
-            match key.code {
-                KeyCode::Esc => self.close_document_overlay(),
-                KeyCode::Up => self.scroll_document_overlay(-1),
-                KeyCode::Down => self.scroll_document_overlay(1),
-                KeyCode::PageUp => self.scroll_document_overlay(-8),
-                KeyCode::PageDown => self.scroll_document_overlay(8),
-                KeyCode::Home => self.set_document_overlay_scroll(0),
-                KeyCode::End => self.set_document_overlay_scroll(u16::MAX),
-                _ => {}
-            }
+            self.handle_document_overlay_key(key);
             return;
         }
 
@@ -16817,7 +16897,18 @@ impl App {
             "help" => {
                 self.push_output(edgecrab_tools::web_command_usage(), OutputRole::System);
             }
-            _ => self.open_web_config(),
+            "status" | "hub" => self.open_web_hub_overlay("status"),
+            "chain" | "fallback" | "fallbacks" => self.open_web_hub_overlay("chain"),
+            "doctor" | "diag" | "diagnostics" => self.open_web_hub_overlay("doctor"),
+            "providers" | "list" => self.open_web_hub_overlay("providers"),
+            "setup" | "configure" | "edit" => self.open_web_config(),
+            "" => self.open_web_config(),
+            _ => {
+                self.push_output(
+                    format!("Unknown /web subcommand `{first}`. Try /web help."),
+                    OutputRole::System,
+                );
+            }
         }
     }
 
@@ -29402,7 +29493,11 @@ impl App {
         };
 
         let header_lines = if setup.screen == WebSetupScreen::Configure {
-            vec![setup.status_line(), setup.chain_summary_line()]
+            let mut lines = vec![setup.status_line(), setup.chain_summary_line()];
+            if let Some(w) = setup.override_warning_line() {
+                lines.push(w);
+            }
+            lines
         } else {
             vec![setup.status_line()]
         };
@@ -32067,6 +32162,57 @@ description = "Demo plugin tool"
         assert_eq!(overlay.title, "Session Status");
         assert!(overlay.body.contains("Session status:"));
         assert!(overlay.body.contains("Model:"));
+
+        unsafe {
+            std::env::remove_var("EDGECRAB_HOME");
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(edgecrab_home_env)]
+    fn web_status_command_opens_web_hub_overlay() {
+        let _guard = crate::gateway_catalog::lock_test_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        unsafe {
+            std::env::set_var("EDGECRAB_HOME", dir.path().join(".edgecrab"));
+        }
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _enter = rt.enter();
+        let agent = mock_agent();
+        let mut app = App::new();
+        app.set_agent(agent);
+
+        app.handle_web_command("status".into());
+
+        let overlay = app.document_overlay.as_ref().expect("web hub overlay");
+        assert_eq!(overlay.kind, DocumentOverlayKind::Web);
+        assert!(overlay.title.contains("Web"));
+        assert!(overlay.body.contains("AT A GLANCE") || overlay.body.contains("GLANCE"));
+
+        unsafe {
+            std::env::remove_var("EDGECRAB_HOME");
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(edgecrab_home_env)]
+    fn web_chain_command_opens_chain_overlay() {
+        let _guard = crate::gateway_catalog::lock_test_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        unsafe {
+            std::env::set_var("EDGECRAB_HOME", dir.path().join(".edgecrab"));
+        }
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _enter = rt.enter();
+        let agent = mock_agent();
+        let mut app = App::new();
+        app.set_agent(agent);
+
+        app.handle_web_command("chain".into());
+
+        let overlay = app.document_overlay.as_ref().expect("chain overlay");
+        assert_eq!(overlay.kind, DocumentOverlayKind::Web);
+        assert!(overlay.body.contains("FALLBACK FLOW"));
 
         unsafe {
             std::env::remove_var("EDGECRAB_HOME");

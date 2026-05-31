@@ -6,10 +6,14 @@ use common::test_ctx;
 use edgecrab_tools::ToolHandler;
 use edgecrab_tools::tools::web::WebExtractTool;
 use serde_json::json;
+use std::sync::Mutex;
 use tempfile::TempDir;
+
+static EXTRACT_CONFIG_E2E_LOCK: Mutex<()> = Mutex::new(());
 
 #[tokio::test]
 async fn e2e_config_extract_backend_falls_through_to_native_when_unconfigured() {
+    let _lock = EXTRACT_CONFIG_E2E_LOCK.lock().expect("extract config e2e lock");
     let dir = TempDir::new().expect("tempdir");
     std::fs::write(
         dir.path().join("config.yaml"),
@@ -53,6 +57,7 @@ web:
 
 #[tokio::test]
 async fn e2e_config_extract_backend_brave_falls_through_to_native() {
+    let _lock = EXTRACT_CONFIG_E2E_LOCK.lock().expect("extract config e2e lock");
     let dir = TempDir::new().expect("tempdir");
     std::fs::write(
         dir.path().join("config.yaml"),
@@ -99,6 +104,8 @@ web:
 
 #[tokio::test]
 async fn e2e_explicit_ddgs_extract_returns_search_only_error() {
+    let _lock = EXTRACT_CONFIG_E2E_LOCK.lock().expect("extract config e2e lock");
+    unsafe { std::env::remove_var("EDGECRAB_HOME") };
     unsafe { std::env::set_var("EDGECRAB_WEB_EXTRACT_BACKEND", "ddgs") };
 
     let err = WebExtractTool

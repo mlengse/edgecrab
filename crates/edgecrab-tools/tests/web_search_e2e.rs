@@ -9,7 +9,7 @@ mod common;
 
 use common::{
     DEFAULT_SEARXNG_DOCKER_URL, apply_searxng_docker_env, ctx_with_config,
-    register_ddgs_mock_success, register_mock, registry_guard, searxng_docker_url_if_ready,
+    register_ddgs_mock_success, register_ddgs_mock_fail, register_mock, registry_guard, searxng_docker_url_if_ready,
     searxng_json_api_ready, test_ctx,
 };
 use edgecrab_tools::config_ref::WebSearchBackendConfigRef;
@@ -385,6 +385,7 @@ async fn e2e_all_fail_returns_descriptive_error() {
     let _lock = registry_guard();
     register_mock("fail-one", MockMode::Network);
     register_mock("fail-two", MockMode::Server(503));
+    register_ddgs_mock_fail();
     let mut cfg = AppConfigRef::default();
     cfg.web_search.primary = "fail-one".into();
     cfg.web_search.fallbacks = vec!["fail-two".into()];

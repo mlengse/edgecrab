@@ -28,9 +28,11 @@ fn e2e_persist_search_chain_primary_and_fallbacks() {
     assert_eq!(cfg.primary, "searxng");
     assert_eq!(cfg.fallbacks, vec!["brave", "ddgs"]);
     assert_eq!(cfg.timeout_secs, 15);
-    assert_eq!(
-        format_search_chain_summary(&cfg),
-        "searxng → brave → ddgs (15s timeout)"
+    // Summary reflects the chain that will actually run (unconfigured paid backends stripped).
+    let summary = format_search_chain_summary(&cfg);
+    assert!(
+        summary.contains("ddgs") && summary.contains("15s timeout"),
+        "unexpected summary: {summary}"
     );
 }
 
@@ -52,9 +54,11 @@ fn e2e_clear_search_chain_resets_to_auto_summary() {
     let cfg = load_web_search_config_from_path(&path).expect("parse");
     assert!(cfg.primary.is_empty());
     assert!(cfg.fallbacks.is_empty());
-    assert_eq!(
-        format_search_chain_summary(&cfg),
-        "auto (legacy availability chain)"
+    // Empty config → auto-resolved chain (ddgs when no paid backends configured).
+    let summary = format_search_chain_summary(&cfg);
+    assert!(
+        summary.starts_with("ddgs") && summary.contains("timeout"),
+        "unexpected auto summary: {summary}"
     );
 }
 
