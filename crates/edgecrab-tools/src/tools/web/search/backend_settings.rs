@@ -79,6 +79,38 @@ pub fn backend_is_configured(name: &str, cfg: &WebSearchBackendConfigRef) -> boo
     }
 }
 
+/// Fail with [`SearchError::not_configured`] when credentials are missing.
+pub fn require_backend_configured(
+    backend: &str,
+    cfg: &WebSearchBackendConfigRef,
+) -> Result<(), crate::tools::web::search::error::SearchError> {
+    if backend_is_configured(backend, cfg) {
+        Ok(())
+    } else {
+        Err(crate::tools::web::search::error::SearchError::not_configured(backend))
+    }
+}
+
+/// Resolve API key or return a structured not-configured error.
+pub fn require_api_key(
+    backend: &str,
+    cfg: &WebSearchBackendConfigRef,
+    env_keys: &[&str],
+) -> Result<String, crate::tools::web::search::error::SearchError> {
+    resolve_api_key(cfg, env_keys)
+        .ok_or_else(|| crate::tools::web::search::error::SearchError::not_configured(backend))
+}
+
+/// Resolve endpoint URL or return a structured not-configured error.
+pub fn require_endpoint(
+    backend: &str,
+    cfg: &WebSearchBackendConfigRef,
+    env_keys: &[&str],
+) -> Result<String, crate::tools::web::search::error::SearchError> {
+    resolve_endpoint(cfg, env_keys)
+        .ok_or_else(|| crate::tools::web::search::error::SearchError::not_configured(backend))
+}
+
 /// User-facing message when a backend is explicitly selected but not configured.
 pub fn not_configured_message(name: &str) -> String {
     match normalize_backend_name(name).as_str() {
@@ -241,6 +273,7 @@ mod tests {
 
     #[test]
     fn dotenv_key_counts_as_edgecrab_home_enabled() {
+        let _lock = crate::tools::web::search::test_isolation::web_config_test_lock();
         let dir = tempfile::TempDir::new().expect("tempdir");
         let prev = std::env::var("EDGECRAB_HOME").ok();
         unsafe { std::env::set_var("EDGECRAB_HOME", dir.path()) };
@@ -261,6 +294,8 @@ mod tests {
 
     #[test]
     fn process_env_alone_does_not_count_for_auto_chain() {
+        let _lock = crate::tools::web::search::test_isolation::web_config_test_lock();
+        let _registry = crate::tools::web::search::registry::test_registry_lock();
         let dir = tempfile::TempDir::new().expect("tempdir");
         let prev_home = std::env::var("EDGECRAB_HOME").ok();
         let prev_fc = std::env::var("FIRECRAWL_API_KEY").ok();

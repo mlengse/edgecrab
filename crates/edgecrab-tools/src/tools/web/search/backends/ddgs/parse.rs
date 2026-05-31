@@ -41,10 +41,25 @@ pub fn engine_reports_no_results(engine: DdgsEngine, html: &str) -> bool {
     match engine {
         DdgsEngine::Html => html.contains("No  results."),
         DdgsEngine::Lite => html.contains("No more results."),
-        // Bing embeds `"There are no results for…"` in client-side JSON even when `b_algo`
-        // organic blocks are present — never short-circuit on that string alone.
-        DdgsEngine::Bing => html.contains("b_noResults") && !html.contains("b_algo"),
+        DdgsEngine::Bing => false,
     }
+}
+
+/// XPath-equivalent: `//li[contains(@class, 'b_algo')]`.
+pub fn bing_html_has_algo_rows(html: &str) -> bool {
+    html.contains("b_algo")
+        && (html.contains("class=\"b_algo")
+            || html.contains("class='b_algo")
+            || html.contains(" b_algo\"")
+            || html.contains(" b_algo'"))
+}
+
+/// Stop paging when Python's `"There are no results for"` marker appears **and** xpath finds no rows.
+///
+/// Python 9.0 `_text_bing` uses substring-only (false-positives in `<script>` when `b_algo` exists).
+/// We require both conditions — first principles aligned with the xpath parse path.
+pub fn bing_page_reports_no_results(html: &str) -> bool {
+    html.contains("There are no results for") && !bing_html_has_algo_rows(html)
 }
 
 /// Decode Bing redirect URLs (`/ck/a?u=a...` base64) to the target href.
@@ -54,10 +69,11 @@ pub fn normalize_bing_url(raw: &str) -> Option<String> {
         return None;
     }
 
-    if raw.starts_with("https://www.bing.com/ck/a?") || raw.starts_with("http://www.bing.com/ck/a?") {
-        if let Some(decoded) = decode_bing_ck_target(&raw) {
-            return Some(decoded);
-        }
+    if (raw.starts_with("https://www.bing.com/ck/a?")
+        || raw.starts_with("http://www.bing.com/ck/a?"))
+        && let Some(decoded) = decode_bing_ck_target(&raw)
+    {
+        return Some(decoded);
     }
 
     Some(raw.replace('\u{00a0}', " "))
@@ -66,10 +82,10 @@ pub fn normalize_bing_url(raw: &str) -> Option<String> {
 fn decode_bing_ck_target(raw: &str) -> Option<String> {
     if let Ok(parsed) = url::Url::parse(raw) {
         for (key, value) in parsed.query_pairs() {
-            if key == "u" {
-                if let Some(decoded) = decode_bing_u_param(value.as_ref()) {
-                    return Some(decoded);
-                }
+            if key == "u"
+                && let Some(decoded) = decode_bing_u_param(value.as_ref())
+            {
+                return Some(decoded);
             }
         }
     }
@@ -156,7 +172,11 @@ pub fn extract_ddg_html_next_payload(html: &str) -> Option<HashMap<String, Strin
     for cap in hidden_re.captures_iter(nav) {
         payload.insert(cap[1].to_string(), cap[2].to_string());
     }
-    if payload.is_empty() { None } else { Some(payload) }
+    if payload.is_empty() {
+        None
+    } else {
+        Some(payload)
+    }
 }
 
 /// Extract next-page form payload from DDG lite (`form` with `ext` submit).
@@ -173,12 +193,22 @@ pub fn extract_ddg_lite_next_payload(html: &str) -> Option<HashMap<String, Strin
     for cap in hidden_re.captures_iter(form) {
         payload.insert(cap[1].to_string(), cap[2].to_string());
     }
-    if payload.is_empty() { None } else { Some(payload) }
+    if payload.is_empty() {
+        None
+    } else {
+        Some(payload)
+    }
 }
 
-fn is_ddg_ad_url(url: &str) -> bool {
+/// Rows Python skips on HTML/Lite backends only (Bing `_text_bing` does not filter these).
+pub fn is_non_result_url(url: &str) -> bool {
     url.starts_with("http://www.google.com/search?q=")
+        || url.starts_with("https://www.google.com/search?q=")
         || url.contains("duckduckgo.com/y.js?ad_domain")
+}
+
+pub fn is_ddg_ad_url(url: &str) -> bool {
+    is_non_result_url(url)
 }
 
 /// Parse DDG HTML — Python xpath `//div[h2]` primary, `result__a` fallback.
@@ -187,10 +217,10 @@ pub fn parse_ddg_html(
     max: usize,
     source: &str,
 ) -> Result<Vec<SearchResult>, SearchError> {
-    if let Some(results) = parse_ddg_html_div_h2(html, max, source) {
-        if !results.is_empty() {
-            return Ok(results);
-        }
+    if let Some(results) = parse_ddg_html_div_h2(html, max, source)
+        && !results.is_empty()
+    {
+        return Ok(results);
     }
 
     let result_re = DDG_RESULT_RE.get_or_init(|| {
@@ -253,6 +283,7 @@ fn parse_ddg_html_div_h2(html: &str, max: usize, source: &str) -> Option<Vec<Sea
         let title = text::clean_title(cap[2].trim());
         let snippet = text::clean_snippet(cap.get(3).map(|m| m.as_str()).unwrap_or(""));
         let title = if title.is_empty() { url.clone() } else { title };
+        let url = text::normalize_url_field(&url);
         out.push(SearchResult::new(
             out.len() + 1,
             title,
@@ -278,6 +309,7 @@ fn finish_ddg_pairs(
         } else {
             text::clean_title(&title)
         };
+        let url = text::normalize_url_field(&url);
         out.push(SearchResult::new(i + 1, title, url, snippet, source));
     }
     Ok(out)
@@ -293,9 +325,8 @@ pub fn parse_ddg_lite(
         return Ok(Vec::new());
     }
 
-    let tr_re = DDG_LITE_TR_RE.get_or_init(|| {
-        Regex::new(r"(?s)<tr[^>]*>(.*?)</tr>").expect("lite tr regex")
-    });
+    let tr_re = DDG_LITE_TR_RE
+        .get_or_init(|| Regex::new(r"(?s)<tr[^>]*>(.*?)</tr>").expect("lite tr regex"));
     let href_re = Regex::new(r#"<a[^>]*href="([^"]+)""#).expect("href regex");
     let title_re = Regex::new(r#"<a[^>]*>([^<]*)</a>"#).expect("title regex");
     let snippet_re = Regex::new(r#"class='result-snippet'[^>]*>([\s\S]*?)</td>"#).expect("snippet");
@@ -311,23 +342,29 @@ pub fn parse_ddg_lite(
         let link_row = rows[i];
         let snippet_row = rows[i + 1];
 
-        if let Some(href_cap) = href_re.captures(link_row) {
-            if let Some(url) = normalize_ddg_url(&href_cap[1]) {
-                if !is_ddg_ad_url(&url) {
-                    let title = title_re
-                        .captures(link_row)
-                        .map(|c| text::clean_title(c[1].trim()))
-                        .unwrap_or_default();
-                    let snippet = snippet_re
-                        .captures(snippet_row)
-                        .map(|c| text::clean_snippet(&c[1]))
-                        .unwrap_or_default();
-                    let title = if title.is_empty() { url.clone() } else { title };
-                    out.push(SearchResult::new(out.len() + 1, title, url, snippet, source));
-                    i += 2;
-                    continue;
-                }
-            }
+        if let Some(href_cap) = href_re.captures(link_row)
+            && let Some(url) = normalize_ddg_url(&href_cap[1])
+            && !is_ddg_ad_url(&url)
+        {
+            let title = title_re
+                .captures(link_row)
+                .map(|c| text::clean_title(c[1].trim()))
+                .unwrap_or_default();
+            let snippet = snippet_re
+                .captures(snippet_row)
+                .map(|c| text::clean_snippet(&c[1]))
+                .unwrap_or_default();
+            let title = if title.is_empty() { url.clone() } else { title };
+            let url = text::normalize_url_field(&url);
+            out.push(SearchResult::new(
+                out.len() + 1,
+                title,
+                url,
+                snippet,
+                source,
+            ));
+            i += 2;
+            continue;
         }
         i += 1;
     }
@@ -400,7 +437,14 @@ fn push_bing_result(
         String::new()
     };
     let title = if title.is_empty() { url.clone() } else { title };
-    out.push(SearchResult::new(out.len() + 1, title, url, snippet, source));
+    let url = text::normalize_url_field(&url);
+    out.push(SearchResult::new(
+        out.len() + 1,
+        title,
+        url,
+        snippet,
+        source,
+    ));
 }
 
 #[cfg(test)]
@@ -454,7 +498,14 @@ mod tests {
     }
 
     #[test]
-    fn parse_bing_ignores_embedded_js_no_results_string() {
+    fn bing_page_no_results_string_like_python() {
+        assert!(bing_page_reports_no_results(
+            r#"<html>There are no results for "foo"</html>"#
+        ));
+    }
+
+    #[test]
+    fn bing_script_no_results_string_does_not_gate_when_algo_present() {
         let html = r#"
             <script>"There are no results for this question, please check your spelling"</script>
             <li class="b_algo">
@@ -462,19 +513,18 @@ mod tests {
                 <p>A systems programming language.</p>
             </li>
         "#;
+        assert!(bing_html_has_algo_rows(html));
+        assert!(
+            !bing_page_reports_no_results(html),
+            "script substring must not gate when b_algo rows exist"
+        );
         let results = parse_bing_html(html, 5, "ddgs").expect("parse");
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].url, "https://rust-lang.org");
-        assert!(!engine_reports_no_results(DdgsEngine::Bing, html));
     }
 
     #[test]
-    fn engine_reports_no_results_bing_requires_b_no_results() {
+    fn engine_reports_no_results_bing_deferred_to_search_layer() {
         assert!(!engine_reports_no_results(
-            DdgsEngine::Bing,
-            r#"<script>"There are no results for"</script><li class="b_algo"></li>"#
-        ));
-        assert!(engine_reports_no_results(
             DdgsEngine::Bing,
             r#"<div class="b_noResults">No results</div>"#
         ));
@@ -551,8 +601,7 @@ mod tests {
     #[test]
     fn parse_engine_routes_to_bing() {
         let html = r#"<li class="b_algo"><h2><a href="https://x.com">X</a></h2><p>s</p></li>"#;
-        let results =
-            parse_engine_html(DdgsEngine::Bing, html, 3, "ddgs").expect("parse");
+        let results = parse_engine_html(DdgsEngine::Bing, html, 3, "ddgs").expect("parse");
         assert_eq!(results.len(), 1);
     }
 

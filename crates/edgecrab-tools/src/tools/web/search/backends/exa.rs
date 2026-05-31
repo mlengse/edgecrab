@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::tools::web::search::backend::{SearchResult, WebSearchBackend};
-use crate::tools::web::search::backend_settings::resolve_api_key;
+use crate::tools::web::search::backend_settings::require_api_key;
 use crate::tools::web::search::config::{ExtractOptions, SearchOptions};
 use crate::tools::web::search::content_extract;
 use crate::tools::web::search::error::SearchError;
@@ -14,10 +14,6 @@ pub struct ExaBackend;
 
 const EXA_ENV_KEYS: &[&str] = &["EXA_API_KEY"];
 const EXA_SEARCH_URL: &str = "https://api.exa.ai/search";
-
-fn exa_api_key(opts: &SearchOptions) -> Option<String> {
-    resolve_api_key(&opts.backend_config, EXA_ENV_KEYS)
-}
 
 /// Normalize Exa JSON into ranked [`SearchResult`] rows (1-indexed rank).
 pub(crate) fn parse_exa_json(data: &Value, max: usize, source: &str) -> Vec<SearchResult> {
@@ -74,12 +70,7 @@ impl WebSearchBackend for ExaBackend {
         query: &str,
         opts: &SearchOptions,
     ) -> Result<Vec<SearchResult>, SearchError> {
-        let api_key = exa_api_key(opts).ok_or_else(|| {
-            SearchError::hard(
-                self.name(),
-                "EXA_API_KEY is not set. Get a key at https://exa.ai",
-            )
-        })?;
+        let api_key = require_api_key(self.name(), &opts.backend_config, EXA_ENV_KEYS)?;
         let client = build_api_client(opts.timeout_secs)?;
         let resp = client
             .post(EXA_SEARCH_URL)

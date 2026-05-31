@@ -150,14 +150,7 @@ pub fn maybe_spill(
         return SpillOutcome::Inline(result);
     }
 
-    match write_artifact_proactive(
-        tool_name,
-        &result,
-        session_id,
-        cwd,
-        config,
-        Some(seq),
-    ) {
+    match write_artifact_proactive(tool_name, &result, session_id, cwd, config, Some(seq)) {
         Some(written) => {
             let stub = build_conversation_stub(
                 tool_name,
@@ -221,7 +214,10 @@ pub fn write_artifact_proactive(
     let total_bytes = body.len();
     let total_lines = body.lines().count().max(1);
     let (preview, preview_line_count) = build_preview(body, config.preview_lines);
-    let rel_path = artifact_path.strip_prefix(cwd).unwrap_or(&artifact_path).to_path_buf();
+    let rel_path = artifact_path
+        .strip_prefix(cwd)
+        .unwrap_or(&artifact_path)
+        .to_path_buf();
 
     Some(SpillWritten {
         rel_path,
@@ -306,6 +302,7 @@ pub fn web_search_spilled_json(
     query: &str,
     backend: &str,
     fallback_from: Option<&str>,
+    skipped_tool_override: Option<&str>,
     note: Option<&str>,
     results: &[crate::tools::web::search::backend::SearchResult],
     written: &SpillWritten,
@@ -326,6 +323,7 @@ pub fn web_search_spilled_json(
         "query": query,
         "backend": backend,
         "fallback_from": fallback_from,
+        "skipped_tool_override": skipped_tool_override,
         "note": note,
         "result_spilled": true,
         "result_count": results.len(),
@@ -387,7 +385,10 @@ pub fn apply_web_extract_content_spill(
     };
 
     if let Some(obj) = doc.as_object_mut() {
-        obj.insert("content".into(), serde_json::Value::String(written.preview.clone()));
+        obj.insert(
+            "content".into(),
+            serde_json::Value::String(written.preview.clone()),
+        );
         obj.insert("content_spilled".into(), serde_json::Value::Bool(true));
         obj.insert(
             "content_bytes".into(),
@@ -631,8 +632,14 @@ mod tests {
     #[test]
     fn web_extract_threshold_is_lower_than_global() {
         let config = test_config(true, 16_384, 80);
-        assert_eq!(web_extract_inline_threshold(&config), WEB_EXTRACT_INLINE_BYTES);
-        assert_eq!(web_search_inline_threshold(&config), WEB_SEARCH_INLINE_BYTES);
+        assert_eq!(
+            web_extract_inline_threshold(&config),
+            WEB_EXTRACT_INLINE_BYTES
+        );
+        assert_eq!(
+            web_search_inline_threshold(&config),
+            WEB_SEARCH_INLINE_BYTES
+        );
     }
 
     #[test]
@@ -653,7 +660,11 @@ mod tests {
 
         let out = apply_web_extract_content_spill(doc, &ctx, None);
         assert_eq!(out["content_spilled"], true);
-        assert!(out["artifact"].as_str().is_some_and(|p| p.contains("web_extract")));
+        assert!(
+            out["artifact"]
+                .as_str()
+                .is_some_and(|p| p.contains("web_extract"))
+        );
         assert!(out["content"].as_str().is_some_and(|c| c.len() < big.len()));
         assert_eq!(out["content_bytes"].as_u64(), Some(big.len() as u64));
     }
@@ -700,6 +711,7 @@ mod tests {
             "ddgs",
             None,
             None,
+            None,
             &results,
         );
         let json_str = payload.to_string();
@@ -716,14 +728,8 @@ mod tests {
         )
         .expect("should write artifact");
 
-        let stub = web_search_spilled_json(
-            "test query",
-            "ddgs",
-            None,
-            None,
-            &results,
-            &written,
-        );
+        let stub =
+            web_search_spilled_json("test query", "ddgs", None, None, None, &results, &written);
         assert_eq!(stub["result_spilled"], true);
         assert!(stub["artifact"].as_str().is_some());
         assert_eq!(stub["result_count"], 20);

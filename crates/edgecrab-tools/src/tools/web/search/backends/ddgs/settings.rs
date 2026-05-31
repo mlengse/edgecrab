@@ -1,7 +1,5 @@
 //! DDGS runtime settings — env overrides with sensible defaults (no API key).
 
-use rand::seq::SliceRandom;
-
 use crate::config_ref::WebSearchBackendConfigRef;
 
 /// Metasearch engine (reverse-engineered from Python `ddgs` package).
@@ -22,7 +20,7 @@ impl DdgsEngine {
     }
 }
 
-/// Which engine(s) to use — `auto` shuffles Bing + DDG HTML + DDG lite.
+/// Which engine(s) to use — Python `backend=` arg (`auto` → Bing-only in 9.0.0).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DdgsBackendMode {
     #[default]
@@ -32,10 +30,20 @@ pub enum DdgsBackendMode {
     Lite,
 }
 
-/// DuckDuckGo HTML search tunables (Hermes `ddgs` package exposes region via CLI; we use env).
+/// Post-parse selection — Python raw (default) vs optional ranked reorder.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DdgsSelectionMode {
+    /// Python `DDGS.text()` parity: SERP order, ad URLs only filtered on HTML/Lite parsers.
+    #[default]
+    Raw,
+    /// Opt-in EdgeCrab: reorder by query-token overlap; never drop parseable rows.
+    Ranked,
+}
+
+/// DuckDuckGo HTML search tunables (Python `text(region=None)` — region optional).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DdgsSettings {
-    /// `kl` form field — locale/region (e.g. `us-en`, `fr-fr`).
+    /// `kl` / Bing `_EDGE_*` cookies — only sent when non-empty (Python `region=` arg).
     pub region: String,
     /// `kp` form field — `-1` strict, `-2` moderate (default), `1` off (HTML backend only).
     pub safe_search: String,
@@ -43,15 +51,18 @@ pub struct DdgsSettings {
     pub max_retries: u32,
     /// Metasearch mode (`DDGS_BACKEND=auto|bing|html|lite`).
     pub backend_mode: DdgsBackendMode,
+    /// Post-parse selection (`DDGS_SELECTION=raw|ranked`).
+    pub selection_mode: DdgsSelectionMode,
 }
 
 impl Default for DdgsSettings {
     fn default() -> Self {
         Self {
-            region: "us-en".into(),
+            region: String::new(),
             safe_search: "-2".into(),
-            max_retries: 2,
+            max_retries: 0,
             backend_mode: DdgsBackendMode::Auto,
+            selection_mode: DdgsSelectionMode::Raw,
         }
     }
 }
@@ -100,7 +111,25 @@ impl DdgsSettings {
             };
         }
 
+        if let Ok(sel) = std::env::var("DDGS_SELECTION") {
+            settings.selection_mode = match sel.trim().to_ascii_lowercase().as_str() {
+                "raw" => DdgsSelectionMode::Raw,
+                "ranked" => DdgsSelectionMode::Ranked,
+                _ => settings.selection_mode,
+            };
+        }
+
         settings
+    }
+
+    /// Python `region=` — omitted from HTTP when unset.
+    pub fn region(&self) -> Option<&str> {
+        let r = self.region.trim();
+        if r.is_empty() {
+            None
+        } else {
+            Some(r)
+        }
     }
 
     /// Engine try-order for this configuration (Python `ddgs.text(..., backend=...)` parity).
@@ -110,10 +139,8 @@ impl DdgsSettings {
             DdgsBackendMode::Html => vec![DdgsEngine::Html],
             DdgsBackendMode::Lite => vec![DdgsEngine::Lite],
             DdgsBackendMode::Auto => {
-                // Bing is most reliable; shuffle DDG fallbacks (Python package default).
-                let mut fallbacks = [DdgsEngine::Html, DdgsEngine::Lite];
-                fallbacks.shuffle(&mut rand::rng());
-                vec![DdgsEngine::Bing, fallbacks[0], fallbacks[1]]
+                // Python 9.0.0 `auto`: `backends = ["bing"]` (HTML/Lite temporarily disabled).
+                vec![DdgsEngine::Bing]
             }
         }
     }
@@ -128,10 +155,11 @@ mod tests {
     fn defaults_match_ddg_html_form() {
         let _lock = web_config_test_lock();
         let s = DdgsSettings::default();
-        assert_eq!(s.region, "us-en");
+        assert!(s.region().is_none());
         assert_eq!(s.safe_search, "-2");
-        assert_eq!(s.max_retries, 2);
+        assert_eq!(s.max_retries, 0);
         assert_eq!(s.backend_mode, DdgsBackendMode::Auto);
+        assert_eq!(s.selection_mode, DdgsSelectionMode::Raw);
     }
 
     #[test]
@@ -142,7 +170,7 @@ mod tests {
         unsafe { std::env::set_var("DDGS_REGION", "fr-fr") };
         unsafe { std::env::set_var("DDGS_MAX_RETRIES", "4") };
         let s = DdgsSettings::resolve(&WebSearchBackendConfigRef::default());
-        assert_eq!(s.region, "fr-fr");
+        assert_eq!(s.region(), Some("fr-fr"));
         assert_eq!(s.max_retries, 4);
         unsafe { std::env::remove_var("DDGS_REGION") };
         unsafe { std::env::remove_var("DDGS_MAX_RETRIES") };
@@ -163,7 +191,7 @@ mod tests {
             endpoint: Some("de-de".into()),
             ..Default::default()
         });
-        assert_eq!(s.region, "de-de");
+        assert_eq!(s.region(), Some("de-de"));
         unsafe { std::env::remove_var("DDGS_REGION") };
         if let Some(v) = prev {
             unsafe { std::env::set_var("DDGS_REGION", v) };
@@ -171,11 +199,10 @@ mod tests {
     }
 
     #[test]
-    fn auto_engine_order_prefers_bing_first() {
+    fn auto_engine_order_is_bing_only_like_python_9() {
         let _lock = web_config_test_lock();
         let order = DdgsSettings::default().engine_order();
-        assert_eq!(order[0], DdgsEngine::Bing);
-        assert_eq!(order.len(), 3);
+        assert_eq!(order, vec![DdgsEngine::Bing]);
     }
 
     #[test]

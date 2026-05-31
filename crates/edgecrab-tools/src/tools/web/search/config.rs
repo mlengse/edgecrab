@@ -58,14 +58,16 @@ impl ExtractOptions {
 pub struct ResolvedChain {
     pub names: Vec<String>,
     pub config: WebSearchConfigRef,
+    /// Tool-arg backend dropped because credentials were missing (degraded to config chain).
+    pub skipped_tool_override: Option<String>,
 }
 
 impl ResolvedChain {
     /// Build chain from config + optional per-call override.
     ///
     /// Unconfigured paid backends are **removed** from multi-backend chains (never
-    /// attempted). Explicit single-backend selection (tool arg, env, or `web:` override)
-    /// returns an error when credentials are missing so the agent does not burn turns.
+    /// attempted). Per-call `backend` tool args that name an unconfigured provider
+    /// degrade to the configured chain. Env overrides fail fast when misconfigured.
     pub fn resolve(
         cfg: &WebSearchConfigRef,
         override_backend: Option<&str>,
@@ -74,22 +76,19 @@ impl ResolvedChain {
             .map(|v| v.trim().to_ascii_lowercase())
             .filter(|v| !v.is_empty() && *v != "auto")
         {
-            let names = finalize_chain_names(vec![name], cfg, ChainSelection::ExplicitSingle)?;
-            return Ok(Self {
-                names,
-                config: cfg.clone(),
-            });
+            return Self::from_names(
+                finalize_chain_names(vec![name.clone()], cfg, ChainSelection::ToolArgOverride)?,
+                cfg,
+            );
         }
 
         if override_backend.is_none()
-            && let Some(env) = env_backend_override()
-            .filter(|n| n != "ddgs")
+            && let Some(env) = env_backend_override().filter(|n| n != "ddgs")
         {
-            let names = finalize_chain_names(vec![env], cfg, ChainSelection::ExplicitSingle)?;
-            return Ok(Self {
-                names,
-                config: cfg.clone(),
-            });
+            return Self::from_names(
+                finalize_chain_names(vec![env], cfg, ChainSelection::EnvOverride)?,
+                cfg,
+            );
         }
 
         if override_backend.is_none()
@@ -97,19 +96,23 @@ impl ResolvedChain {
             && let Some(name) =
                 crate::tools::web::search::web_config::resolve_config_search_backend()
         {
-            let names = finalize_chain_names(vec![name], cfg, ChainSelection::ExplicitSingle)?;
-            return Ok(Self {
-                names,
-                config: cfg.clone(),
-            });
+            return Self::from_names(
+                finalize_chain_names(vec![name], cfg, ChainSelection::ConfigSectionOverride)?,
+                cfg,
+            );
         }
 
-        let names =
-            finalize_chain_names(build_config_chain(cfg), cfg, ChainSelection::ConfigChain)?;
+        Self::from_names(
+            finalize_chain_names(build_config_chain(cfg), cfg, ChainSelection::ConfigChain)?,
+            cfg,
+        )
+    }
 
+    fn from_names(outcome: ChainOutcome, cfg: &WebSearchConfigRef) -> Result<Self, SearchError> {
         Ok(Self {
-            names,
+            names: outcome.names,
             config: cfg.clone(),
+            skipped_tool_override: outcome.skipped_tool_override,
         })
     }
 
@@ -120,10 +123,29 @@ impl ResolvedChain {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ChainSelection {
-    /// Per-call `backend` arg or `EDGECRAB_WEB_*` env override.
-    ExplicitSingle,
+    /// Per-call `backend` tool arg — degrade to config chain when unconfigured.
+    ToolArgOverride,
+    /// `EDGECRAB_WEB_SEARCH_BACKEND` / `EDGECRAB_WEB_BACKEND` — fail fast when missing keys.
+    EnvOverride,
+    /// `web.search_backend` / `web.backend` (only returned when configured).
+    ConfigSectionOverride,
     /// `web_search.primary` / fallbacks / legacy auto chain.
     ConfigChain,
+}
+
+#[derive(Debug, Clone)]
+struct ChainOutcome {
+    names: Vec<String>,
+    skipped_tool_override: Option<String>,
+}
+
+impl ChainOutcome {
+    fn single(names: Vec<String>) -> Self {
+        Self {
+            names,
+            skipped_tool_override: None,
+        }
+    }
 }
 
 /// Drop backends missing credentials; never attempt HTTP without keys.
@@ -131,8 +153,13 @@ fn finalize_chain_names(
     names: Vec<String>,
     cfg: &WebSearchConfigRef,
     selection: ChainSelection,
-) -> Result<Vec<String>, SearchError> {
-    if selection == ChainSelection::ExplicitSingle {
+) -> Result<ChainOutcome, SearchError> {
+    if matches!(
+        selection,
+        ChainSelection::ToolArgOverride
+            | ChainSelection::EnvOverride
+            | ChainSelection::ConfigSectionOverride
+    ) {
         let name = names
             .first()
             .cloned()
@@ -149,12 +176,21 @@ fn finalize_chain_names(
 
         let bc = lookup_backend_config(&cfg.backends, &name);
         if backend_is_configured(&name, &bc) {
-            return Ok(vec![name]);
+            return Ok(ChainOutcome::single(vec![name]));
         }
-        return Err(SearchError::hard(
-            "web_search",
-            super::backend_settings::not_configured_message(&name),
-        ));
+
+        if selection == ChainSelection::ToolArgOverride {
+            tracing::warn!(
+                backend = %name,
+                "web_search: tool backend override not configured — using config chain"
+            );
+            let mut outcome =
+                finalize_chain_names(build_config_chain(cfg), cfg, ChainSelection::ConfigChain)?;
+            outcome.skipped_tool_override = Some(name);
+            return Ok(outcome);
+        }
+
+        return Err(SearchError::not_configured(name));
     }
 
     let configured: Vec<String> = names
@@ -162,21 +198,17 @@ fn finalize_chain_names(
         .filter(|n| backend_is_configured(n, &lookup_backend_config(&cfg.backends, n)))
         .collect();
 
-    if configured.is_empty() {
-        return Ok(vec!["ddgs".into()]);
-    }
-
-    if configured.iter().all(|n| n == "ddgs") {
-        return Ok(configured);
-    }
-
-    if configured.iter().any(|n| n == "ddgs") {
-        Ok(configured)
+    let names = if configured.is_empty() {
+        vec!["ddgs".into()]
+    } else if configured.iter().any(|n| n == "ddgs") {
+        configured
     } else {
         let mut out = configured;
         out.push("ddgs".into());
-        Ok(out)
-    }
+        out
+    };
+
+    Ok(ChainOutcome::single(names))
 }
 
 /// Whether `web_search` should be exposed to the agent (ddgs is always reachable).
@@ -207,10 +239,7 @@ fn build_config_chain(cfg: &WebSearchConfigRef) -> Vec<String> {
     }
 
     if yaml_names.is_empty() {
-        let names: Vec<String> = FREE_TIER_CHAIN
-            .iter()
-            .map(|s| (*s).to_string())
-            .collect();
+        let names: Vec<String> = FREE_TIER_CHAIN.iter().map(|s| (*s).to_string()).collect();
         let configured = filter_configured_backends(&names, cfg);
         return if configured.is_empty() {
             vec!["ddgs".into()]
@@ -289,6 +318,7 @@ pub const LEGACY_AUTO_CHAIN: &[&str] = &[
     "ddgs",
 ];
 
+#[cfg(test)]
 fn auto_chain_for_cfg(cfg: &WebSearchConfigRef) -> Vec<String> {
     let mut chain = Vec::new();
     for name in LEGACY_AUTO_CHAIN {
@@ -319,6 +349,35 @@ pub fn load_web_search_config_from_disk() -> WebSearchConfigRef {
     load_web_search_config_from_path(&path).unwrap_or_else(empty_web_search_config)
 }
 
+fn merge_backend_maps(
+    disk: std::collections::HashMap<String, WebSearchBackendConfigRef>,
+    session: std::collections::HashMap<String, WebSearchBackendConfigRef>,
+) -> std::collections::HashMap<String, WebSearchBackendConfigRef> {
+    let mut merged = disk;
+    for (name, cfg) in session {
+        merged.entry(name).or_insert(cfg);
+    }
+    merged
+}
+
+/// Runtime search config for tool dispatch — on-disk `web_search:` wins over agent snapshot.
+///
+/// `/web` and setup wizards persist chain order immediately; the in-memory agent may
+/// still hold a stale snapshot until restart. When `config.yaml` contains `web_search:`,
+/// routing (primary / fallbacks / timeout / backends) is read fresh from disk.
+pub fn effective_web_search_config(session: &WebSearchConfigRef) -> WebSearchConfigRef {
+    let path = resolve_edgecrab_home().join("config.yaml");
+    let Some(disk) = load_web_search_config_from_path(&path) else {
+        return session.clone();
+    };
+    WebSearchConfigRef {
+        primary: disk.primary,
+        fallbacks: disk.fallbacks,
+        timeout_secs: disk.timeout_secs.max(1),
+        backends: merge_backend_maps(disk.backends, session.backends.clone()),
+    }
+}
+
 pub fn load_web_search_config_from_path(path: &Path) -> Option<WebSearchConfigRef> {
     let content = std::fs::read_to_string(path).ok()?;
     let raw: serde_yml::Value = serde_yml::from_str(&content).ok()?;
@@ -336,6 +395,27 @@ pub struct WebSearchChainUpdate {
 
 fn normalize_chain_backend(name: &str) -> String {
     name.trim().to_ascii_lowercase()
+}
+
+/// Human-readable **saved** chain from yaml (user intent, may include unconfigured backends).
+pub fn format_saved_chain_summary(cfg: &WebSearchConfigRef) -> String {
+    let timeout = cfg.timeout_secs.max(1);
+    let mut names = Vec::new();
+    let primary = cfg.primary.trim().to_ascii_lowercase();
+    if !primary.is_empty() && primary != "auto" {
+        names.push(primary);
+    }
+    for fb in &cfg.fallbacks {
+        let fb = fb.trim().to_ascii_lowercase();
+        if !fb.is_empty() && fb != "auto" && !names.contains(&fb) {
+            names.push(fb);
+        }
+    }
+    if names.is_empty() {
+        format!("auto ({timeout}s timeout)")
+    } else {
+        format!("{} ({timeout}s timeout)", names.join(" → "))
+    }
 }
 
 /// Human-readable chain summary — reflects the chain that will actually run.
@@ -468,9 +548,10 @@ mod tests {
         assert_eq!(cfg.fallbacks, vec!["brave", "ddgs"]);
         assert_eq!(cfg.timeout_secs, 12);
         assert_eq!(
-            format_search_chain_summary(&cfg),
-            "ddgs (12s timeout)"
+            format_saved_chain_summary(&cfg),
+            "searxng → brave → ddgs (12s timeout)"
         );
+        assert_eq!(format_search_chain_summary(&cfg), "ddgs (12s timeout)");
     }
 
     #[test]
@@ -574,6 +655,90 @@ mod tests {
         unsafe { std::env::remove_var("SEARXNG_URL") };
         if let Some(v) = prev {
             unsafe { std::env::set_var("SEARXNG_URL", v) };
+        }
+    }
+
+    #[test]
+    fn effective_config_prefers_disk_chain_over_stale_session() {
+        let _lock = web_config_test_lock();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let prev_home = std::env::var("EDGECRAB_HOME").ok();
+        unsafe { std::env::set_var("EDGECRAB_HOME", dir.path()) };
+        let path = dir.path().join("config.yaml");
+        persist_web_search_chain_in_config(
+            &path,
+            &WebSearchChainUpdate {
+                primary: Some("tavily".into()),
+                fallbacks: Some(vec!["ddgs".into()]),
+                timeout_secs: Some(10),
+            },
+        )
+        .expect("persist");
+        let session = WebSearchConfigRef {
+            primary: "searxng".into(),
+            fallbacks: vec!["brave".into()],
+            timeout_secs: 8,
+            ..Default::default()
+        };
+        let effective = effective_web_search_config(&session);
+        assert_eq!(effective.primary, "tavily");
+        assert_eq!(effective.fallbacks, vec!["ddgs"]);
+        assert_eq!(effective.timeout_secs, 10);
+        unsafe { std::env::remove_var("EDGECRAB_HOME") };
+        if let Some(v) = prev_home {
+            unsafe { std::env::set_var("EDGECRAB_HOME", v) };
+        }
+    }
+
+    #[test]
+    fn env_unconfigured_backend_fail_fast() {
+        let _lock = web_config_test_lock();
+        let _env = EnvBackendGuard::isolate();
+        let prev = std::env::var("PARALLEL_API_KEY").ok();
+        unsafe { std::env::remove_var("PARALLEL_API_KEY") };
+        unsafe { std::env::set_var("EDGECRAB_WEB_SEARCH_BACKEND", "parallel") };
+        let cfg = WebSearchConfigRef::default();
+        let err = ResolvedChain::resolve(&cfg, None).expect_err("env override without key");
+        assert!(err.message.contains("PARALLEL_API_KEY"));
+        unsafe { std::env::remove_var("EDGECRAB_WEB_SEARCH_BACKEND") };
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("PARALLEL_API_KEY", v) };
+        }
+    }
+
+    #[test]
+    fn tool_arg_unconfigured_sets_skipped_override() {
+        let _lock = web_config_test_lock();
+        let _env = EnvBackendGuard::isolate();
+        let prev = std::env::var("PARALLEL_API_KEY").ok();
+        unsafe { std::env::remove_var("PARALLEL_API_KEY") };
+        let cfg = WebSearchConfigRef::default();
+        let resolved = ResolvedChain::resolve(&cfg, Some("parallel")).expect("degrade");
+        assert_eq!(resolved.skipped_tool_override.as_deref(), Some("parallel"));
+        assert!(resolved.names.iter().any(|n| n == "ddgs"));
+        if let Some(v) = prev {
+            unsafe { std::env::set_var("PARALLEL_API_KEY", v) };
+        }
+    }
+
+    #[test]
+    fn effective_config_falls_back_to_session_when_no_yaml_section() {
+        let _lock = web_config_test_lock();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let prev_home = std::env::var("EDGECRAB_HOME").ok();
+        unsafe { std::env::set_var("EDGECRAB_HOME", dir.path()) };
+        std::fs::write(dir.path().join("config.yaml"), "model: foo\n").expect("write");
+        let session = WebSearchConfigRef {
+            primary: "brave".into(),
+            fallbacks: vec!["ddgs".into()],
+            ..Default::default()
+        };
+        let effective = effective_web_search_config(&session);
+        assert_eq!(effective.primary, "brave");
+        assert_eq!(effective.fallbacks, vec!["ddgs"]);
+        unsafe { std::env::remove_var("EDGECRAB_HOME") };
+        if let Some(v) = prev_home {
+            unsafe { std::env::set_var("EDGECRAB_HOME", v) };
         }
     }
 }

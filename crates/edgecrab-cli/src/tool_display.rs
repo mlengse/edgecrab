@@ -2274,22 +2274,27 @@ fn format_web_search_result(val: &serde_json::Value, max_cols: usize) -> String 
         .get("backend")
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty());
+    let fallback = val
+        .get("fallback_from")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
     if count == 0 {
         let msg = match backend {
-            Some(b) => format!("no results ({b})"),
+            Some(b) => edgecrab_tools::summarize_web_search_backend(b, fallback),
             None => "no results".to_string(),
         };
         return unicode_trunc(&msg, max_cols);
     }
-    let count_part = if count == 1 {
-        "1 result".to_string()
-    } else {
-        format!("{count} results")
-    };
-    let count_part = match backend {
-        Some(b) => format!("{count_part} · {b}"),
-        None => count_part,
-    };
+    let skipped = val
+        .get("skipped_tool_override")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty());
+    let count_part = edgecrab_tools::format_web_search_status_line(
+        count,
+        backend.unwrap_or("web"),
+        fallback,
+        skipped,
+    );
     let first_title = results
         .first()
         .and_then(|item| item.get("title").or_else(|| item.get("name")))

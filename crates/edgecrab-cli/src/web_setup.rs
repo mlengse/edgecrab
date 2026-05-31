@@ -52,7 +52,7 @@ pub fn run(config_path: &Path) -> anyhow::Result<()> {
         ];
         let choice = Select::with_theme(&wizard_theme())
             .with_prompt("What would you like to configure?")
-            .items(&menu)
+            .items(menu)
             .default(0)
             .interact()
             .map_err(dialoguer_err)?;
@@ -178,7 +178,7 @@ fn pick_backend_flow(config_path: &Path) -> anyhow::Result<()> {
         ];
         Select::with_theme(&wizard_theme())
             .with_prompt("Apply backend to which tools?")
-            .items(&options)
+            .items(options)
             .default(0)
             .interact()
             .map_err(dialoguer_err)?

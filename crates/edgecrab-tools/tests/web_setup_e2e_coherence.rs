@@ -6,8 +6,9 @@ use common::registry_guard;
 use edgecrab_tools::{
     WebSectionUpdate, default_chain_for_backend, ensure_web_search_config_coherence_at,
     persist_search_backend_as_chain, persist_search_chain_order, persist_web_section_in_config,
-    search_section_override_from_path, web_command_overlay,
+    search_section_override_from_path,
     tools::web::search::{load_web_search_config_from_path, load_web_tools_config_from_path},
+    web_command_overlay,
 };
 use tempfile::TempDir;
 
@@ -73,12 +74,8 @@ fn e2e_migrate_legacy_search_backend_to_chain() {
         },
     )
     .expect("legacy");
-    assert!(
-        edgecrab_tools::migrate_legacy_search_override(&path).expect("migrate")
-    );
-    assert!(
-        edgecrab_tools::search_section_override_from_path(&path).is_none()
-    );
+    assert!(edgecrab_tools::migrate_legacy_search_override(&path).expect("migrate"));
+    assert!(edgecrab_tools::search_section_override_from_path(&path).is_none());
     let search = load_web_search_config_from_path(&path).expect("search");
     assert_eq!(search.primary, "brave");
     assert_eq!(search.fallbacks, vec!["ddgs".to_string()]);

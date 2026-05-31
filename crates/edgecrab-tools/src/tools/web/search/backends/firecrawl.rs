@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 
 use crate::tools::web::search::backend::{SearchResult, WebSearchBackend};
-use crate::tools::web::search::backend_settings::resolve_api_key;
+use crate::tools::web::search::backend_settings::require_api_key;
 use crate::tools::web::search::config::{ExtractOptions, SearchOptions};
 use crate::tools::web::search::content_extract;
 use crate::tools::web::search::error::SearchError;
@@ -13,10 +13,6 @@ use crate::tools::web::search::http::{build_api_client, map_reqwest_error};
 pub struct FirecrawlBackend;
 
 const FIRECRAWL_ENV_KEYS: &[&str] = &["FIRECRAWL_API_KEY"];
-
-fn firecrawl_api_key(opts: &SearchOptions) -> Option<String> {
-    resolve_api_key(&opts.backend_config, FIRECRAWL_ENV_KEYS)
-}
 
 fn normalize_results(data: &Value, max: usize, source: &str) -> Vec<SearchResult> {
     let array = data
@@ -80,8 +76,7 @@ impl WebSearchBackend for FirecrawlBackend {
         query: &str,
         opts: &SearchOptions,
     ) -> Result<Vec<SearchResult>, SearchError> {
-        let api_key = firecrawl_api_key(opts)
-            .ok_or_else(|| SearchError::hard(self.name(), "FIRECRAWL_API_KEY is not set."))?;
+        let api_key = require_api_key(self.name(), &opts.backend_config, FIRECRAWL_ENV_KEYS)?;
         let client = build_api_client(opts.timeout_secs)?;
         let resp = client
             .post("https://api.firecrawl.dev/v2/search")

@@ -2990,7 +2990,17 @@ fn summarize_tool_result_preview(name: &str, tool_result: &str, is_error: bool) 
                     .and_then(|v| v.as_array())
                     .map(|arr| arr.len())?;
                 let backend = obj.get("backend").and_then(|v| v.as_str()).unwrap_or("web");
-                Some(format!("{count} result(s) via {backend}"))
+                let fallback = obj
+                    .get("fallback_from")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty());
+                let skipped = obj
+                    .get("skipped_tool_override")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty());
+                Some(edgecrab_tools::format_web_search_status_line(
+                    count, backend, fallback, skipped,
+                ))
             }
             "web_extract" | "web_crawl" => {
                 let backend = obj.get("backend").and_then(|v| v.as_str()).unwrap_or("web");
@@ -7442,7 +7452,29 @@ def register(ctx):
             false,
         )
         .expect("preview");
-        assert_eq!(preview, "2 result(s) via Brave");
+        assert_eq!(preview, "2 results via Brave");
+    }
+
+    #[test]
+    fn summarize_tool_result_preview_shows_web_search_fallback() {
+        let preview = summarize_tool_result_preview(
+            "web_search",
+            r#"{"success":true,"backend":"ddgs","fallback_from":"tavily","results":[{"title":"A"}]}"#,
+            false,
+        )
+        .expect("preview");
+        assert_eq!(preview, "1 result via ddgs (fallback from tavily)");
+    }
+
+    #[test]
+    fn summarize_tool_result_preview_shows_skipped_tool_override() {
+        let preview = summarize_tool_result_preview(
+            "web_search",
+            r#"{"success":true,"backend":"ddgs","skipped_tool_override":"parallel","results":[{"title":"A"}]}"#,
+            false,
+        )
+        .expect("preview");
+        assert_eq!(preview, "(ignored parallel) 1 result via ddgs");
     }
 
     #[test]

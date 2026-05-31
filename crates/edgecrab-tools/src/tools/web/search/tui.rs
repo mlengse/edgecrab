@@ -39,11 +39,7 @@ fn provider_state_label(p: &WebProviderStatus) -> &'static str {
 }
 
 fn readiness_badge(ready: bool) -> &'static str {
-    if ready {
-        "✓ READY"
-    } else {
-        "✗ NOT READY"
-    }
+    if ready { "✓ READY" } else { "✗ NOT READY" }
 }
 
 fn extract_readiness_badge(report: &WebDiagnosticsReport) -> &'static str {
@@ -72,10 +68,7 @@ pub fn web_status_one_liner_from(report: &WebDiagnosticsReport) -> String {
 /// Short hint for the interactive `/web` hub menu header.
 pub fn web_menu_status_hint(report: &WebDiagnosticsReport) -> String {
     if report.search_ready {
-        format!(
-            "search ready · chain: {}",
-            report.search_chain_summary
-        )
+        format!("search ready · chain: {}", report.search_chain_summary)
     } else {
         "search not ready — run Setup wizard".into()
     }
@@ -204,7 +197,9 @@ fn render_next_steps(report: &WebDiagnosticsReport) -> String {
         let unconfigured_paid: Vec<_> = report
             .providers
             .iter()
-            .filter(|p| p.supports_search && !p.missing_env.is_empty() && !(p.configured && p.available))
+            .filter(|p| {
+                p.supports_search && !p.missing_env.is_empty() && !(p.configured && p.available)
+            })
             .map(|p| p.id.as_str())
             .take(3)
             .collect();
@@ -265,10 +260,7 @@ fn render_chain_visual(report: &WebDiagnosticsReport) -> String {
     let mut out = String::from(" FALLBACK FLOW\n ─────────────\n\n");
 
     if backends.is_empty() {
-        out.push_str(&format!(
-            "  (auto)  {}\n\n",
-            report.search_chain_summary
-        ));
+        out.push_str(&format!("  (auto)  {}\n\n", report.search_chain_summary));
     } else {
         for (i, name) in backends.iter().enumerate() {
             let step = i + 1;
@@ -368,7 +360,10 @@ fn render_doctor_detail(report: &WebDiagnosticsReport) -> String {
             p.id, caps, p.configured, p.available
         ));
         if !p.missing_env.is_empty() {
-            out.push_str(&format!("               missing: {}\n", p.missing_env.join(", ")));
+            out.push_str(&format!(
+                "               missing: {}\n",
+                p.missing_env.join(", ")
+            ));
         }
     }
 
@@ -389,7 +384,11 @@ fn overlay_subtitle(sub: &str, report: &WebDiagnosticsReport) -> String {
         "chain" | "fallback" | "fallbacks" => report.search_chain_summary.clone(),
         "doctor" => format!(
             "search: {} · extract: {}",
-            if report.search_ready { "ok" } else { "needs setup" },
+            if report.search_ready {
+                "ok"
+            } else {
+                "needs setup"
+            },
             if report.paid_extract_configured {
                 "paid API"
             } else {
@@ -439,11 +438,7 @@ pub fn web_command_overlay_from(
             subtitle,
             render_providers_only(report),
         ),
-        "help" => (
-            "Web — Help".into(),
-            subtitle,
-            web_command_usage(),
-        ),
+        "help" => ("Web — Help".into(), subtitle, web_command_usage()),
         _ => (
             "Web Search & Extract".into(),
             subtitle,
@@ -460,22 +455,18 @@ pub fn gateway_web_command_reply(sub: &str) -> String {
     let first = sub.split_whitespace().next().unwrap_or("status");
     let report = collect_web_diagnostics();
     let text = match first {
-        "help" => {
-            "🔍 Web commands (gateway):\n\
+        "help" => "🔍 Web commands (gateway):\n\
              /web status  — readiness + chain summary\n\
              /web chain   — fallback order\n\
              /web doctor  — provider diagnostics\n\
              /web help    — this message\n\
              Edit chain on host: /web or `edgecrab setup web`"
-                .to_string()
-        }
+            .to_string(),
         "chain" | "fallback" | "fallbacks" => {
             let (_, _, body) = web_command_overlay_from("chain", &report);
             body
         }
-        "doctor" | "diag" | "diagnostics" => {
-            format_web_setup_report(&report)
-        }
+        "doctor" | "diag" | "diagnostics" => format_web_setup_report(&report),
         _ => {
             format!(
                 "{}\n\nChain: {} ({}s timeout)",
@@ -488,7 +479,10 @@ pub fn gateway_web_command_reply(sub: &str) -> String {
     if text.len() <= GATEWAY_WEB_REPLY_MAX {
         text
     } else {
-        format!("{}…\n\n(reply truncated — use `edgecrab setup web` on host for full report)", truncate_at_char_boundary(&text, GATEWAY_WEB_REPLY_MAX))
+        format!(
+            "{}…\n\n(reply truncated — use `edgecrab setup web` on host for full report)",
+            truncate_at_char_boundary(&text, GATEWAY_WEB_REPLY_MAX)
+        )
     }
 }
 
@@ -552,7 +546,7 @@ mod tests {
         assert!(usage.contains("/web chain"));
         assert!(usage.contains("/web"));
         assert!(usage.contains("Enter"));
-        assert!(usage.contains("Space"));
+        assert!(usage.contains("[  ]"));
     }
 
     #[test]

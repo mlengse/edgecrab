@@ -4,16 +4,12 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::tools::web::search::backend::{SearchResult, WebSearchBackend};
-use crate::tools::web::search::backend_settings::resolve_endpoint;
+use crate::tools::web::search::backend_settings::require_endpoint;
 use crate::tools::web::search::config::SearchOptions;
 use crate::tools::web::search::error::SearchError;
 use crate::tools::web::search::http::{build_api_client, map_reqwest_error, validate_search_url};
 
 pub struct SearxngBackend;
-
-fn searxng_base_url(opts: &SearchOptions) -> Option<String> {
-    resolve_endpoint(&opts.backend_config, &["SEARXNG_URL"])
-}
 
 #[async_trait]
 impl WebSearchBackend for SearxngBackend {
@@ -32,8 +28,7 @@ impl WebSearchBackend for SearxngBackend {
         query: &str,
         opts: &SearchOptions,
     ) -> Result<Vec<SearchResult>, SearchError> {
-        let base = searxng_base_url(opts)
-            .ok_or_else(|| SearchError::hard(self.name(), "SEARXNG_URL is not set."))?;
+        let base = require_endpoint(self.name(), &opts.backend_config, &["SEARXNG_URL"])?;
         let url = format!("{base}/search");
         validate_search_url(&url)?;
 

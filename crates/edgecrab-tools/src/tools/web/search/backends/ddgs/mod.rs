@@ -1,37 +1,50 @@
-//! DuckDuckGo search — native Rust reimplementation of the Python `ddgs` package.
+//! DuckDuckGo search — native Rust reimplementation of the Python `ddgs` 9.0 package.
 //!
 //! Layers (SOLID):
-//! - `transport` — HTTP session + pacing
-//! - `engines`   — Bing / DDG HTML / DDG lite parsers+pagination
-//! - `text`      — HTML decode + snippet hygiene (DRY)
-//! - `relevance` — query tokens + spam batch detection
-//! - `rank`      — merge engines, score, select best hits
-//! - `metasearch` — orchestration across engines + variants
-//! - `parse` / `detect` / `error` — shared utilities
+//! - `transport`  — primp random TLS/UA fingerprint + pacing
+//! - `engines`    — Bing / DDG HTML / DDG lite parsers+pagination
+//! - `parse`      — HTML → SearchResult (Python xpath/regex parity)
+//! - `text`       — Python `_normalize` / `_normalize_url`
+//! - `query`      — query tokens (opt-in ranked mode only)
+//! - `selection`  — cap + optional reorder (raw = Python contract)
+//! - `metasearch` — orchestration (Bing-only `auto`, return-on-first-success)
+//! - `detect`     — diagnostics only (not metasearch hot path)
+//! - `error` / `settings`
 
 mod detect;
 mod engines;
 mod error;
+mod fingerprint;
 mod metasearch;
 mod parse;
-mod rank;
-mod relevance;
+mod query;
+mod selection;
 mod settings;
 mod text;
 mod transport;
 
-pub use parse::{normalize_bing_url, normalize_ddg_url, parse_bing_html, parse_ddg_html, parse_ddg_lite, parse_engine_html, engine_reports_no_results};
 pub use detect::{is_bot_challenge, is_engine_blocked};
-pub use relevance::filter_relevant;
-pub use settings::DdgsEngine;
+pub use fingerprint::{
+    ImpersonateOs, ImpersonateProfile, build_wreq_client, pick_random_profile,
+    resolve_profile, resolve_profile_from_env, resolve_profile_with,
+};
+pub use metasearch::{metasearch_budget, search_text as metasearch_text};
+pub use parse::{
+    bing_html_has_algo_rows, bing_page_reports_no_results, engine_reports_no_results, normalize_bing_url, normalize_ddg_url,
+    parse_bing_html, parse_ddg_html, parse_ddg_lite, parse_engine_html,
+};
+pub use query::{query_tokens};
+pub use selection::{
+    extend_pool, is_deliverable, select_raw, select_ranked, select_results,
+};
+pub use settings::{DdgsEngine, DdgsSelectionMode, DdgsSettings};
+pub use text::fold_for_search;
 
 use async_trait::async_trait;
 
 use crate::tools::web::search::backend::{SearchResult, WebSearchBackend};
 use crate::tools::web::search::config::SearchOptions;
 use crate::tools::web::search::error::SearchError;
-
-use self::settings::DdgsSettings;
 
 pub struct DdgsBackend;
 
@@ -57,6 +70,11 @@ impl WebSearchBackend for DdgsBackend {
         let settings = DdgsSettings::resolve(&opts.backend_config);
         metasearch::search_text(query, opts, &settings, self.name()).await
     }
+}
+
+/// Opt-in ranked selection (`DDGS_SELECTION=ranked`).
+pub fn rank_and_select(query: &str, pool: Vec<SearchResult>, max: usize) -> Vec<SearchResult> {
+    selection::select_ranked(query, pool, max)
 }
 
 #[cfg(test)]
@@ -85,17 +103,15 @@ mod live_engine_tests {
     #[ignore = "live network diagnostic"]
     async fn bing_wreq_diagnostic() {
         let settings = DdgsSettings::default();
+        assert!(settings.region().is_none());
         let mut session = DdgsSession::new(15).expect("session");
-        session.warm_up("ddgs").await.expect("warmup");
-        let region = settings.region.as_str();
-        let cookie = format!("_EDGE_CD=u={region}&m={region}; _EDGE_S=ui={region}&mkt={region}");
         let html = session
             .get(
                 super::settings::DdgsEngine::Bing,
                 "ddgs",
                 "https://www.bing.com/search",
                 &[("q", "Rust programming language")],
-                Some(&cookie),
+                None,
             )
             .await
             .expect("bing get");
@@ -134,15 +150,16 @@ mod live_tests {
             timeout_secs: 15,
             ..Default::default()
         };
-        let results = metasearch::search_text("Rust programming language", &opts, &settings, "ddgs")
-            .await
-            .unwrap_or_else(|e| {
-                if e.message.contains("bot challenge") || e.message.contains("blocked") {
-                    eprintln!("Skipping live ddgs: {e}");
-                    return Vec::new();
-                }
-                panic!("metasearch should succeed: {e:?}");
-            });
+        let results =
+            metasearch::search_text("Rust programming language", &opts, &settings, "ddgs")
+                .await
+                .unwrap_or_else(|e| {
+                    if e.message.contains("bot challenge") || e.message.contains("blocked") {
+                        eprintln!("Skipping live ddgs: {e}");
+                        return Vec::new();
+                    }
+                    panic!("metasearch should succeed: {e:?}");
+                });
         if !results.is_empty() {
             assert!(results[0].url.starts_with("http"));
         }

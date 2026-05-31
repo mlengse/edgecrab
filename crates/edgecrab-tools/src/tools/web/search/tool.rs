@@ -13,10 +13,11 @@ use crate::registry::{ToolContext, ToolHandler};
 use crate::tools::web::search::backend_settings::MAX_SEARCH_RESULTS;
 use crate::tools::web::search::chain::BackendChain;
 use crate::tools::web::search::config::{
-    ResolvedChain, SearchOptions, load_web_search_config_from_disk, web_search_is_available,
+    ResolvedChain, SearchOptions, effective_web_search_config, load_web_search_config_from_disk,
+    web_search_is_available,
 };
 use crate::tools::web::search::error::SearchError;
-use crate::tools::web::search::response::success_payload;
+use crate::tools::web::search::response::{build_web_search_agent_notes, success_payload};
 
 pub struct WebSearchTool;
 
@@ -64,7 +65,7 @@ impl ToolHandler for WebSearchTool {
                     },
                     "backend": {
                         "type": "string",
-                        "description": "Optional — rarely needed. Auto-selects from configured keys (firecrawl, tavily, searxng, ddgs, …)."
+                        "description": "Optional — omit unless required. Unconfigured backends are ignored and the saved chain is used instead."
                     }
                 },
                 "required": ["query"]
@@ -88,7 +89,7 @@ impl ToolHandler for WebSearchTool {
                 message: e.to_string(),
             })?;
 
-        let cfg = ctx.config.web_search.clone();
+        let cfg = effective_web_search_config(&ctx.config.web_search);
         let resolved = ResolvedChain::resolve(&cfg, args.backend.as_deref())
             .map_err(|e| e.into_tool_error())?;
         let primary = resolved.names.first().cloned().unwrap_or_default();
@@ -112,20 +113,20 @@ impl ToolHandler for WebSearchTool {
             None
         };
 
-        let note = if used_backend == "ddgs" {
-            Some(
-                "DuckDuckGo (ddgs) is the no-key fallback. \
-                 For reliable broad search set SEARXNG_URL, BRAVE_API_KEY, or TAVILY_API_KEY."
-                    .to_string(),
-            )
-        } else {
-            None
-        };
+        let chain_summary = resolved.names.join(" → ");
+        let note = build_web_search_agent_notes(
+            &used_backend,
+            fallback_from.as_deref(),
+            resolved.skipped_tool_override.as_deref(),
+            &chain_summary,
+            &cfg,
+        );
 
         let payload = success_payload(
             &args.query,
             &used_backend,
             fallback_from.as_deref(),
+            resolved.skipped_tool_override.as_deref(),
             note.as_deref(),
             &results,
         );
@@ -133,27 +134,26 @@ impl ToolHandler for WebSearchTool {
         let spill_config = SpillConfig::from(&ctx.config);
         let inline_threshold = web_search_inline_threshold(&spill_config);
         let json_str = payload.to_string();
-        if json_str.len() > inline_threshold {
-            if let Some(written) = write_artifact_proactive(
+        if json_str.len() > inline_threshold
+            && let Some(written) = write_artifact_proactive(
                 "web_search",
                 &json_str,
                 &ctx.session_id,
                 &ctx.cwd,
                 &spill_config,
                 None,
-            ) {
-                return Ok(
-                    web_search_spilled_json(
-                        &args.query,
-                        &used_backend,
-                        fallback_from.as_deref(),
-                        note.as_deref(),
-                        &results,
-                        &written,
-                    )
-                    .to_string(),
-                );
-            }
+            )
+        {
+            return Ok(web_search_spilled_json(
+                &args.query,
+                &used_backend,
+                fallback_from.as_deref(),
+                resolved.skipped_tool_override.as_deref(),
+                note.as_deref(),
+                &results,
+                &written,
+            )
+            .to_string());
         }
 
         Ok(json_str)

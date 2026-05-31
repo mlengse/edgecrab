@@ -93,13 +93,27 @@ impl BackendChain {
             }
 
             match backend.search(query, &opts).await {
+                Ok(results) if results.is_empty() && name == "ddgs" && self.backends.len() > 1 => {
+                    attempts.push((name.clone(), "no results".into()));
+                    tracing::debug!(
+                        backend = %name,
+                        "web_search: ddgs returned empty, trying next in chain"
+                    );
+                }
                 Ok(results) => return Ok((results, backend.name().to_string())),
                 Err(err) if err.is_fallback_eligible() => {
-                    tracing::warn!(
-                        backend = %name,
-                        error = %err,
-                        "web_search: backend unavailable, trying next in chain"
-                    );
+                    if matches!(err.kind, super::error::SearchErrorKind::NotConfigured) {
+                        tracing::debug!(
+                            backend = %name,
+                            "web_search: backend not configured, trying next in chain"
+                        );
+                    } else {
+                        tracing::warn!(
+                            backend = %name,
+                            error = %err,
+                            "web_search: backend unavailable, trying next in chain"
+                        );
+                    }
                     // Only cooldown paid APIs with explicit RPS buckets — not ddgs scrape failures.
                     if matches!(err.kind, super::error::SearchErrorKind::RateLimit)
                         && self.rate_limiter.has_rps_bucket(name)

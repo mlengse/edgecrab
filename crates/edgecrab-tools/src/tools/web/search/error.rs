@@ -11,6 +11,8 @@ pub enum SearchErrorKind {
     Server(u16),
     Network,
     BadRequest(u16),
+    /// Missing API key / endpoint — skip to next backend in chain.
+    NotConfigured,
     Hard,
 }
 
@@ -79,7 +81,19 @@ impl SearchError {
                 | SearchErrorKind::Timeout
                 | SearchErrorKind::Server(_)
                 | SearchErrorKind::Network
+                | SearchErrorKind::NotConfigured
         )
+    }
+
+    /// Missing credentials for a named backend (uses shared setup message text).
+    pub fn not_configured(backend: impl Into<String>) -> Self {
+        let backend = backend.into();
+        let message = super::backend_settings::not_configured_message(&backend);
+        Self {
+            kind: SearchErrorKind::NotConfigured,
+            backend: backend.clone(),
+            message,
+        }
     }
 
     pub fn from_http_status(

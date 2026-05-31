@@ -9628,6 +9628,12 @@ impl App {
                     self.needs_redraw = true;
                 }
                 crate::web_setup_tui::WebSetupAction::Redraw => self.needs_redraw = true,
+                crate::web_setup_tui::WebSetupAction::ChainSaved => {
+                    if let Some(agent) = &self.agent {
+                        self.rt_handle.block_on(agent.reload_web_search_from_disk());
+                    }
+                    self.needs_redraw = true;
+                }
                 crate::web_setup_tui::WebSetupAction::None => {}
             }
             return;
@@ -29546,13 +29552,11 @@ impl App {
         }
 
         frame.render_widget(
-            Paragraph::new(detail)
-                .wrap(Wrap { trim: true })
-                .block(
-                    Block::default()
-                        .borders(Borders::LEFT | Borders::RIGHT)
-                        .title(" Details "),
-                ),
+            Paragraph::new(detail).wrap(Wrap { trim: true }).block(
+                Block::default()
+                    .borders(Borders::LEFT | Borders::RIGHT)
+                    .title(" Details "),
+            ),
             body[1],
         );
 

@@ -122,35 +122,62 @@ async fn e2e_explicit_backend_override_skips_chain() {
 #[tokio::test]
 async fn e2e_brave_free_alias_resolves() {
     let _lock = registry_guard();
-    if std::env::var("BRAVE_API_KEY")
-        .or_else(|_| std::env::var("BRAVE_SEARCH_API_KEY"))
-        .is_ok()
-    {
-        let result = WebSearchTool
-            .execute(
-                json!({"query": "hello", "backend": "brave-free", "max_results": 1}),
-                &test_ctx(),
-            )
-            .await
-            .expect("brave-free with key");
-        let parsed: serde_json::Value = serde_json::from_str(&result).expect("json");
-        assert_eq!(parsed["backend"], "brave");
-        return;
-    }
-    let err = WebSearchTool
+    use edgecrab_tools::config_ref::WebSearchBackendConfigRef;
+    use edgecrab_tools::tools::web::search::backend::SearchResult;
+    use edgecrab_tools::tools::web::search::backends::mock::MockMode;
+
+    let prev_brave = std::env::var("BRAVE_API_KEY").ok();
+    let prev_brave2 = std::env::var("BRAVE_SEARCH_API_KEY").ok();
+    unsafe { std::env::remove_var("BRAVE_API_KEY") };
+    unsafe { std::env::remove_var("BRAVE_SEARCH_API_KEY") };
+
+    register_mock(
+        "brave",
+        MockMode::Success(vec![SearchResult::new(
+            1,
+            "Brave mock",
+            "https://example.com/brave",
+            "snippet",
+            "brave",
+        )]),
+    );
+    let mut cfg = AppConfigRef::default();
+    cfg.web_search.backends.insert(
+        "brave".into(),
+        WebSearchBackendConfigRef {
+            api_key: Some("test-key".into()),
+            ..Default::default()
+        },
+    );
+    let result = WebSearchTool
+        .execute(
+            json!({"query": "hello", "backend": "brave-free", "max_results": 1}),
+            &ctx_with_config(cfg),
+        )
+        .await
+        .expect("brave-free alias resolves when brave is configured");
+    let parsed: serde_json::Value = serde_json::from_str(&result).expect("json");
+    assert_eq!(parsed["backend"], "brave");
+
+    register_ddgs_mock_success();
+    let result = WebSearchTool
         .execute(
             json!({"query": "hello", "backend": "brave-free", "max_results": 1}),
             &test_ctx(),
         )
         .await
-        .expect_err("brave-free without key");
-    let msg = err.to_string();
-    assert!(
-        msg.contains("BRAVE_API_KEY")
-            || msg.contains("not configured")
-            || msg.contains("All web search backends failed"),
-        "unexpected: {msg}"
-    );
+        .expect("brave-free without key degrades to config chain");
+    let parsed: serde_json::Value = serde_json::from_str(&result).expect("json");
+    assert_eq!(parsed["success"], true);
+    assert_eq!(parsed["skipped_tool_override"], "brave-free");
+    assert_eq!(parsed["backend"], "ddgs");
+
+    if let Some(v) = prev_brave {
+        unsafe { std::env::set_var("BRAVE_API_KEY", v) };
+    }
+    if let Some(v) = prev_brave2 {
+        unsafe { std::env::set_var("BRAVE_SEARCH_API_KEY", v) };
+    }
 }
 
 #[tokio::test]
@@ -548,7 +575,8 @@ async fn e2e_ddgs_note_present_on_fallback() {
         .expect("ddgs fallback note");
     let parsed: serde_json::Value = serde_json::from_str(&result).expect("json");
     assert_eq!(parsed["backend"], "ddgs");
-    assert!(parsed["note"].as_str().unwrap_or("").contains("DuckDuckGo"));
+    let note = parsed["note"].as_str().unwrap_or("");
+    assert!(note.contains("fell back"), "note: {note}");
 }
 
 #[tokio::test]
@@ -576,30 +604,50 @@ async fn e2e_invalid_args_empty_query_string() {
 }
 
 #[tokio::test]
-async fn e2e_exa_explicit_unconfigured_fail_fast() {
+async fn e2e_exa_explicit_unconfigured_degrades_to_chain() {
     let _lock = registry_guard();
+    register_ddgs_mock_success();
     let prev = std::env::var("EXA_API_KEY").ok();
     unsafe { std::env::remove_var("EXA_API_KEY") };
-    let err = WebSearchTool
+    let result = WebSearchTool
         .execute(json!({"query": "test", "backend": "exa"}), &test_ctx())
         .await
-        .expect_err("exa without key");
-    assert!(err.to_string().contains("EXA_API_KEY"));
+        .expect("exa without key degrades to config chain");
+    let parsed: serde_json::Value = serde_json::from_str(&result).expect("json");
+    assert_eq!(parsed["success"], true);
+    assert_eq!(parsed["skipped_tool_override"], "exa");
+    assert_eq!(parsed["backend"], "ddgs");
+    assert!(
+        parsed["note"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Ignored unconfigured backend 'exa'")
+    );
     if let Some(v) = prev {
         unsafe { std::env::set_var("EXA_API_KEY", v) };
     }
 }
 
 #[tokio::test]
-async fn e2e_parallel_explicit_unconfigured_fail_fast() {
+async fn e2e_parallel_explicit_unconfigured_degrades_to_chain() {
     let _lock = registry_guard();
+    register_ddgs_mock_success();
     let prev = std::env::var("PARALLEL_API_KEY").ok();
     unsafe { std::env::remove_var("PARALLEL_API_KEY") };
-    let err = WebSearchTool
+    let result = WebSearchTool
         .execute(json!({"query": "test", "backend": "parallel"}), &test_ctx())
         .await
-        .expect_err("parallel without key");
-    assert!(err.to_string().contains("PARALLEL_API_KEY"));
+        .expect("parallel without key degrades to config chain");
+    let parsed: serde_json::Value = serde_json::from_str(&result).expect("json");
+    assert_eq!(parsed["success"], true);
+    assert_eq!(parsed["skipped_tool_override"], "parallel");
+    assert_eq!(parsed["backend"], "ddgs");
+    assert!(
+        parsed["note"]
+            .as_str()
+            .unwrap_or("")
+            .contains("Ignored unconfigured backend 'parallel'")
+    );
     if let Some(v) = prev {
         unsafe { std::env::set_var("PARALLEL_API_KEY", v) };
     }
@@ -644,17 +692,42 @@ async fn e2e_parallel_search_when_key_set() {
 }
 
 #[tokio::test]
-async fn e2e_xai_explicit_unconfigured_fail_fast() {
+async fn e2e_xai_explicit_unconfigured_degrades_to_chain() {
     let _lock = registry_guard();
+    register_ddgs_mock_success();
     let prev = std::env::var("XAI_API_KEY").ok();
     unsafe { std::env::remove_var("XAI_API_KEY") };
-    let err = WebSearchTool
+    let result = WebSearchTool
         .execute(json!({"query": "test", "backend": "xai"}), &test_ctx())
         .await
-        .expect_err("xai without key");
-    assert!(err.to_string().contains("XAI_API_KEY"));
+        .expect("xai without key degrades to config chain");
+    let parsed: serde_json::Value = serde_json::from_str(&result).expect("json");
+    assert_eq!(parsed["success"], true);
+    assert_eq!(parsed["skipped_tool_override"], "xai");
+    assert_eq!(parsed["backend"], "ddgs");
     if let Some(v) = prev {
         unsafe { std::env::set_var("XAI_API_KEY", v) };
+    }
+}
+
+#[tokio::test]
+async fn e2e_env_backend_unconfigured_fail_fast() {
+    let _lock = registry_guard();
+    let prev_key = std::env::var("PARALLEL_API_KEY").ok();
+    let prev_env = std::env::var("EDGECRAB_WEB_SEARCH_BACKEND").ok();
+    unsafe { std::env::remove_var("PARALLEL_API_KEY") };
+    unsafe { std::env::set_var("EDGECRAB_WEB_SEARCH_BACKEND", "parallel") };
+    let err = WebSearchTool
+        .execute(json!({"query": "test"}), &test_ctx())
+        .await
+        .expect_err("env override without key must fail fast");
+    assert!(err.to_string().contains("PARALLEL_API_KEY"));
+    unsafe { std::env::remove_var("EDGECRAB_WEB_SEARCH_BACKEND") };
+    if let Some(v) = prev_env {
+        unsafe { std::env::set_var("EDGECRAB_WEB_SEARCH_BACKEND", v) };
+    }
+    if let Some(v) = prev_key {
+        unsafe { std::env::set_var("PARALLEL_API_KEY", v) };
     }
 }
 

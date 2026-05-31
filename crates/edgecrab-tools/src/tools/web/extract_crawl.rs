@@ -1359,8 +1359,9 @@ impl ToolHandler for WebExtractTool {
                         } else {
                             None
                         };
-                        let doc_value = serde_json::to_value(&document)
-                            .map_err(|e| ToolError::Other(format!("serialize extract document: {e}")))?;
+                        let doc_value = serde_json::to_value(&document).map_err(|e| {
+                            ToolError::Other(format!("serialize extract document: {e}"))
+                        })?;
                         let doc_value = apply_web_extract_content_spill(doc_value, ctx, None);
                         ExtractBatchEntry {
                             url: requested,
@@ -1759,100 +1760,12 @@ fn validate_url(url: &str, tool: &str) -> Result<(), ToolError> {
 
 /// Build a browser-emulating HTTP client with Chrome TLS/HTTP-2 fingerprints (wreq).
 ///
-/// WHY Chrome fingerprint for arbitrary HTML:
-///   CDN bot-detection (Cloudflare, Akamai, DuckDuckGo) matches the JA3/JA4 TLS
-///   fingerprint of the connecting client. A plain `reqwest` client is trivially
-///   identified as non-browser and blocked. wreq with BoringSSL + GREASE passes
-///   these checks. Use this for any fetch from an untrusted/arbitrary URL.
-///
-/// WHY inline TLS config (not wreq-util):
-///   wreq-util is GPL-3.0 — incompatible with this project's Apache-2.0 licence.
-///   Chrome TLS settings (cipher list, sigalgs, curves) are hardcoded inline.
-///
-/// Automatically wires proxy from environment variables via
-/// [`edgecrab_security::proxy::resolve_proxy_url()`] (6-level cascade).
+/// Delegates to the shared DDGS [`crate::tools::web::search::http::build_chrome_client`] /
+/// [`crate::tools::web::search::backends::ddgs::fingerprint`] pool (Apache-2.0, no GPL wreq-util).
 fn build_chrome_client(tool: &str) -> Result<wreq::Client, ToolError> {
-    use wreq::{
-        EmulationProvider, SslCurve,
-        header::{ACCEPT, ACCEPT_LANGUAGE, HeaderMap, HeaderValue, USER_AGENT},
-        tls::{AlpnProtos, TlsConfig, TlsVersion},
-    };
-
-    let tls = TlsConfig::builder()
-        .min_tls_version(TlsVersion::TLS_1_2)
-        .max_tls_version(TlsVersion::TLS_1_3)
-        .cipher_list(concat!(
-            "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:",
-            "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:",
-            "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:",
-            "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:",
-            "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:",
-            "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:",
-            "TLS_RSA_WITH_AES_128_GCM_SHA256:TLS_RSA_WITH_AES_256_GCM_SHA384:",
-            "TLS_RSA_WITH_AES_128_CBC_SHA:TLS_RSA_WITH_AES_256_CBC_SHA"
-        ))
-        .sigalgs_list(concat!(
-            "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:",
-            "ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:",
-            "rsa_pss_rsae_sha512:rsa_pkcs1_sha512"
-        ))
-        .curves(vec![
-            SslCurve::X25519,
-            SslCurve::SECP256R1,
-            SslCurve::SECP384R1,
-        ])
-        .alpn_protos(AlpnProtos::ALL)
-        .grease_enabled(true)
-        .permute_extensions(true)
-        .enable_ech_grease(true)
-        .pre_shared_key(true)
-        .enable_ocsp_stapling(true)
-        .build();
-
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        USER_AGENT,
-        HeaderValue::from_static(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
-             AppleWebKit/537.36 (KHTML, like Gecko) \
-             Chrome/136.0.0.0 Safari/537.36",
-        ),
-    );
-    headers.insert(
-        ACCEPT,
-        HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
-    );
-    headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
-
-    let provider = EmulationProvider::builder()
-        .tls_config(tls)
-        .default_headers(headers)
-        .build();
-
-    let mut builder = wreq::Client::builder()
-        .emulation(provider)
-        .timeout(std::time::Duration::from_secs(15));
-
-    // Wire proxy from environment variables (6-level cascade)
-    if let Some(proxy_url) = edgecrab_security::proxy::resolve_proxy_url(None) {
-        match wreq::Proxy::all(&proxy_url) {
-            Ok(proxy) => {
-                tracing::debug!(url = %proxy_url, "Chrome-emulating client: using proxy");
-                builder = builder.proxy(proxy);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    url = %proxy_url,
-                    error = %e,
-                    "Chrome-emulating client: invalid proxy URL, proceeding without proxy"
-                );
-            }
-        }
-    }
-
-    builder.build().map_err(|e| ToolError::ExecutionFailed {
+    crate::tools::web::search::http::build_chrome_client(15).map_err(|e| ToolError::ExecutionFailed {
         tool: tool.into(),
-        message: format!("Failed to build Chrome-emulating client: {e}"),
+        message: e.message,
     })
 }
 

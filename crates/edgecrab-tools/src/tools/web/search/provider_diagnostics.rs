@@ -353,6 +353,8 @@ mod tests {
     fn resolved_override_from_web_section() {
         let _lock = test_registry_lock();
         reset_registry_for_tests();
+        let _env = super::super::config::EnvBackendGuard::isolate();
+        let _cfg_lock = super::super::test_isolation::web_config_test_lock();
         let _home = EdgecrabHomeGuard::isolated(Some(
             r#"
 web_search:

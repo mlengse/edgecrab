@@ -9,7 +9,7 @@ use serde_json::{Value, json};
 use std::sync::OnceLock;
 
 use crate::tools::web::search::backend::{SearchResult, WebSearchBackend};
-use crate::tools::web::search::backend_settings::resolve_api_key;
+use crate::tools::web::search::backend_settings::require_api_key;
 use crate::tools::web::search::config::SearchOptions;
 use crate::tools::web::search::error::SearchError;
 use crate::tools::web::search::http::{build_api_client, map_reqwest_error, redact_secrets};
@@ -21,10 +21,6 @@ const DEFAULT_MODEL: &str = "grok-4";
 const DEFAULT_BASE: &str = "https://api.x.ai/v1";
 
 static JSON_BLOCK_RE: OnceLock<Regex> = OnceLock::new();
-
-fn xai_api_key(opts: &SearchOptions) -> Option<String> {
-    resolve_api_key(&opts.backend_config, XAI_ENV_KEYS)
-}
 
 fn xai_base_url(opts: &SearchOptions) -> String {
     opts.backend_config
@@ -169,12 +165,7 @@ impl WebSearchBackend for XaiBackend {
         query: &str,
         opts: &SearchOptions,
     ) -> Result<Vec<SearchResult>, SearchError> {
-        let api_key = xai_api_key(opts).ok_or_else(|| {
-            SearchError::hard(
-                self.name(),
-                "XAI_API_KEY is not set. Run `edgecrab auth` or set XAI_API_KEY.",
-            )
-        })?;
+        let api_key = require_api_key(self.name(), &opts.backend_config, XAI_ENV_KEYS)?;
         let base = xai_base_url(opts);
         let limit = opts.max_results();
         let client = build_api_client(opts.timeout_secs.max(30))?;

@@ -45,11 +45,7 @@ fn ctx_in(workspace: &std::path::Path, edgecrab_home: &std::path::Path) -> ToolC
 
 async fn write_then_read(registry: &ToolRegistry, ctx: &ToolContext, path: &str, content: &str) {
     registry
-        .dispatch(
-            "write_file",
-            json!({"path": path, "content": content}),
-            ctx,
-        )
+        .dispatch("write_file", json!({"path": path, "content": content}), ctx)
         .await
         .unwrap_or_else(|e| panic!("write_file {path} failed: {e}"));
 
@@ -74,16 +70,14 @@ async fn e2e_write_read_absolute_tmp_alias() {
     let registry = ToolRegistry::new();
     let ctx = ctx_in(workspace.path(), edgecrab_home.path());
 
-    write_then_read(
-        &registry,
-        &ctx,
-        "/tmp/osint_report.md",
-        "# OSINT report\n",
-    )
-    .await;
+    write_then_read(&registry, &ctx, "/tmp/osint_report.md", "# OSINT report\n").await;
 
     let mapped = edgecrab_home.path().join("tmp/files/osint_report.md");
-    assert!(mapped.is_file(), "mapped file must exist at {}", mapped.display());
+    assert!(
+        mapped.is_file(),
+        "mapped file must exist at {}",
+        mapped.display()
+    );
 }
 
 #[tokio::test]
@@ -130,8 +124,6 @@ async fn e2e_write_read_nested_tmp_files_subdirs_auto_created() {
     )
     .await;
 
-    let mapped = edgecrab_home
-        .path()
-        .join("tmp/files/osint/2026/report.md");
+    let mapped = edgecrab_home.path().join("tmp/files/osint/2026/report.md");
     assert!(mapped.is_file());
 }

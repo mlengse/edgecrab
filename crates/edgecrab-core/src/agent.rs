@@ -1806,6 +1806,23 @@ impl Agent {
         config.moa = moa.sanitized();
     }
 
+    /// Refresh in-memory `web_search` from disk after `/web` chain edits.
+    ///
+    /// Tool dispatch already reads the on-disk chain via [`effective_web_search_config`];
+    /// this keeps the agent snapshot aligned for diagnostics and future turns.
+    pub async fn reload_web_search_from_disk(&self) {
+        let path = crate::config::edgecrab_home().join("config.yaml");
+        let loaded = if path.is_file() {
+            crate::config::AppConfig::load_from(&path)
+                .map(|cfg| cfg.web_search)
+                .unwrap_or_default()
+        } else {
+            crate::config::WebSearchConfig::default()
+        };
+        let mut config = self.config.write().await;
+        config.web_search = loaded;
+    }
+
     /// Current LSP configuration (post-write diagnostics gate + language servers).
     pub async fn lsp_config(&self) -> crate::config::LspConfig {
         self.config.read().await.lsp.clone()

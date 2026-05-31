@@ -7,9 +7,9 @@ use std::path::Path;
 use serde_json::Value;
 
 use super::config::{
-    WebSearchChainUpdate, clear_web_search_chain_in_config, format_search_chain_summary,
-    load_web_search_config_from_disk, load_web_search_config_from_path,
-    persist_web_search_chain_in_config, ResolvedChain,
+    ResolvedChain, WebSearchChainUpdate, clear_web_search_chain_in_config,
+    format_search_chain_summary, load_web_search_config_from_disk,
+    load_web_search_config_from_path, persist_web_search_chain_in_config,
 };
 use super::provider_diagnostics::{capability_label, web_provider_picker_rows};
 use super::web_config::{clear_web_search_section_overrides, clear_web_section_overrides};
@@ -116,11 +116,7 @@ impl WebChainEditor {
     }
 
     pub fn mode_label(&self) -> &'static str {
-        if self.is_auto {
-            "auto"
-        } else {
-            "custom"
-        }
+        if self.is_auto { "auto" } else { "custom" }
     }
 
     pub fn move_item(&mut self, index: usize, delta: i32) -> Result<usize, ChainEditError> {
@@ -244,10 +240,7 @@ pub fn default_chain_for_backend(backend: &str) -> Vec<String> {
 }
 
 /// Persist search routing as `web_search` chain (not `web.search_backend`).
-pub fn persist_search_backend_as_chain(
-    config_path: &Path,
-    backend: &str,
-) -> std::io::Result<()> {
+pub fn persist_search_backend_as_chain(config_path: &Path, backend: &str) -> std::io::Result<()> {
     persist_search_chain_order(config_path, &default_chain_for_backend(backend))
 }
 
@@ -306,9 +299,7 @@ pub fn provider_detail_lines(row: Option<&Value>, id: &str) -> Vec<String> {
     } else if row["configured"].as_bool() == Some(true) {
         lines.push("✓ Credentials found".into());
     } else if id == "ddgs" {
-        lines.push(
-            "No API key. Often last resort — may hit bot checks on some networks.".into(),
-        );
+        lines.push("No API key. Often last resort — may hit bot checks on some networks.".into());
     }
 
     lines
@@ -363,10 +354,7 @@ pub fn order_from_primary_and_fallbacks(primary: &str, fallbacks: &[String]) -> 
 }
 
 pub fn primary_and_fallbacks_from_order(order: &[String]) -> (String, Vec<String>) {
-    let primary = order
-        .first()
-        .cloned()
-        .unwrap_or_else(|| "ddgs".into());
+    let primary = order.first().cloned().unwrap_or_else(|| "ddgs".into());
     let fallbacks = order.iter().skip(1).cloned().collect();
     (primary, fallbacks)
 }
@@ -414,10 +402,10 @@ pub fn reset_web_to_auto(config_path: &Path) -> std::io::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use super::super::web_config::{
-        load_web_tools_config_from_path, persist_web_section_in_config, WebSectionUpdate,
+        WebSectionUpdate, load_web_tools_config_from_path, persist_web_section_in_config,
     };
+    use super::*;
     use tempfile::TempDir;
 
     fn sample_row(id: &str, configured: bool) -> Value {
@@ -464,10 +452,7 @@ mod tests {
         let (p, f) = primary_and_fallbacks_from_order(&order);
         assert_eq!(p, "searxng");
         assert_eq!(f, vec!["brave", "ddgs"]);
-        assert_eq!(
-            order_from_primary_and_fallbacks("searxng", &f),
-            order
-        );
+        assert_eq!(order_from_primary_and_fallbacks("searxng", &f), order);
     }
 
     #[test]

@@ -161,10 +161,7 @@ fn has_recent_critical_tool_failure(messages: &[Message]) -> bool {
     const CRITICAL: &[&str] = &["web_search", "web_extract", "web_crawl"];
     messages.iter().rev().take(12).any(|msg| {
         msg.role == Role::Tool
-            && msg
-                .name
-                .as_deref()
-                .is_some_and(|n| CRITICAL.contains(&n))
+            && msg.name.as_deref().is_some_and(|n| CRITICAL.contains(&n))
             && looks_like_error(&msg.text_content())
     })
 }

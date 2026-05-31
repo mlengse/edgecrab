@@ -359,9 +359,7 @@ fn map_virtual_tmp_path(path: &Path, virtual_tmp_root: Option<&Path>) -> Option<
 
 /// Join a virtual-tmp suffix, stripping a leading separator component if present.
 fn join_virtual_tmp_suffix(tmp_root: &Path, suffix: &Path) -> PathBuf {
-    let trimmed = suffix
-        .strip_prefix(Component::RootDir)
-        .unwrap_or(suffix);
+    let trimmed = suffix.strip_prefix(Component::RootDir).unwrap_or(suffix);
     if trimmed.as_os_str().is_empty() {
         tmp_root.to_path_buf()
     } else {

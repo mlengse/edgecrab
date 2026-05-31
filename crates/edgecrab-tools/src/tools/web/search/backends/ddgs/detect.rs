@@ -1,22 +1,20 @@
-//! Bot-challenge and unusable search HTML detection.
+//! Bot-challenge HTML detection — **diagnostics only** (not used in metasearch hot path).
+//!
+//! Python `ddgs` gates on HTTP status (`200` → parse, `403/429/…` → raise). It does not
+//! inspect HTML for CAPTCHA strings. Metasearch follows that contract; these helpers remain
+//! for tests, `/doctor`, and future observability.
 
-/// True when the response is a CAPTCHA / block page rather than search results (DDG).
+/// True when the response looks like a DDG CAPTCHA interstitial (diagnostic).
 pub fn is_bot_challenge(html: &str) -> bool {
     let lower = html.to_ascii_lowercase();
     lower.contains("anomaly-modal")
         || lower.contains("bots use duckduckgo")
         || lower.contains("sorry, you have been blocked")
         || lower.contains("if this error persists") && lower.contains("duckduckgo.com")
-        || (html.len() < 500
-            && !html.contains("result__a")
-            && !html.contains("b_algo")
-            && lower.contains("duckduckgo"))
 }
 
-/// True when Bing (or generic engines) return a CAPTCHA interstitial instead of SERP HTML.
+/// True when HTML looks blocked **and** contains no parseable SERP markers (diagnostic).
 pub fn is_engine_blocked(html: &str) -> bool {
-    // Ground truth: if organic result markers are present, the page is usable even when
-    // embedded JS mentions turnstile/challenge (common on live Bing SERPs).
     if html.contains("b_algo") || html.contains("result__a") {
         return false;
     }
@@ -42,20 +40,13 @@ mod tests {
     }
 
     #[test]
-    fn detects_short_non_result_page() {
-        assert!(is_bot_challenge(
-            "<html><body>duckduckgo placeholder</body></html>"
-        ));
-    }
-
-    #[test]
     fn real_results_page_is_not_challenge() {
         let html = r#"<a class="result__a" href="https://example.com">Example</a>"#;
         assert!(!is_bot_challenge(html));
     }
 
     #[test]
-    fn detects_bing_captcha_page() {
+    fn detects_bing_captcha_page_without_serp() {
         assert!(is_engine_blocked(
             r#"<html><body>captcha challenge from bing.com</body></html>"#
         ));

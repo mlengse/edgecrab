@@ -1,11 +1,9 @@
-//! Shared SERP text normalization — single place for HTML decode, tag strip, snippet hygiene.
+//! Shared SERP text normalization — Python `ddgs.utils._normalize` / `_normalize_url` parity.
 
 use std::sync::OnceLock;
 
 use regex::Regex;
-
-const MAX_SNIPPET_CHARS: usize = 480;
-const MAX_TITLE_CHARS: usize = 200;
+use unicode_normalization::UnicodeNormalization;
 
 /// Decode common HTML entities (including numeric `&#235;`).
 pub fn decode_html_entities(input: &str) -> String {
@@ -43,60 +41,70 @@ pub fn decode_html_entities(input: &str) -> String {
     out
 }
 
-/// Remove HTML tags and collapse whitespace.
+/// Remove HTML tags — Python `REGEX_STRIP_TAGS.sub("", raw_html)`.
 pub fn strip_html_tags(html: &str) -> String {
     static TAG: OnceLock<Regex> = OnceLock::new();
     let re = TAG.get_or_init(|| Regex::new(r"<[^>]+>").expect("tag regex"));
-    re.replace_all(html, " ")
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
+    re.replace_all(html, "").into_owned()
 }
 
-/// Title shown to the agent — decoded entities, no markup, bounded length.
-pub fn clean_title(raw: &str) -> String {
-    truncate_chars(
-        strip_html_tags(&decode_html_entities(raw)).trim(),
-        MAX_TITLE_CHARS,
-    )
-}
-
-/// Snippet shown to the agent — drops Bing CSS/JS leakage, truncates long blobs.
-pub fn clean_snippet(raw: &str) -> String {
-    let decoded = decode_html_entities(raw);
-    let stripped = strip_html_tags(&decoded);
-    if is_markup_noise(&stripped) {
+/// Python `_normalize`: unescape + strip tags (no truncation, no CSS heuristics).
+pub fn normalize_field(raw: &str) -> String {
+    if raw.is_empty() {
         return String::new();
     }
-    truncate_chars(stripped.trim(), MAX_SNIPPET_CHARS)
+    let decoded = decode_html_entities(raw);
+    strip_html_tags(&decoded).replace('\u{00a0}', " ")
 }
 
-/// True when scraped text is CSS/JS garbage rather than human-readable summary.
-pub fn is_markup_noise(text: &str) -> bool {
-    if text.len() < 40 {
-        return false;
+/// Python `_normalize_url`: unquote + replace spaces with `+`.
+pub fn normalize_url_field(url: &str) -> String {
+    if url.is_empty() {
+        return String::new();
     }
-    static NOISE: OnceLock<Regex> = OnceLock::new();
-    let re = NOISE.get_or_init(|| {
-        Regex::new(
-            r"(?i)(\{[^}]*(?:color|flex-direction|padding|margin)\s*:|#b_results|\.b_imgcap|\.b_algo|var\(--|display\s*:\s*flex)",
-        )
-        .expect("noise regex")
-    });
-    re.is_match(text)
+    percent_unquote(url).replace(' ', "+")
 }
 
-fn truncate_chars(text: &str, max: usize) -> String {
-    if text.len() <= max {
-        return text.to_string();
+fn percent_unquote(input: &str) -> String {
+    let mut bytes = Vec::new();
+    let b = input.as_bytes();
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            if let Ok(hex) = std::str::from_utf8(&b[i + 1..i + 3])
+                && let Ok(byte) = u8::from_str_radix(hex, 16)
+            {
+                bytes.push(byte);
+                i += 3;
+                continue;
+            }
+        } else if b[i] == b'+' {
+            bytes.push(b' ');
+            i += 1;
+            continue;
+        }
+        bytes.push(b[i]);
+        i += 1;
     }
-    let end = text
-        .char_indices()
-        .map(|(i, _)| i)
-        .take_while(|&i| i <= max)
-        .last()
-        .unwrap_or(0);
-    format!("{}…", &text[..end])
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+/// Back-compat aliases used by parsers.
+pub fn clean_title(raw: &str) -> String {
+    normalize_field(raw).trim().to_string()
+}
+
+pub fn clean_snippet(raw: &str) -> String {
+    normalize_field(raw).trim().to_string()
+}
+
+/// Accent-insensitive case fold (Unicode NFKD) — ranked mode only.
+pub fn fold_for_search(s: &str) -> String {
+    decode_html_entities(s)
+        .nfkd()
+        .filter(|c| !unicode_normalization::char::is_combining_mark(*c))
+        .collect::<String>()
+        .to_lowercase()
 }
 
 #[cfg(test)]
@@ -104,20 +112,29 @@ mod tests {
     use super::*;
 
     #[test]
+    fn fold_strips_accents() {
+        assert_eq!(fold_for_search("Raphaël"), "raphael");
+        assert_eq!(fold_for_search("café"), "cafe");
+    }
+
+    #[test]
     fn decodes_numeric_entity_in_title() {
-        assert_eq!(clean_title("Rapha&#235;l MANSUY"), "Raphaël MANSUY");
+        assert_eq!(normalize_field("Rapha&#235;l MANSUY"), "Raphaël MANSUY");
     }
 
     #[test]
-    fn snippet_drops_bing_css_leakage() {
-        let css = ".b_imgcap_altitle{display:flex;flex-direction:row-reverse;gap:var(--smtc-padding)}";
-        assert!(is_markup_noise(css));
-        assert!(clean_snippet(css).is_empty());
+    fn normalize_field_strips_tags_like_python() {
+        assert_eq!(
+            normalize_field("<strong>Rust</strong> lang"),
+            "Rust lang"
+        );
     }
 
     #[test]
-    fn keeps_normal_snippet() {
-        let s = clean_snippet("Rust is a systems programming language focused on safety.");
-        assert!(s.contains("systems programming"));
+    fn normalize_url_replaces_spaces() {
+        assert_eq!(
+            normalize_url_field("https://example.com/a%20b"),
+            "https://example.com/a+b"
+        );
     }
 }

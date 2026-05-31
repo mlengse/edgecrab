@@ -4,11 +4,7 @@ use super::settings::DdgsEngine;
 use crate::tools::web::search::error::SearchError;
 
 /// Map HTTP status from a metasearch engine (never expose raw URLs to users).
-pub fn map_engine_http_status(
-    backend: &str,
-    engine: DdgsEngine,
-    code: u16,
-) -> SearchError {
+pub fn map_engine_http_status(backend: &str, engine: DdgsEngine, code: u16) -> SearchError {
     let label = engine.label();
     match code {
         429 => SearchError::server(
@@ -27,8 +23,16 @@ pub fn map_engine_http_status(
             format!("{label} temporarily unavailable (HTTP {code})."),
         ),
         408 => SearchError::timeout(backend, format!("{label} request timed out.")),
-        500..=599 => SearchError::server(backend, code, format!("{label} server error (HTTP {code}).")),
-        400..=499 => SearchError::bad_request(backend, code, format!("{label} rejected request (HTTP {code}).")),
+        500..=599 => SearchError::server(
+            backend,
+            code,
+            format!("{label} server error (HTTP {code})."),
+        ),
+        400..=499 => SearchError::bad_request(
+            backend,
+            code,
+            format!("{label} rejected request (HTTP {code})."),
+        ),
         _ => SearchError::hard(backend, format!("{label} unexpected HTTP {code}.")),
     }
 }
@@ -39,10 +43,7 @@ pub fn map_transport_error(backend: &str, engine: DdgsEngine, err: &str) -> Sear
     if lower.contains("time") {
         SearchError::timeout(backend, format!("{} request timed out.", engine.label()))
     } else {
-        SearchError::network(
-            backend,
-            format!("{} network error.", engine.label()),
-        )
+        SearchError::network(backend, format!("{} network error.", engine.label()))
     }
 }
 

@@ -8,8 +8,8 @@
 mod common;
 
 use common::{
-    DEFAULT_SEARXNG_DOCKER_URL, apply_searxng_docker_env, ctx_with_config,
-    register_ddgs_mock_success, register_ddgs_mock_fail, register_mock, registry_guard, searxng_docker_url_if_ready,
+    DEFAULT_SEARXNG_DOCKER_URL, apply_searxng_docker_env, ctx_with_config, register_ddgs_mock_fail,
+    register_ddgs_mock_success, register_mock, registry_guard, searxng_docker_url_if_ready,
     searxng_json_api_ready, test_ctx,
 };
 use edgecrab_tools::config_ref::WebSearchBackendConfigRef;
@@ -48,9 +48,10 @@ async fn e2e_ddgs_search_without_api_key() {
             }
             eprintln!("E2E DDGS proof: {body}");
         }
-        Err(e) if e.to_string().contains("bot-challenge")
-            || e.to_string().contains("bot challenge")
-            || e.to_string().contains("blocked this request") =>
+        Err(e)
+            if e.to_string().contains("bot-challenge")
+                || e.to_string().contains("bot challenge")
+                || e.to_string().contains("blocked this request") =>
         {
             eprintln!(
                 "Skipping: DDG returned bot-challenge in this environment (use SEARXNG_URL or BRAVE_API_KEY for reliable live search)"
@@ -97,10 +98,11 @@ async fn e2e_ddgs_person_query_never_returns_spam_hits() {
             }
             eprintln!("E2E person query proof: {body}");
         }
-        Err(e) if e.to_string().contains("bot-challenge")
-            || e.to_string().contains("bot challenge")
-            || e.to_string().contains("blocked this request")
-            || e.to_string().contains("All metasearch engines failed") =>
+        Err(e)
+            if e.to_string().contains("bot-challenge")
+                || e.to_string().contains("bot challenge")
+                || e.to_string().contains("blocked this request")
+                || e.to_string().contains("All metasearch engines failed") =>
         {
             eprintln!("Skipping or blocked (acceptable): {e}");
         }

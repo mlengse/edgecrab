@@ -83,7 +83,10 @@ impl WebSetupTui {
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> WebSetupAction {
         use crossterm::event::KeyModifiers;
 
-        if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
             return WebSetupAction::None;
         }
 
@@ -124,20 +127,12 @@ impl WebSetupTui {
                 WebSetupAction::Redraw
             }
             KeyCode::Char('[') | KeyCode::Char('u') | KeyCode::Char('U') => {
-                self.move_chain_item(-1);
-                WebSetupAction::Redraw
+                self.move_chain_item(-1)
             }
-            KeyCode::Char(']') | KeyCode::Char('d') | KeyCode::Char('D') => {
-                self.move_chain_item(1);
-                WebSetupAction::Redraw
-            }
-            KeyCode::Enter => {
-                self.add_selected_available();
-                WebSetupAction::Redraw
-            }
+            KeyCode::Char(']') | KeyCode::Char('d') | KeyCode::Char('D') => self.move_chain_item(1),
+            KeyCode::Enter => self.add_selected_available(),
             KeyCode::Char('x') | KeyCode::Char('X') | KeyCode::Delete | KeyCode::Backspace => {
-                self.remove_selected_chain_item();
-                WebSetupAction::Redraw
+                self.remove_selected_chain_item()
             }
             _ => WebSetupAction::None,
         }
@@ -152,21 +147,31 @@ impl WebSetupTui {
             }
             KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
                 self.toast = match edgecrab_tools::reset_web_to_auto(&self.config_path) {
-                    Ok(()) => Some("Auto mode — EdgeCrab picks the best configured backends.".into()),
+                    Ok(()) => {
+                        Some("Auto mode — EdgeCrab picks the best configured backends.".into())
+                    }
                     Err(e) => Some(format!("Reset failed: {e}")),
                 };
                 self.reload();
                 self.screen = WebSetupScreen::Configure;
-                WebSetupAction::Redraw
+                if self
+                    .toast
+                    .as_ref()
+                    .is_some_and(|t| !t.starts_with("Reset failed"))
+                {
+                    WebSetupAction::ChainSaved
+                } else {
+                    WebSetupAction::Redraw
+                }
             }
             _ => WebSetupAction::None,
         }
     }
 
-    fn move_chain_item(&mut self, delta: i32) {
+    fn move_chain_item(&mut self, delta: i32) -> WebSetupAction {
         let Some(WebListRow::Chain { index, .. }) = self.row_at(self.list_cursor) else {
             self.toast = Some("Select a chain row, then press [ or ] to reorder.".into());
-            return;
+            return WebSetupAction::Redraw;
         };
         match self.editor.move_item(index, delta) {
             Ok(new_index) => {
@@ -178,19 +183,23 @@ impl WebSetupTui {
                             self.editor.order[new_index],
                             new_index + 1
                         ));
+                        WebSetupAction::ChainSaved
                     }
-                    Err(e) => self.toast = Some(format!("Save failed: {e}")),
+                    Err(e) => {
+                        self.toast = Some(format!("Save failed: {e}"));
+                        WebSetupAction::Redraw
+                    }
                 }
             }
-            Err(_) => {}
+            Err(_) => WebSetupAction::Redraw,
         }
     }
 
-    fn add_selected_available(&mut self) {
+    fn add_selected_available(&mut self) -> WebSetupAction {
         let Some(WebListRow::Available { id }) = self.row_at(self.list_cursor) else {
             self.toast =
                 Some("Highlight a provider under “Add to chain”, then press Enter.".into());
-            return;
+            return WebSetupAction::Redraw;
         };
         match self.editor.add_backend(&id) {
             Ok(()) => match self.editor.persist(&self.config_path) {
@@ -200,33 +209,49 @@ impl WebSetupTui {
                     if let Some(pos) = self.editor.order.iter().position(|x| x == &id) {
                         self.list_cursor = pos;
                     }
+                    WebSetupAction::ChainSaved
                 }
                 Err(e) => {
-                    let _ = self.editor.remove_at(self.editor.order.len().saturating_sub(1));
+                    let _ = self
+                        .editor
+                        .remove_at(self.editor.order.len().saturating_sub(1));
                     self.toast = Some(format!("Save failed: {e}"));
+                    WebSetupAction::Redraw
                 }
             },
-            Err(e) => self.toast = Some(e.message().into()),
+            Err(e) => {
+                self.toast = Some(e.message().into());
+                WebSetupAction::Redraw
+            }
         }
     }
 
-    fn remove_selected_chain_item(&mut self) {
+    fn remove_selected_chain_item(&mut self) -> WebSetupAction {
         let Some(WebListRow::Chain { index, .. }) = self.row_at(self.list_cursor) else {
             self.toast = Some("Select a chain row to remove (x).".into());
-            return;
+            return WebSetupAction::Redraw;
         };
         match self.editor.remove_at(index) {
             Ok(id) => {
-                self.list_cursor = self.list_cursor.min(self.list_row_count().saturating_sub(1));
+                self.list_cursor = self
+                    .list_cursor
+                    .min(self.list_row_count().saturating_sub(1));
                 match self.editor.persist(&self.config_path) {
-                    Ok(()) => self.toast = Some(format!("Removed {id} from chain")),
+                    Ok(()) => {
+                        self.toast = Some(format!("Removed {id} from chain"));
+                        WebSetupAction::ChainSaved
+                    }
                     Err(e) => {
                         self.reload();
                         self.toast = Some(format!("Save failed: {e}"));
+                        WebSetupAction::Redraw
                     }
                 }
             }
-            Err(e) => self.toast = Some(e.message().into()),
+            Err(e) => {
+                self.toast = Some(e.message().into());
+                WebSetupAction::Redraw
+            }
         }
     }
 
@@ -319,11 +344,19 @@ impl WebSetupTui {
         ))));
 
         for (i, id) in self.editor.order.iter().enumerate() {
-            let is_cursor = self.row_at(self.list_cursor) == Some(WebListRow::Chain {
-                index: i,
-                id: id.clone(),
-            });
-            items.push(chain_list_item(self, id, i, is_cursor, accent, self.editor.is_auto));
+            let is_cursor = self.row_at(self.list_cursor)
+                == Some(WebListRow::Chain {
+                    index: i,
+                    id: id.clone(),
+                });
+            items.push(chain_list_item(
+                self,
+                id,
+                i,
+                is_cursor,
+                accent,
+                self.editor.is_auto,
+            ));
         }
 
         let available = self.editor.available_ids();
@@ -461,7 +494,10 @@ fn available_list_item(
 
 fn selector_marker(is_cursor: bool, accent: Color) -> Span<'static> {
     if is_cursor {
-        Span::styled(" › ", Style::default().fg(accent).add_modifier(Modifier::BOLD))
+        Span::styled(
+            " › ",
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        )
     } else {
         Span::raw("   ")
     }
@@ -472,6 +508,8 @@ pub enum WebSetupAction {
     None,
     Redraw,
     Close,
+    /// Chain persisted to config.yaml — caller should sync agent snapshot.
+    ChainSaved,
 }
 
 #[cfg(test)]
@@ -480,8 +518,12 @@ mod tests {
 
     fn test_setup() -> WebSetupTui {
         let mut setup = WebSetupTui::new(PathBuf::from("/tmp/config.yaml"));
-        setup.editor.catalog.chain_eligible_ids =
-            vec!["searxng".into(), "brave".into(), "firecrawl".into(), "ddgs".into()];
+        setup.editor.catalog.chain_eligible_ids = vec![
+            "searxng".into(),
+            "brave".into(),
+            "firecrawl".into(),
+            "ddgs".into(),
+        ];
         setup.editor.order = vec!["searxng".into(), "ddgs".into()];
         setup.editor.is_auto = false;
         setup.list_cursor = 1;
@@ -515,6 +557,9 @@ mod tests {
                 id: "searxng".into()
             })
         );
-        assert!(matches!(setup.row_at(2), Some(WebListRow::Available { .. })));
+        assert!(matches!(
+            setup.row_at(2),
+            Some(WebListRow::Available { .. })
+        ));
     }
 }

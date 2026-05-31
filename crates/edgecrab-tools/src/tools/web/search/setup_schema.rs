@@ -77,7 +77,7 @@ pub fn setup_schema_for_backend(name: &str) -> SetupSchema {
         "ddgs" => SetupSchema {
             name: "DuckDuckGo (ddgs)".into(),
             badge: "free · no key · search only".into(),
-            tag: "Native Rust metasearch (Bing + DDG HTML/lite). No API key. Optional: DDGS_REGION, DDGS_PROXY.".into(),
+            tag: "Native Rust metasearch (Bing). Env: DDGS_REGION, DDGS_PROXY, DDGS_IMPERSONATE, DDGS_IMPERSONATE_OS.".into(),
             env_vars: vec![
                 SetupEnvVar::new(
                     "DDGS_REGION",

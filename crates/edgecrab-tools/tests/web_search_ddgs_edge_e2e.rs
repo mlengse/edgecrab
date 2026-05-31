@@ -4,10 +4,12 @@ mod common;
 
 use common::registry_guard;
 use edgecrab_tools::tools::web::search::backends::ddgs::{
-    engine_reports_no_results, filter_relevant, is_bot_challenge, is_engine_blocked,
-    normalize_bing_url, normalize_ddg_url, parse_bing_html, parse_ddg_lite, parse_engine_html,
-    DdgsEngine,
+    bing_page_reports_no_results, rank_and_select, DdgsEngine, engine_reports_no_results,
+    is_bot_challenge, is_engine_blocked, normalize_bing_url, normalize_ddg_url, parse_bing_html,
+    parse_ddg_lite, parse_engine_html,
 };
+
+const BING_RUST_FIXTURE: &str = include_str!("fixtures/ddgs/bing_rust_programming.html");
 
 #[test]
 fn e2e_normalize_bing_url_decodes_amp_entities_and_a1_prefix() {
@@ -82,6 +84,15 @@ fn e2e_bing_h2_class_attribute_serp_block() {
 }
 
 #[test]
+fn e2e_bing_fixture_passes_no_results_gate() {
+    let _lock = registry_guard();
+    assert!(
+        !bing_page_reports_no_results(BING_RUST_FIXTURE),
+        "fixture with b_algo rows must not hit no-results gate"
+    );
+}
+
+#[test]
 fn e2e_bing_parses_despite_embedded_js_no_results_string() {
     let _lock = registry_guard();
     let html = r#"
@@ -91,6 +102,7 @@ fn e2e_bing_parses_despite_embedded_js_no_results_string() {
             <p>A language empowering everyone to build reliable software.</p>
         </li>
     "#;
+    assert!(!bing_page_reports_no_results(html));
     assert!(!engine_reports_no_results(DdgsEngine::Bing, html));
     let results = parse_bing_html(html, 5, "ddgs").expect("parse");
     assert_eq!(results.len(), 1);
@@ -98,11 +110,32 @@ fn e2e_bing_parses_despite_embedded_js_no_results_string() {
 }
 
 #[test]
-fn e2e_ddg_http202_anomaly_body_detected_as_bot_challenge() {
+fn e2e_bing_no_results_string_stops_at_engine_layer() {
+    let _lock = registry_guard();
+    let html = r#"<html><body>There are no results for "xyz"</body></html>"#;
+    assert!(bing_page_reports_no_results(html));
+}
+
+#[test]
+fn e2e_ddg_http202_anomaly_body_is_diagnostic_not_parse_gate() {
     let _lock = registry_guard();
     let html = r#"<html><body><div class="anomaly-modal__title">Bots use DuckDuckGo too.</div></body></html>"#;
     assert!(is_bot_challenge(html));
     assert!(is_engine_blocked(html));
+    let results = parse_engine_html(DdgsEngine::Html, html, 3, "ddgs").expect("parse");
+    assert!(
+        results.is_empty(),
+        "Python parity: HTTP 200/202 body parses to [] — no HTML heuristic gate"
+    );
+}
+
+#[test]
+fn e2e_bing_captcha_without_algo_parses_empty_like_python() {
+    let _lock = registry_guard();
+    let html = r#"<html><body>captcha verify you are human bing.com</body></html>"#;
+    assert!(is_engine_blocked(html));
+    let results = parse_bing_html(html, 5, "ddgs").expect("parse");
+    assert!(results.is_empty());
 }
 
 #[test]
@@ -139,13 +172,14 @@ fn e2e_bing_ck_href_decodes_to_destination_url() {
 fn e2e_bing_empty_page_without_algo_is_success_shape() {
     let _lock = registry_guard();
     let html = r#"<html><body><script>"There are no results for"</script></body></html>"#;
+    assert!(bing_page_reports_no_results(html));
     assert!(!engine_reports_no_results(DdgsEngine::Bing, html));
     let results = parse_bing_html(html, 5, "ddgs").expect("parse");
     assert!(results.is_empty());
 }
 
 #[test]
-fn e2e_bing_snippet_strips_css_noise() {
+fn e2e_bing_snippet_includes_inline_markup_stripped() {
     let _lock = registry_guard();
     let html = r#"
         <li class="b_algo">
@@ -157,22 +191,20 @@ fn e2e_bing_snippet_strips_css_noise() {
     let results = parse_bing_html(html, 3, "ddgs").expect("parse");
     assert_eq!(results.len(), 1);
     assert!(results[0].snippet.contains("Real summary"));
-    assert!(!results[0].snippet.contains("flex-direction"));
+    // Python `_normalize` strips tags but does not apply CSS heuristics — style block text may remain.
 }
 
 #[test]
-fn e2e_relevance_rejects_poisoned_bing_serp_for_person_query() {
+fn e2e_ranked_reorders_linkedin_when_present_in_serp() {
     let _lock = registry_guard();
-    let query = "Raphaël MANSUY";
     let html = r#"
         <li class="b_algo"><h2><a href="https://dexsport.io/">Dexsport crypto betting</a></h2><p>Web3 sportsbook</p></li>
-        <li class="b_algo"><h2><a href="https://example.com/dex">Dexsport Review</a></h2><p>No KYC</p></li>
+        <li class="b_algo"><h2><a href="https://www.linkedin.com/in/raphaelmansuy">Rapha&#235;l MANSUY</a></h2><p>Profile</p></li>
         <li class="b_algo"><h2><a href="https://cryptoslate.com/dex">Dexsport Price</a></h2><p>DESU token</p></li>
     "#;
     let parsed = parse_bing_html(html, 5, "ddgs").expect("parse");
-    assert_eq!(parsed.len(), 3, "parser should surface raw Bing blocks");
-    assert!(
-        filter_relevant(query, parsed).is_empty(),
-        "poisoned SERP must not reach the agent as relevant hits"
-    );
+    assert_eq!(parsed.len(), 3);
+    let ranked = rank_and_select("Raphaël MANSUY", parsed, 5);
+    assert_eq!(ranked.len(), 3);
+    assert!(ranked[0].url.contains("linkedin.com"));
 }

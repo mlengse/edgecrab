@@ -3,7 +3,9 @@
 mod common;
 
 use common::registry_guard;
-use edgecrab_tools::tools::web::search::backends::ddgs::{normalize_ddg_url, parse_bing_html, parse_ddg_html};
+use edgecrab_tools::tools::web::search::backends::ddgs::{
+    normalize_ddg_url, parse_bing_html, parse_ddg_html,
+};
 use edgecrab_tools::tools::web::search::get_web_search_backend;
 
 #[test]

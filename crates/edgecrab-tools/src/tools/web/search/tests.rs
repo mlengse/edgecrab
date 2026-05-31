@@ -91,6 +91,7 @@ async fn chain_fallback_policy_end_to_end() {
     reset_registry_for_tests();
     register_web_search_backend(Arc::new(MockBackend::new("fail-a", MockMode::Network)));
     register_web_search_backend(Arc::new(MockBackend::new("fail-b", MockMode::Server(503))));
+    register_web_search_backend(Arc::new(MockBackend::new("ddgs", MockMode::Network)));
     let cfg = WebSearchConfigRef {
         primary: "fail-a".into(),
         fallbacks: vec!["fail-b".into()],
@@ -114,6 +115,7 @@ fn empty_results_is_not_an_error() {
 
 #[test]
 fn resolved_chain_honors_primary_and_fallbacks() {
+    let _lock = web_config_test_lock();
     let _env = EnvBackendGuard::isolate();
     let prev_searx = std::env::var("SEARXNG_URL").ok();
     let prev_brave = std::env::var("BRAVE_API_KEY").ok();
@@ -224,6 +226,7 @@ fn search_error_fallback_eligibility() {
     assert!(!SearchError::bad_request("b", 400, "x").is_fallback_eligible());
     assert!(!SearchError::bad_request("b", 403, "x").is_fallback_eligible());
     assert!(!SearchError::hard("b", "x").is_fallback_eligible());
+    assert!(SearchError::not_configured("parallel").is_fallback_eligible());
 }
 
 #[tokio::test]
@@ -247,6 +250,34 @@ async fn empty_results_from_mock_is_success() {
         .expect("empty is success");
     assert_eq!(used, "empty-mock");
     assert!(results.is_empty());
+}
+
+#[tokio::test]
+async fn ddgs_empty_falls_through_to_next_backend() {
+    let _lock = test_registry_lock();
+    let _env = EnvBackendGuard::isolate();
+    reset_registry_for_tests();
+    register_web_search_backend(Arc::new(MockBackend::new(
+        "ddgs",
+        MockMode::Success(vec![]),
+    )));
+    register_web_search_backend(Arc::new(MockBackend::new(
+        "ok-mock",
+        MockMode::Success(vec![sample_result()]),
+    )));
+    let cfg = WebSearchConfigRef {
+        primary: "ddgs".into(),
+        fallbacks: vec!["ok-mock".into()],
+        ..Default::default()
+    };
+    let resolved = ResolvedChain::resolve(&cfg, None).expect("resolve");
+    let chain = BackendChain::from_resolved(&resolved).expect("chain");
+    let (results, used) = chain
+        .search("Raphaël MANSUY", SearchOptions::default())
+        .await
+        .expect("ok-mock after empty ddgs");
+    assert_eq!(used, "ok-mock");
+    assert_eq!(results.len(), 1);
 }
 
 #[tokio::test]
@@ -416,6 +447,7 @@ async fn explicit_unconfigured_backend_falls_back_to_ddgs() {
         ..Default::default()
     };
     let resolved = ResolvedChain::resolve(&cfg, Some("searxng")).expect("resolve");
+    assert_eq!(resolved.skipped_tool_override.as_deref(), Some("searxng"));
     assert!(
         !resolved.names.iter().any(|n| n == "searxng"),
         "unconfigured searxng must not remain in chain: {:?}",
@@ -442,7 +474,7 @@ fn hermes_data_web_envelope() {
         "snippet",
         "mock",
     )];
-    let payload = success_payload("q", "mock", None, None, &rows);
+    let payload = success_payload("q", "mock", None, None, None, &rows);
     let web = payload
         .get("data")
         .and_then(|d| d.get("web"))

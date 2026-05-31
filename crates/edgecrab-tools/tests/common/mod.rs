@@ -82,6 +82,33 @@ pub fn ctx_with_config(cfg: AppConfigRef) -> ToolContext {
     ctx
 }
 
+/// RAII guard — sets `EDGECRAB_HOME` for the duration of a test.
+pub struct EdgecrabHomeGuard {
+    previous: Option<String>,
+}
+
+impl EdgecrabHomeGuard {
+    pub fn set(path: &std::path::Path) -> Self {
+        let previous = std::env::var("EDGECRAB_HOME").ok();
+        unsafe { std::env::set_var("EDGECRAB_HOME", path) };
+        Self { previous }
+    }
+}
+
+impl Drop for EdgecrabHomeGuard {
+    fn drop(&mut self) {
+        unsafe { std::env::remove_var("EDGECRAB_HOME") };
+        if let Some(value) = &self.previous {
+            unsafe { std::env::set_var("EDGECRAB_HOME", value) };
+        }
+    }
+}
+
+/// Alias for [`EdgecrabHomeGuard::set`].
+pub fn edgecrab_home_guard(path: &std::path::Path) -> EdgecrabHomeGuard {
+    EdgecrabHomeGuard::set(path)
+}
+
 pub fn register_mock(
     name: &'static str,
     mode: edgecrab_tools::tools::web::search::backends::mock::MockMode,
