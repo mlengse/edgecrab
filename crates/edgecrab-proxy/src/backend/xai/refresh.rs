@@ -131,7 +131,7 @@ pub async fn resolve_xai_credentials_async(
 
     let refresh_token = refresh_token_from_state(&state).ok_or_else(|| {
         ProxyError::UpstreamAuth(
-            "xAI OAuth: no refresh_token — run `hermes auth add xai-oauth`".into(),
+            "xAI OAuth: no refresh_token — run `edgecrab auth add xai-oauth` or `edgecrab auth add grok`".into(),
         )
     })?;
 

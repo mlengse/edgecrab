@@ -9664,6 +9664,12 @@ impl App {
                 | crate::proxy_setup_tui::ProxySetupAction::ConfigSaved => {
                     self.needs_redraw = true;
                 }
+                crate::proxy_setup_tui::ProxySetupAction::RunOAuthLogin(target) => {
+                    self.run_login_target_with_terminal_handoff(target, false, false);
+                    self.proxy_setup.toast =
+                        Some("OAuth login finished — check ✓ on the preset.".into());
+                    self.needs_redraw = true;
+                }
                 crate::proxy_setup_tui::ProxySetupAction::None => {}
             }
             return;
@@ -12554,10 +12560,30 @@ impl App {
                 self.handle_paste(path);
             }
             CommandResult::AuthCommand(command) => {
-                if let crate::cli_args::AuthCommand::Login { target } = &command {
-                    self.run_login_target_with_terminal_handoff(
+                let oauth_handoff = match &command {
+                    crate::cli_args::AuthCommand::Login {
+                        target,
+                        no_browser,
+                        manual_paste,
+                    } => Some((
                         target.as_deref().unwrap_or("copilot"),
-                    );
+                        *no_browser,
+                        *manual_paste,
+                    )),
+                    crate::cli_args::AuthCommand::Add {
+                        target,
+                        token,
+                        no_browser,
+                        manual_paste,
+                    } if token.is_none()
+                        && crate::auth_cmd::target_uses_interactive_oauth(target) =>
+                    {
+                        Some((target.as_str(), *no_browser, *manual_paste))
+                    }
+                    _ => None,
+                };
+                if let Some((target, no_browser, manual_paste)) = oauth_handoff {
+                    self.run_login_target_with_terminal_handoff(target, no_browser, manual_paste);
                 } else {
                     match self
                         .rt_handle
@@ -12570,7 +12596,7 @@ impl App {
                 }
             }
             CommandResult::LoginTarget(target) => {
-                self.run_login_target_with_terminal_handoff(&target);
+                self.run_login_target_with_terminal_handoff(&target, false, false);
             }
             CommandResult::LogoutTarget(target) => {
                 match self
@@ -21456,7 +21482,12 @@ impl App {
         action_result
     }
 
-    fn run_login_target_with_terminal_handoff(&mut self, raw_target: &str) {
+    fn run_login_target_with_terminal_handoff(
+        &mut self,
+        raw_target: &str,
+        no_browser: bool,
+        manual_paste: bool,
+    ) {
         let target = raw_target.trim().to_string();
         let handle = self.rt_handle.clone();
         let result = self.with_tui_suspended(|stdout| {
@@ -21465,7 +21496,9 @@ impl App {
                 "EdgeCrab login",
                 "Requesting a fresh login code...",
             )?;
-            handle.block_on(async { crate::auth_cmd::login_target_capture(&target).await })
+            handle.block_on(async {
+                crate::auth_cmd::login_target_capture(&target, no_browser, manual_paste).await
+            })
         });
 
         match result {

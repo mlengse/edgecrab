@@ -24,6 +24,8 @@ pub enum ProxySetupAction {
     Close,
     /// Config saved — show toast only.
     ConfigSaved,
+    /// Suspend TUI and run `edgecrab auth login <target>` (Copilot-style handoff).
+    RunOAuthLogin(&'static str),
 }
 
 pub struct ProxySetupTui {
@@ -155,7 +157,12 @@ impl ProxySetupTui {
                 recipe.default_alias, recipe.key
             )),
             Line::from(proxy_hub::format_recipe_auth_line(recipe)),
-            Line::from(format!("Hermes: {}", recipe.hermes_auth_cmd)),
+            Line::from(format!("CLI: {}", recipe.hermes_auth_cmd)),
+            Line::from(if probe_oauth_auth(recipe) == AuthProbe::Ready {
+                "TUI: signed in — Enter enables preset".to_string()
+            } else {
+                "TUI: press a to sign in (browser OAuth)".to_string()
+            }),
             Line::from(""),
             Line::from(if enabled {
                 "Config: preset enabled in config.yaml"
@@ -189,7 +196,8 @@ impl ProxySetupTui {
 
     pub fn confirm_lines(&self) -> Vec<Line<'static>> {
         let recipe = self.pending_recipe.unwrap_or_else(|| self.selected_recipe());
-        vec![
+        let auth = proxy_hub::format_recipe_auth_line(recipe);
+        let mut lines = vec![
             Line::from(Span::styled(
                 format!("Enable {}?", recipe.display_name),
                 Style::default().fg(PROXY_ACCENT),
@@ -200,9 +208,20 @@ impl ProxySetupTui {
             )),
             Line::from(self.config_path.display().to_string()),
             Line::from("Creates proxy token if missing."),
+            Line::from(auth),
             Line::from(""),
             Line::from("y / Enter — confirm   n / Esc — cancel"),
-        ]
+        ];
+        if probe_oauth_auth(recipe) != AuthProbe::Ready {
+            lines.insert(
+                5,
+                Line::from(Span::styled(
+                    "Tip: press a on the preset list to sign in first.",
+                    Style::default().fg(Color::Rgb(255, 200, 120)),
+                )),
+            );
+        }
+        lines
     }
 
     pub fn handle_key(&mut self, key: crossterm::event::KeyEvent) -> ProxySetupAction {
@@ -244,6 +263,18 @@ impl ProxySetupTui {
                 if n > 0 {
                     self.list_cursor = (self.list_cursor + 1) % n;
                 }
+                ProxySetupAction::Redraw
+            }
+            KeyCode::Char('a') | KeyCode::Char('A') | KeyCode::Char('l') | KeyCode::Char('L') => {
+                let recipe = self.selected_recipe();
+                if probe_oauth_auth(recipe) == AuthProbe::Ready {
+                    self.toast = Some("Already signed in.".into());
+                    return ProxySetupAction::Redraw;
+                }
+                if let Some(target) = proxy_hub::oauth_login_target(recipe) {
+                    return ProxySetupAction::RunOAuthLogin(target);
+                }
+                self.toast = Some("No OAuth login for this preset.".into());
                 ProxySetupAction::Redraw
             }
             KeyCode::Enter | KeyCode::Char('e') | KeyCode::Char('E') => {
@@ -291,7 +322,7 @@ impl ProxySetupTui {
 
     pub fn help_line() -> Line<'static> {
         Line::from(Span::styled(
-            " ↑↓ move · Enter enable · r refresh · Esc close ",
+            " ↑↓ move · a sign in · Enter enable · r refresh · Esc close ",
             Style::default().fg(Color::DarkGray),
         ))
     }

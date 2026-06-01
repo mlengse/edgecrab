@@ -35,7 +35,7 @@ pub const RECIPE_XAI: BuiltinRecipe = BuiltinRecipe {
     auth_provider: "xai-oauth",
     base_url: "https://api.x.ai/v1",
     default_alias: "grok",
-    hermes_auth_cmd: "hermes auth add xai-oauth --type oauth",
+    hermes_auth_cmd: "edgecrab auth add grok",
 };
 
 pub const ALL_RECIPES: &[BuiltinRecipe] = &[RECIPE_NOUS, RECIPE_XAI];

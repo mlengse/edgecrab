@@ -60,7 +60,7 @@ EdgeCrab: requires `~/.edgecrab/proxy-token` (or `proxy.token_path`) — stricte
 | Default `--provider` | `nous` | none (dual-mode); use `--provider` or `proxy.default_forward_upstream` |
 | CLI surface | `start` / `status` / `providers` | + `setup`, `enable`, `doctor`, `client`, `token`, TUI `/proxy` |
 | Mode B API-key bridge | not present | `wire/` + `LLMProvider` |
-| Provider OAuth login | `hermes auth add …` | Nous: `edgecrab auth add nous` (024); xAI still `hermes auth add xai-oauth` until 024 xAI login |
+| Provider OAuth login | `hermes auth add …` | Nous: `edgecrab auth add nous`; Grok: `edgecrab auth add grok` (024) |
 
 ## Cross-References
 

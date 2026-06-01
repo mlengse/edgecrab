@@ -18,6 +18,7 @@ pub mod conversation;
 pub mod gateway_home;
 pub mod goal_judge;
 pub mod goals;
+pub mod oauth;
 pub mod model_catalog;
 pub mod model_discovery;
 pub mod model_router;

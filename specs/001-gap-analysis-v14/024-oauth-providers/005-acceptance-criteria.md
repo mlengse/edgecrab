@@ -8,6 +8,15 @@
 - [x] Mock portal test: `device_flow_round_trip_mock_portal`.
 - [x] Proxy `NousPortal` adapter refresh-on-401 + invoke JWT (008 e2e).
 
+## xAI Grok / SuperGrok (implemented subset)
+
+- [x] `edgecrab auth add grok` / `xai-oauth` runs PKCE loopback OAuth (Hermes `auth.py` parity).
+- [x] Tokens stored under `providers.xai-oauth` with `discovery` + `oauth_pkce` mode.
+- [x] Token exchange sends `code_verifier` and echoes `code_challenge` (xAI #26990).
+- [x] `edgecrab auth status grok` / `remove grok` / TUI `/auth` equivalents.
+- [x] Mock tests: `token_exchange_round_trip_mock_auth`, loopback callback test.
+- [x] Proxy `XaiOauth` adapter refresh-on-401 (008 e2e).
+
 ## Full 024 — Functional (not done)
 
 - [ ] `/login claude-pro` opens browser → PKCE round trip → token

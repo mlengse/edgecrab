@@ -2534,6 +2534,10 @@ mod tests {
             Some(CommandResult::LoginTarget(target)) => assert_eq!(target, "copilot"),
             _ => panic!("expected LoginTarget"),
         }
+        match reg.dispatch("/login grok") {
+            Some(CommandResult::LoginTarget(target)) => assert_eq!(target, "grok"),
+            _ => panic!("expected LoginTarget for /login grok"),
+        }
         match reg.dispatch("/logout provider/openai") {
             Some(CommandResult::LogoutTarget(target)) => {
                 assert_eq!(target.as_deref(), Some("provider/openai"))

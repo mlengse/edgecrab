@@ -14,6 +14,7 @@
 #![deny(clippy::unwrap_used)]
 
 pub mod auth;
+pub mod oauth;
 pub mod backend;
 pub mod cors;
 pub mod error;
@@ -48,6 +49,9 @@ pub use backend::nous::state_requires_relogin;
 pub use backend::nous::{
     login_nous_portal, persist_nous_oauth, resolve_nous_credentials_async, NousDeviceLoginOptions,
     DEFAULT_NOUS_INFERENCE,
+};
+pub use backend::xai::{
+    login_xai_oauth, XaiOAuthAuthorizePrompt, XaiOAuthLoginOptions, XAI_OAUTH_PROVIDER,
 };
 pub use resolve::build_forward_adapters;
 pub use server::{ProxyRunOptions, ProxyState, build_router, run_server};

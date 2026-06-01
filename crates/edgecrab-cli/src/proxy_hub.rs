@@ -30,7 +30,7 @@ pub fn usage() -> &'static str {
      CLI (foreground server):\n\
        edgecrab proxy start --provider xai\n\
      \n\
-     Provider OAuth (once): hermes auth add xai-oauth --type oauth\n\
+     Provider OAuth (once): edgecrab auth add grok\n\
      Clients use http://127.0.0.1:11434/v1 + proxy token (not provider key)."
 }
 
@@ -164,8 +164,26 @@ pub fn format_client_snippet_text(snippet: &ClientSnippet, redact_token: bool) -
 
 pub fn format_recipe_auth_line(recipe: &BuiltinRecipe) -> String {
     let probe = probe_oauth_auth(recipe);
-    let icon = if probe == AuthProbe::Ready { "✓" } else { "○" };
-    format!("{icon} {}", auth_probe_message(recipe, probe))
+    let icon = if probe == AuthProbe::Ready {
+        "✓"
+    } else {
+        "○"
+    };
+    let hint = if probe == AuthProbe::Ready {
+        String::new()
+    } else {
+        " — press a to sign in".to_string()
+    };
+    format!("{icon} {}{}", auth_probe_message(recipe, probe), hint)
+}
+
+/// TUI/CLI auth target for a forward preset (`/proxy` key `a`).
+pub fn oauth_login_target(recipe: &BuiltinRecipe) -> Option<&'static str> {
+    match recipe.key {
+        "xai" => Some("grok"),
+        "nous" => Some("nous"),
+        _ => None,
+    }
 }
 
 pub fn recipe_enabled_in_config(cfg: &ProxyConfig, recipe: &BuiltinRecipe) -> bool {
@@ -238,5 +256,13 @@ mod tests {
     #[test]
     fn resolve_grok_via_hub() {
         assert_eq!(resolve_recipe("grok").map(|r| r.key), Some("xai"));
+    }
+
+    #[test]
+    fn oauth_login_targets_for_presets() {
+        let grok = resolve_recipe("grok").expect("grok");
+        assert_eq!(oauth_login_target(grok), Some("grok"));
+        let nous = resolve_recipe("nous").expect("nous");
+        assert_eq!(oauth_login_target(nous), Some("nous"));
     }
 }

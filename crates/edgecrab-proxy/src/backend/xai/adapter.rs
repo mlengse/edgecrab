@@ -35,7 +35,7 @@ impl XaiGrokAdapter {
             .map(str::to_string)
             .unwrap_or_else(|| "xai-oauth".to_string());
         let hint = auth_hint.unwrap_or_else(|| {
-            "run `hermes auth add xai-oauth --type oauth`".to_string()
+            "run `edgecrab auth add xai-oauth` or `edgecrab auth add grok`".to_string()
         });
         Self {
             name: upstream_key.to_string(),

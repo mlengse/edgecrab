@@ -3,6 +3,7 @@ use std::fmt::Write as _;
 use std::fs::OpenOptions;
 use std::io::{self, Write as _};
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use anyhow::{Context, anyhow, bail};
 use chrono::Utc;
@@ -19,6 +20,7 @@ enum AuthTarget {
     Copilot,
     Mcp(String),
     NousPortal,
+    XaiOAuth,
     Provider(&'static ProviderAuthSpec),
 }
 
@@ -157,6 +159,65 @@ pub(crate) fn render_copilot_device_prompt(prompt: &CopilotDevicePrompt) -> Stri
     )
 }
 
+fn friendly_grok_login_error(message: &str) -> String {
+    let lower = message.to_ascii_lowercase();
+    if lower.contains("http 403") || lower.contains("tier_denied") {
+        return "xAI rejected OAuth for this account (SuperGrok / X Premium+ required). \
+                Try `edgecrab auth add provider/xai --token <key>` if you have an API key, \
+                or upgrade at https://x.ai/grok."
+            .into();
+    }
+    if lower.contains("timed out") || lower.contains("callback") {
+        return "xAI sign-in timed out waiting for the browser callback. \
+                On a remote machine use: edgecrab auth add grok --no-browser \
+                (and ssh -L 56121:127.0.0.1:56121) or --manual-paste."
+            .into();
+    }
+    if lower.contains("state mismatch") {
+        return "xAI sign-in failed: OAuth state mismatch. Run `edgecrab auth add grok` again.".into();
+    }
+    message.to_string()
+}
+
+fn print_grok_oauth_signin(prompt: &edgecrab_proxy::XaiOAuthAuthorizePrompt, open_browser: bool) {
+    let mut stderr = io::stderr();
+    let _ = write!(stderr, "\x1b[2J\x1b[H");
+    let _ = writeln!(stderr, "xAI Grok sign-in (SuperGrok / X Premium+)");
+    let _ = writeln!(stderr, "=======================================\n");
+    let _ = writeln!(stderr, "Open this URL to authorize EdgeCrab:\n");
+    let _ = writeln!(stderr, "{}\n", prompt.authorize_url);
+    if prompt.manual_paste {
+        let _ = writeln!(
+            stderr,
+            "After approving, paste the full callback URL (or code) at the prompt below."
+        );
+    } else {
+        let _ = writeln!(stderr, "Waiting for callback on {}", prompt.redirect_uri);
+        let _ = writeln!(
+            stderr,
+            "Remote host? Tunnel: ssh -L 56121:127.0.0.1:56121 user@host\n"
+        );
+        if open_browser {
+            open_auth_url(&prompt.authorize_url);
+            let _ = writeln!(stderr, "Browser opened (if supported).");
+        }
+    }
+    let _ = stderr.flush();
+}
+
+fn xai_oauth_options(no_browser: bool, manual_paste: bool) -> edgecrab_proxy::XaiOAuthLoginOptions {
+    let open_browser = !no_browser && !manual_paste;
+    let on_authorize = Arc::new(move |prompt: edgecrab_proxy::XaiOAuthAuthorizePrompt| {
+        print_grok_oauth_signin(&prompt, open_browser);
+    });
+    edgecrab_proxy::XaiOAuthLoginOptions {
+        open_browser,
+        manual_paste,
+        on_authorize: Some(on_authorize),
+        ..Default::default()
+    }
+}
+
 fn friendly_copilot_login_error(message: &str) -> String {
     if message.contains("expired_token") {
         return "The login code expired before GitHub approval. Run /login again to generate a fresh code.".into();
@@ -188,24 +249,50 @@ pub async fn run_capture(command: AuthCommand) -> anyhow::Result<String> {
     match command {
         AuthCommand::List => list_targets().await,
         AuthCommand::Status { target } => status_target(target.as_deref()).await,
-        AuthCommand::Add { target, token } => add_target(&target, token).await,
-        AuthCommand::Login { target } => {
-            login_target_capture(target.as_deref().unwrap_or("copilot")).await
+        AuthCommand::Add {
+            target,
+            token,
+            no_browser,
+            manual_paste,
+        } => add_target(&target, token, no_browser, manual_paste).await,
+        AuthCommand::Login {
+            target,
+            no_browser,
+            manual_paste,
+        } => {
+            login_target_capture(
+                target.as_deref().unwrap_or("copilot"),
+                no_browser,
+                manual_paste,
+            )
+            .await
         }
         AuthCommand::Remove { target } => remove_target(&target).await,
         AuthCommand::Reset { target } => reset_target(target.as_deref()).await,
     }
 }
 
+/// True when `auth add` should run a browser/device OAuth flow (no `--token`).
+pub fn target_uses_interactive_oauth(raw_target: &str) -> bool {
+    matches!(
+        resolve_target(raw_target),
+        Ok(AuthTarget::NousPortal | AuthTarget::XaiOAuth)
+    )
+}
+
 pub async fn login_target(raw_target: &str) -> anyhow::Result<()> {
-    let report = login_target_capture(raw_target).await?;
+    let report = login_target_capture(raw_target, false, false).await?;
     if !report.trim().is_empty() {
         println!("{report}");
     }
     Ok(())
 }
 
-pub async fn login_target_capture(raw_target: &str) -> anyhow::Result<String> {
+pub async fn login_target_capture(
+    raw_target: &str,
+    no_browser: bool,
+    manual_paste: bool,
+) -> anyhow::Result<String> {
     match resolve_target(raw_target)? {
         AuthTarget::Copilot => {
             let manager = TokenManager::new()?;
@@ -245,6 +332,7 @@ pub async fn login_target_capture(raw_target: &str) -> anyhow::Result<String> {
             Ok(summary)
         }
         AuthTarget::NousPortal => login_nous_portal_capture(None).await,
+        AuthTarget::XaiOAuth => login_xai_oauth_capture(no_browser, manual_paste).await,
         AuthTarget::Provider(spec) => {
             if spec.interactive_login {
                 bail!(
@@ -273,6 +361,21 @@ async fn login_nous_portal_capture(label: Option<&str>) -> anyhow::Result<String
     Ok(msg)
 }
 
+async fn login_xai_oauth_capture(no_browser: bool, manual_paste: bool) -> anyhow::Result<String> {
+    let no_browser = oauth_flag(no_browser, "EDGECRAB_AUTH_NO_BROWSER");
+    let manual_paste = oauth_flag(manual_paste, "EDGECRAB_AUTH_MANUAL_PASTE");
+    let msg = edgecrab_proxy::login_xai_oauth(None, &xai_oauth_options(no_browser, manual_paste))
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", friendly_grok_login_error(&e.to_string())))?;
+    Ok(msg)
+}
+
+fn oauth_flag(cli: bool, env_key: &str) -> bool {
+    cli || std::env::var(env_key)
+        .ok()
+        .is_some_and(|v| matches!(v.as_str(), "1" | "true" | "yes"))
+}
+
 pub async fn logout_target(raw_target: Option<&str>) -> anyhow::Result<()> {
     let report = logout_target_capture(raw_target).await?;
     if !report.trim().is_empty() {
@@ -298,6 +401,8 @@ pub fn command_from_slash_args(args: &str) -> Result<AuthCommand, String> {
         }),
         Some("login") => Ok(AuthCommand::Login {
             target: parts.get(1).cloned(),
+            no_browser: false,
+            manual_paste: false,
         }),
         Some("remove") | Some("logout") | Some("rm") => {
             let Some(target) = parts.get(1).cloned() else {
@@ -313,7 +418,12 @@ pub fn command_from_slash_args(args: &str) -> Result<AuthCommand, String> {
                 return Err(auth_usage().into());
             };
             let token = parse_named_token_arg(&parts[2..], "token")?;
-            Ok(AuthCommand::Add { target, token })
+            Ok(AuthCommand::Add {
+                target,
+                token,
+                no_browser: false,
+                manual_paste: false,
+            })
         }
         Some(_) => Err(auth_usage().into()),
     }
@@ -370,6 +480,15 @@ async fn list_targets() -> anyhow::Result<String> {
             yes_no(nous_ready),
             edgecrab_proxy::RECIPE_NOUS.display_name,
         )?;
+        let xai_probe = edgecrab_proxy::probe_oauth_auth(&edgecrab_proxy::RECIPE_XAI);
+        let xai_ready = matches!(xai_probe, edgecrab_proxy::AuthProbe::Ready);
+        writeln!(
+            out,
+            "grok       auth-file={} oauth={} ({})",
+            yes_no(path.exists() && xai_ready),
+            yes_no(xai_ready),
+            edgecrab_proxy::RECIPE_XAI.display_name,
+        )?;
     }
 
     for spec in PROVIDER_AUTH_SPECS {
@@ -415,12 +534,18 @@ async fn status_target(raw_target: Option<&str>) -> anyhow::Result<String> {
             AuthTarget::Copilot => show_copilot_status().await,
             AuthTarget::Mcp(name) => mcp_support::render_mcp_auth_guide(&name),
             AuthTarget::NousPortal => show_nous_status(),
+            AuthTarget::XaiOAuth => show_xai_oauth_status(),
             AuthTarget::Provider(spec) => show_provider_status(spec),
         },
     }
 }
 
-async fn add_target(raw_target: &str, token: Option<String>) -> anyhow::Result<String> {
+async fn add_target(
+    raw_target: &str,
+    token: Option<String>,
+    no_browser: bool,
+    manual_paste: bool,
+) -> anyhow::Result<String> {
     match resolve_target(raw_target)? {
         AuthTarget::NousPortal => {
             if token.is_some() {
@@ -429,6 +554,14 @@ async fn add_target(raw_target: &str, token: Option<String>) -> anyhow::Result<S
                 );
             }
             login_nous_portal_capture(None).await
+        }
+        AuthTarget::XaiOAuth => {
+            if token.is_some() {
+                bail!(
+                    "xAI Grok uses browser OAuth (SuperGrok / X Premium+), not a static token. Run `edgecrab auth add grok` or `edgecrab auth add xai-oauth`"
+                );
+            }
+            login_xai_oauth_capture(no_browser, manual_paste).await
         }
         AuthTarget::Copilot => {
             let token = token.as_deref();
@@ -509,6 +642,15 @@ async fn remove_target(raw_target: &str) -> anyhow::Result<String> {
                 path.display()
             ))
         }
+        AuthTarget::XaiOAuth => {
+            let path = edgecrab_proxy::default_auth_path();
+            edgecrab_proxy::remove_provider_state(&path, edgecrab_proxy::XAI_OAUTH_PROVIDER)
+                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            Ok(format!(
+                "Removed xAI Grok OAuth credentials from {}.",
+                path.display()
+            ))
+        }
         AuthTarget::Provider(spec) => {
             for env_var in spec.env_vars {
                 gateway_setup::remove_env_key(env_var).with_context(|| {
@@ -549,7 +691,16 @@ async fn reset_all() -> anyhow::Result<String> {
         }
     }
     clear_provider_auth_store()?;
-    Ok("Cleared EdgeCrab-managed Copilot, provider, and MCP auth caches.".into())
+    clear_proxy_oauth_providers()?;
+    Ok("Cleared EdgeCrab-managed Copilot, provider, proxy OAuth (nous/grok), and MCP auth caches.".into())
+}
+
+fn clear_proxy_oauth_providers() -> anyhow::Result<()> {
+    let path = edgecrab_proxy::default_auth_path();
+    for provider in ["nous", edgecrab_proxy::XAI_OAUTH_PROVIDER] {
+        let _ = edgecrab_proxy::remove_provider_state(&path, provider);
+    }
+    Ok(())
 }
 
 async fn show_copilot_status() -> anyhow::Result<String> {
@@ -600,6 +751,31 @@ fn show_nous_status() -> anyhow::Result<String> {
     Ok(out.trim_end().to_string())
 }
 
+fn show_xai_oauth_status() -> anyhow::Result<String> {
+    let path = edgecrab_proxy::default_auth_path();
+    let probe = edgecrab_proxy::probe_oauth_auth(&edgecrab_proxy::RECIPE_XAI);
+    let mut out = String::from("grok / xai-oauth (SuperGrok / X Premium+)\n");
+    writeln!(out, "auth-file:  {}", path.display())?;
+    writeln!(
+        out,
+        "status:     {}",
+        edgecrab_proxy::auth_probe_message(&edgecrab_proxy::RECIPE_XAI, probe)
+    )?;
+    writeln!(
+        out,
+        "login:      edgecrab auth add grok  |  edgecrab auth add xai-oauth"
+    )?;
+    writeln!(
+        out,
+        "remote:     EDGECRAB_AUTH_NO_BROWSER=1 or EDGECRAB_AUTH_MANUAL_PASTE=1"
+    )?;
+    writeln!(
+        out,
+        "proxy:      edgecrab proxy enable grok && edgecrab proxy start --provider xai"
+    )?;
+    Ok(out.trim_end().to_string())
+}
+
 fn show_provider_status(spec: &'static ProviderAuthSpec) -> anyhow::Result<String> {
     let store = auth_store()?;
     let stored = store.providers.get(spec.canonical);
@@ -638,6 +814,9 @@ fn resolve_target(raw_target: &str) -> anyhow::Result<AuthTarget> {
     if matches!(target, "nous" | "nous-portal" | "nous_portal") {
         return Ok(AuthTarget::NousPortal);
     }
+    if is_xai_oauth_target(target) {
+        return Ok(AuthTarget::XaiOAuth);
+    }
 
     let config = AppConfig::load()?;
     if let Some(name) = target.strip_prefix("mcp/") {
@@ -660,8 +839,12 @@ fn resolve_target(raw_target: &str) -> anyhow::Result<AuthTarget> {
     }
 
     bail!(
-        "unknown auth target '{target}' (expected `copilot`, `provider/<name>`, `mcp/<server>`, or a configured MCP server name)"
+        "unknown auth target '{target}' (expected `copilot`, `nous`, `grok`/`xai-oauth`, `provider/<name>`, `mcp/<server>`, or a configured MCP server name)"
     )
+}
+
+fn is_xai_oauth_target(target: &str) -> bool {
+    edgecrab_core::oauth::is_xai_oauth_alias(target)
 }
 
 fn resolve_provider(name: &str) -> Option<&'static ProviderAuthSpec> {
@@ -739,7 +922,7 @@ fn copilot_cache_dir() -> anyhow::Result<std::path::PathBuf> {
 }
 
 fn auth_usage() -> &'static str {
-    "Usage: /auth [list|status [target]|add <target> [--token <secret>]|login [target]|remove <target>|reset [target]]\nTargets: copilot, nous, provider/<name>, mcp/<server>, or a configured MCP server name"
+    "Usage: /auth [list|status [target]|add <target> [--token <secret>]|login [target]|remove <target>|reset [target]]\nTargets: copilot, nous, grok (xai-oauth), provider/<name>, mcp/<server>, or a configured MCP server name"
 }
 
 fn auth_store_path() -> PathBuf {
@@ -868,9 +1051,16 @@ mod tests {
     fn parses_auth_add_from_slash_args() {
         let command = command_from_slash_args("add provider/openai --token sk-test").unwrap();
         match command {
-            AuthCommand::Add { target, token } => {
+            AuthCommand::Add {
+                target,
+                token,
+                no_browser,
+                manual_paste,
+            } => {
                 assert_eq!(target, "provider/openai");
                 assert_eq!(token.as_deref(), Some("sk-test"));
+                assert!(!no_browser);
+                assert!(!manual_paste);
             }
             other => panic!("unexpected command: {other:?}"),
         }
@@ -898,6 +1088,14 @@ mod tests {
     fn resolves_nous_auth_target() {
         let target = resolve_target("nous").expect("nous target");
         assert!(matches!(target, AuthTarget::NousPortal));
+    }
+
+    #[test]
+    fn resolves_grok_auth_target() {
+        let target = resolve_target("grok").expect("grok target");
+        assert!(matches!(target, AuthTarget::XaiOAuth));
+        let target = resolve_target("xai-oauth").expect("xai-oauth target");
+        assert!(matches!(target, AuthTarget::XaiOAuth));
     }
 
     #[test]

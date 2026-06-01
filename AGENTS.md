@@ -533,6 +533,28 @@ When the agent includes `MEDIA:/path/to/file` in its response, `DeliveryRouter` 
 
 ---
 
+## Subscription OAuth (spec 024)
+
+Consumer subscriptions (SuperGrok, Nous Portal) use OAuth stored in
+`~/.edgecrab/auth.json` (Hermes-shaped `providers.<id>`). Copilot uses
+`edgequake_llm` GitHub device flow + a separate token cache — not `auth.json`.
+
+```bash
+edgecrab auth add grok          # xAI PKCE loopback (SuperGrok / X Premium+)
+edgecrab auth add nous          # Nous device code
+edgecrab auth login copilot     # GitHub device code → Copilot token cache
+edgecrab auth status grok
+edgecrab auth remove grok
+```
+
+Shared PKCE: `edgecrab-core/src/oauth/`. Loopback + provider login:
+`edgecrab-proxy/src/oauth/` + `backend/xai/oauth_login.rs`,
+`backend/nous/device_flow.rs`.
+
+Remote OAuth: `edgecrab auth add grok --no-browser` or `--manual-paste`.
+
+---
+
 ## OpenAI-Compatible Proxy (edgecrab-proxy)
 
 Local **provider bridge** (not the gateway agent API): exposes configured LLM
@@ -542,6 +564,7 @@ providers to OpenAI-shaped clients (Aider, OpenAI SDK, LiteLLM).
 /proxy                          # TUI setup wizard (default in EdgeCrab TUI)
 /proxy enable grok              # inline enable without opening TUI
 edgecrab proxy setup grok       # guided: config + token + client snippet
+edgecrab auth add grok          # once: SuperGrok OAuth → ~/.edgecrab/auth.json
 edgecrab proxy enable grok      # add xai_oauth upstream to config.yaml
 edgecrab proxy doctor           # preflight (token + OAuth auth.json)
 edgecrab proxy client           # OPENAI_API_BASE / Aider env snippet

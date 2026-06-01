@@ -667,16 +667,28 @@ pub enum AuthCommand {
     },
     /// Add or cache credentials for one auth target
     Add {
-        /// Auth target: `copilot`, `mcp/<server>`, or a configured MCP server name
+        /// Auth target: `copilot`, `nous`, `grok`, `mcp/<server>`, or a configured MCP server name
         target: String,
         /// Token value to cache (required for MCP bearer-token targets; optional for Copilot)
         #[arg(long)]
         token: Option<String>,
+        /// OAuth: do not open a browser (print URL only; for SSH/remote hosts)
+        #[arg(long)]
+        no_browser: bool,
+        /// OAuth: skip loopback listener; paste callback URL or code from stdin
+        #[arg(long)]
+        manual_paste: bool,
     },
     /// Start an interactive login/import flow
     Login {
-        /// Auth target: `copilot`, `mcp/<server>`, or a configured MCP server name (defaults to `copilot`)
+        /// Auth target: `copilot`, `nous`, `grok`, `mcp/<server>`, etc. (defaults to `copilot`)
         target: Option<String>,
+        /// OAuth: do not open a browser (print URL only)
+        #[arg(long)]
+        no_browser: bool,
+        /// OAuth: manual callback paste mode
+        #[arg(long)]
+        manual_paste: bool,
     },
     /// Remove local cached credentials for one target
     #[command(visible_aliases = ["logout", "rm"])]
@@ -1978,8 +1990,16 @@ mod tests {
         assert!(matches!(
             args.command,
             Some(Command::Auth {
-                command: AuthCommand::Add { target, token }
-            }) if target == "copilot" && token.as_deref() == Some("ghu_test")
+                command: AuthCommand::Add {
+                target,
+                token,
+                no_browser,
+                manual_paste,
+            }
+            }) if target == "copilot"
+                && token.as_deref() == Some("ghu_test")
+                && !no_browser
+                && !manual_paste
         ));
     }
 
