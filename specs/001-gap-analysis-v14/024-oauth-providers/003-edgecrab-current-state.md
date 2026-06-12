@@ -7,6 +7,9 @@
 | xAI refresh + forwarder | **Done** | `backend/xai/refresh.rs`, `adapter.rs` |
 | Auth store (`providers.*`) | **Done** | `backend/auth_file.rs` — Hermes-compatible `auth.json` |
 | CLI `edgecrab auth add grok` | **Done** | `edgecrab-cli/src/auth_cmd.rs` |
+| **Claude Pro OAuth** | **Done** | `edgecrab-core/src/oauth/anthropic.rs` → `.anthropic_oauth.json` |
+| **ChatGPT Pro / Codex OAuth** | **Done** | `edgecrab-core/src/oauth/codex.rs` → `auth.json` |
+| OAuth env injection for `anthropic/…` | **Done** | `edgecrab-core/src/oauth/runtime.rs` + `create_provider_async` |
 | Copilot device login | **Done** (separate path) | `edgequake_llm` GitHub device flow via `auth_cmd` |
 | Proxy recipes | **Done** | `guide.rs` — Nous + Grok |
 
@@ -34,10 +37,10 @@ EDGECRAB_AUTH_MANUAL_PASTE=1 edgecrab auth add grok
 
 ## Still missing (full 024 scope)
 
-1. PKCE browser flows for **Claude Pro** / **ChatGPT Pro** in `edgecrab-core` model router.
-2. Model-router OAuth providers (`claude-pro/…`, `chatgpt-pro/…`) — today OAuth serves **proxy forwarders** and tools that read `auth.json`.
-3. Per-provider `~/.edgecrab/oauth/<id>.json` dirs (optional; unified `auth.json` matches Hermes).
-4. `/login` slash aliases (use `/auth add` / `edgecrab auth add` today).
+1. Dedicated `OAuthProvider` trait module per 004 plan (today: focused modules in `edgecrab-core/src/oauth/`).
+2. HTTP mock round-trip e2e for Claude/Codex token exchange (unit tests for auth store + PKCE only).
+3. Native 401 refresh-and-retry inside edgequake-llm providers (EdgeCrab adds a CLI provider wrapper for OAuth retries).
+4. edgequake-llm first-class `openai-codex` variant (EdgeCrab uses `openai-compatible` + env bridge).
 
 ## Tests
 

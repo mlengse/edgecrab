@@ -73,6 +73,25 @@ providers:
         tier: standard
         pricing: { input: 3.0, output: 15.0, cache_read: 0.3, cache_write: 3.75 }
 
+  # ─── Claude Pro (subscription OAuth) ─────────────────────────────
+  # Use `edgecrab auth add claude-pro` — routes to anthropic with OAuth token.
+  claude-pro:
+    label: "Claude Pro (OAuth)"
+    default_model: "claude-sonnet-4.6"
+    models:
+      - model: "claude-opus-4.6"
+        context: 200000
+        tier: reasoning
+      - model: "claude-sonnet-4.6"
+        context: 200000
+        tier: standard
+      - model: "claude-sonnet-4.5"
+        context: 200000
+        tier: standard
+      - model: "claude-haiku-4.5"
+        context: 200000
+        tier: fast
+
   # ─── GitHub Copilot ──────────────────────────────────────────────
   copilot:
     label: "GitHub Copilot"
@@ -147,6 +166,27 @@ providers:
       - model: "oswe-vscode-prime"
         context: 264000
         tier: standard
+
+  # ─── ChatGPT Pro / Codex (subscription OAuth) ────────────────────
+  chatgpt-pro:
+    label: "ChatGPT Pro / Codex (OAuth)"
+    default_model: "gpt-5.4"
+    models:
+      - model: "gpt-5.5"
+        context: 400000
+        tier: standard
+      - model: "gpt-5.4"
+        context: 400000
+        tier: standard
+      - model: "gpt-5.4-mini"
+        context: 400000
+        tier: fast
+      - model: "gpt-5.3-codex"
+        context: 400000
+        tier: standard
+      - model: "gpt-5.3-codex-spark"
+        context: 400000
+        tier: reasoning
 
   # ─── OpenAI ──────────────────────────────────────────────────────
   openai:
@@ -447,6 +487,27 @@ providers:
       - model: "grok-4.20-beta"
         context: 2000000
         tier: reasoning
+
+  # ─── SuperGrok (xAI OAuth subscription) ──────────────────────────
+  # Uses `edgecrab auth add grok` credentials from ~/.edgecrab/auth.json.
+  # This provider is intentionally separate from `xai` (API-key flow) so users
+  # can explicitly choose subscription-backed routing in the model picker.
+  super-grok:
+    label: "SuperGrok (OAuth)"
+    default_model: "grok-4.20-beta"
+    models:
+      - model: "grok-4.20-beta"
+        context: 2000000
+        tier: reasoning
+      - model: "grok-4"
+        context: 131000
+        tier: standard
+      - model: "grok-4-1-fast"
+        context: 2000000
+        tier: fast
+      - model: "grok-code-fast-1"
+        context: 131000
+        tier: fast
 
   # ─── Z.AI / GLM ─────────────────────────────────────────────────
   zai:

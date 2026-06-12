@@ -35,6 +35,15 @@ pub struct ResolvedModelSpec {
     pub context_window: u64,
 }
 
+/// Parsed `provider/model` components before context-window lookup.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ParsedModelSpec {
+    catalog_provider: String,
+    runtime_provider: String,
+    model_name: String,
+    display: String,
+}
+
 /// Performance tier for UI grouping and smart routing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -192,33 +201,92 @@ impl ModelCatalog {
         }
     }
 
-    /// Resolve a `provider/model` string against the catalog (aliases accepted).
-    pub fn resolve_spec(spec: &str) -> Option<ResolvedModelSpec> {
-        let spec = spec.trim();
-        if spec.is_empty() {
+    /// Parse `provider/model`, normalizing aliases. Does not consult the catalog.
+    fn parse_model_spec(spec: &str) -> Option<ParsedModelSpec> {
+        let trimmed = spec.trim();
+        if trimmed.is_empty() {
             return None;
         }
-        let (provider_raw, model_name) = spec.split_once('/')?;
-        if model_name.is_empty() {
+        let (provider_raw, model_tail) = trimmed.split_once('/')?;
+        if model_tail.trim().is_empty() {
             return None;
         }
         let model_name =
-            edgecrab_tools::vision_models::normalize_model_name(provider_raw, model_name);
+            edgecrab_tools::vision_models::normalize_model_name(provider_raw, model_tail);
         let catalog_provider = Self::catalog_provider_id(provider_raw);
-        let context_window = Self::context_window(&catalog_provider, &model_name)?;
-        let runtime_provider = edgecrab_tools::vision_models::normalize_provider_name(provider_raw);
-        Some(ResolvedModelSpec {
+        let runtime_provider =
+            edgecrab_tools::vision_models::normalize_provider_name(provider_raw);
+        if catalog_provider.is_empty() || model_name.is_empty() {
+            return None;
+        }
+        Some(ParsedModelSpec {
             display: format!("{catalog_provider}/{model_name}"),
             catalog_provider,
             runtime_provider,
             model_name,
-            context_window,
         })
     }
 
-    /// Context window for a display spec, accepting provider aliases.
+    fn resolved_from_parsed(parsed: ParsedModelSpec, context_window: u64) -> ResolvedModelSpec {
+        ResolvedModelSpec {
+            display: parsed.display,
+            catalog_provider: parsed.catalog_provider,
+            runtime_provider: parsed.runtime_provider,
+            model_name: parsed.model_name,
+            context_window,
+        }
+    }
+
+    /// Context window for a known provider when the model id is not cataloged (dynamic discovery).
+    pub fn default_context_for_provider(provider: &str) -> Option<u64> {
+        let cat = Self::get();
+        let entry = cat.providers.get(provider)?;
+        if let Some(ref default_model) = entry.default_model
+            && let Some(ctx) = Self::context_window(provider, default_model)
+        {
+            return Some(ctx);
+        }
+        entry.models.first().map(|m| m.context)
+    }
+
+    fn context_window_for_parsed(parsed: &ParsedModelSpec) -> u64 {
+        Self::context_window(&parsed.catalog_provider, &parsed.model_name)
+            .or_else(|| Self::default_context_for_provider(&parsed.catalog_provider))
+            .unwrap_or_else(default_context)
+    }
+
+    /// Resolve a `provider/model` string against the embedded catalog (strict).
+    pub fn resolve_spec(spec: &str) -> Option<ResolvedModelSpec> {
+        let parsed = Self::parse_model_spec(spec)?;
+        let context_window = Self::context_window(&parsed.catalog_provider, &parsed.model_name)?;
+        Some(Self::resolved_from_parsed(parsed, context_window))
+    }
+
+    /// Resolve a `provider/model` string — catalog first, then dynamically discovered models.
+    ///
+    /// Live-discovery providers (e.g. `lmstudio`, `ollama`, `openrouter`) expose model ids
+    /// that are not embedded in the static catalog. Those specs still need a context window
+    /// so model transfer, compression, and proxy routing can proceed.
+    pub fn resolve_spec_lenient(spec: &str) -> Option<ResolvedModelSpec> {
+        let parsed = Self::parse_model_spec(spec)?;
+        let context_window = Self::context_window_for_parsed(&parsed);
+        Some(Self::resolved_from_parsed(parsed, context_window))
+    }
+
+    /// True when two specs refer to the same runtime provider + model (alias-safe).
+    pub fn equivalent_model_specs(a: &str, b: &str) -> bool {
+        match (Self::resolve_spec_lenient(a), Self::resolve_spec_lenient(b)) {
+            (Some(left), Some(right)) => {
+                left.runtime_provider == right.runtime_provider
+                    && left.model_name == right.model_name
+            }
+            _ => a.trim().eq_ignore_ascii_case(b.trim()),
+        }
+    }
+
+    /// Context window for a display spec, accepting provider aliases and dynamic models.
     pub fn context_window_for_spec(spec: &str) -> Option<u64> {
-        Self::resolve_spec(spec).map(|resolved| resolved.context_window)
+        Self::resolve_spec_lenient(spec).map(|resolved| resolved.context_window)
     }
 
     /// List all provider IDs in alphabetical order.
@@ -409,6 +477,51 @@ mod tests {
         assert_eq!(resolved.catalog_provider, "copilot");
         assert_eq!(resolved.runtime_provider, "vscode-copilot");
         assert_eq!(resolved.display, "copilot/gpt-5-mini");
+    }
+
+    #[test]
+    fn resolve_spec_lenient_accepts_discovered_lmstudio_model() {
+        assert!(ModelCatalog::resolve_spec("lmstudio/liquid/lfm2.5-1.2b").is_none());
+        let resolved = ModelCatalog::resolve_spec_lenient("lmstudio/liquid/lfm2.5-1.2b")
+            .expect("dynamic lmstudio model");
+        assert_eq!(resolved.display, "lmstudio/liquid/lfm2.5-1.2b");
+        assert_eq!(resolved.runtime_provider, "lmstudio");
+        assert_eq!(
+            resolved.context_window,
+            ModelCatalog::default_context_for_provider("lmstudio").unwrap_or(default_context())
+        );
+    }
+
+    #[test]
+    fn resolve_spec_lenient_preserves_catalog_context_window() {
+        let strict = ModelCatalog::resolve_spec("anthropic/claude-haiku-4.5").expect("catalog");
+        let lenient =
+            ModelCatalog::resolve_spec_lenient("anthropic/claude-haiku-4.5").expect("lenient");
+        assert_eq!(strict.context_window, lenient.context_window);
+    }
+
+    #[test]
+    fn resolve_spec_lenient_accepts_nested_openrouter_model_id() {
+        let resolved = ModelCatalog::resolve_spec_lenient("openrouter/openai/gpt-5.4")
+            .expect("nested model id");
+        assert_eq!(resolved.model_name, "openai/gpt-5.4");
+        assert_eq!(resolved.catalog_provider, "openrouter");
+    }
+
+    #[test]
+    fn equivalent_model_specs_normalizes_provider_aliases() {
+        assert!(ModelCatalog::equivalent_model_specs(
+            "lmstudio/liquid/lfm2.5-1.2b",
+            "lm-studio/liquid/lfm2.5-1.2b"
+        ));
+        assert!(ModelCatalog::equivalent_model_specs(
+            "copilot/claude-haiku-4.5",
+            "vscode-copilot/claude-haiku-4.5"
+        ));
+        assert!(!ModelCatalog::equivalent_model_specs(
+            "lmstudio/liquid/lfm2.5-1.2b",
+            "lmstudio/other-model"
+        ));
     }
 
     #[test]

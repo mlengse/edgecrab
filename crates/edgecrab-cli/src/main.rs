@@ -50,6 +50,7 @@ mod profile;
 mod proxy_cmd;
 mod proxy_hub;
 mod proxy_setup_tui;
+mod grok_auth_tui;
 mod runtime;
 mod setup;
 mod skin_engine;
@@ -69,9 +70,13 @@ mod worktree;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use async_trait::async_trait;
 use anyhow::{Context, anyhow};
 use clap::{CommandFactory, Parser};
 use edgecrab_plugins::{discover_plugins, invoke_hermes_cli_command};
+use edgequake_llm::{
+    ChatMessage, CompletionOptions, LLMProvider, LLMResponse, ToolChoice, ToolDefinition,
+};
 use shell_words::split as shell_split;
 use tokio_util::sync::CancellationToken;
 
@@ -105,6 +110,12 @@ use runtime::{
 ///   MockProvider                        ← fallback for dev/test
 /// ```
 pub(crate) fn create_provider(model: &str) -> anyhow::Result<Arc<dyn edgequake_llm::LLMProvider>> {
+    create_provider_inner(model)
+}
+
+pub(crate) async fn create_provider_async(
+    model: &str,
+) -> anyhow::Result<Arc<dyn edgequake_llm::LLMProvider>> {
     let normalized_model = model.trim().to_ascii_lowercase();
     if normalized_model == "mock" || normalized_model.starts_with("mock/") {
         tracing::info!(model, "using explicit mock provider");
@@ -112,12 +123,32 @@ pub(crate) fn create_provider(model: &str) -> anyhow::Result<Arc<dyn edgequake_l
     }
 
     if let Some((provider_name, model_name)) = explicit_provider_request(model) {
+        if matches!(provider_name, "super-grok" | "super_grok") {
+            prepare_super_grok_oauth_env().await?;
+        }
+        edgecrab_core::oauth::inject_subscription_oauth_env(provider_name)
+            .await
+            .map_err(anyhow::Error::msg)?;
         let canonical = normalize_provider_name(provider_name);
         tracing::info!(
             provider = canonical,
             model = model_name,
             "creating provider from model string"
         );
+        return create_explicit_provider(&canonical, model_name);
+    }
+
+    create_provider_inner(model)
+}
+
+fn create_provider_inner(model: &str) -> anyhow::Result<Arc<dyn edgequake_llm::LLMProvider>> {
+    let normalized_model = model.trim().to_ascii_lowercase();
+    if normalized_model == "mock" || normalized_model.starts_with("mock/") {
+        return Ok(Arc::new(edgequake_llm::MockProvider::new()));
+    }
+
+    if let Some((provider_name, model_name)) = explicit_provider_request(model) {
+        let canonical = normalize_provider_name(provider_name);
         return create_explicit_provider(&canonical, model_name);
     }
 
@@ -135,10 +166,53 @@ fn explicit_provider_request(model: &str) -> Option<(&str, &str)> {
     model.split_once('/')
 }
 
+async fn prepare_super_grok_oauth_env() -> anyhow::Result<()> {
+    let auth_path = edgecrab_proxy::default_auth_path();
+    let (bearer, base_url) = edgecrab_proxy::resolve_xai_credentials_async(
+        &auth_path,
+        edgecrab_proxy::XAI_OAUTH_PROVIDER,
+        edgecrab_proxy::DEFAULT_XAI_API,
+        0,
+        false,
+    )
+    .await
+    .map_err(|e| anyhow!("SuperGrok OAuth unavailable: {e}"))?;
+
+    // SAFETY: Provider construction intentionally updates process-wide env credentials.
+    unsafe {
+        std::env::set_var("XAI_API_KEY", bearer);
+        std::env::set_var("XAI_BASE_URL", base_url);
+    }
+    Ok(())
+}
+
 fn create_explicit_provider(
     provider_name: &str,
     model_name: &str,
 ) -> anyhow::Result<Arc<dyn edgequake_llm::LLMProvider>> {
+    let provider = create_explicit_provider_raw(provider_name, model_name)?;
+    Ok(OAuthRefreshingProvider::wrap_if_needed(
+        provider_name,
+        model_name,
+        provider,
+    ))
+}
+
+fn create_explicit_provider_raw(
+    provider_name: &str,
+    model_name: &str,
+) -> anyhow::Result<Arc<dyn edgequake_llm::LLMProvider>> {
+    if provider_name == "openai-codex" {
+        edgecrab_core::oauth::prepare_openai_codex_compatible_env();
+        return edgequake_llm::ProviderFactory::create_llm_provider("openai-compatible", model_name)
+            .map_err(|e| {
+                anyhow::anyhow!(
+                    "openai-codex (ChatGPT Pro) provider failed: {e}\n\
+                     Fix: edgecrab auth add chatgpt-pro"
+                )
+            });
+    }
+
     create_provider_for_model(provider_name, model_name).map_err(|e| {
         let guidance = match provider_name {
             "vscode-copilot" => {
@@ -165,6 +239,176 @@ fn create_explicit_provider(
             guidance
         )
     })
+}
+
+fn oauth_error_needs_refresh(err: &edgequake_llm::LlmError) -> bool {
+    let msg = err.to_string().to_ascii_lowercase();
+    msg.contains("401")
+        || msg.contains("unauthorized")
+        || msg.contains("invalid token")
+        || msg.contains("invalid api key")
+}
+
+struct OAuthRefreshingProvider {
+    provider_name: String,
+    model_name: String,
+    inner: Arc<dyn LLMProvider>,
+}
+
+impl OAuthRefreshingProvider {
+    fn wrap_if_needed(
+        provider_name: &str,
+        model_name: &str,
+        inner: Arc<dyn LLMProvider>,
+    ) -> Arc<dyn LLMProvider> {
+        if matches!(provider_name, "anthropic" | "openai-codex") {
+            Arc::new(Self {
+                provider_name: provider_name.to_string(),
+                model_name: model_name.to_string(),
+                inner,
+            })
+        } else {
+            inner
+        }
+    }
+
+    async fn refresh_oauth_token(&self) -> Result<(), edgequake_llm::LlmError> {
+        match self.provider_name.as_str() {
+            "anthropic" => {
+                let token = edgecrab_core::oauth::refresh_anthropic_from_store()
+                    .await
+                    .map_err(|e| {
+                        edgequake_llm::LlmError::AuthError(format!(
+                            "re-login required: /login claude-pro ({e})"
+                        ))
+                    })?;
+                // SAFETY: runtime auth refresh intentionally updates process-wide provider env.
+                unsafe { std::env::set_var("ANTHROPIC_API_KEY", token) };
+                Ok(())
+            }
+            "openai-codex" => {
+                let token = edgecrab_core::oauth::refresh_codex_from_store()
+                    .await
+                    .map_err(|e| {
+                        edgequake_llm::LlmError::AuthError(format!(
+                            "re-login required: /login chatgpt-pro ({e})"
+                        ))
+                    })?;
+                // SAFETY: runtime auth refresh intentionally updates process-wide provider env.
+                unsafe {
+                    std::env::set_var("OPENAI_API_KEY", &token);
+                    std::env::set_var("OPENAI_COMPATIBLE_API_KEY", &token);
+                }
+                edgecrab_core::oauth::prepare_openai_codex_compatible_env();
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn rebuild_inner(&self) -> Result<Arc<dyn LLMProvider>, edgequake_llm::LlmError> {
+        create_explicit_provider_raw(&self.provider_name, &self.model_name)
+            .map_err(|e| edgequake_llm::LlmError::ProviderError(e.to_string()))
+    }
+}
+
+#[async_trait]
+impl LLMProvider for OAuthRefreshingProvider {
+    fn name(&self) -> &str {
+        self.inner.name()
+    }
+
+    fn model(&self) -> &str {
+        self.inner.model()
+    }
+
+    fn max_context_length(&self) -> usize {
+        self.inner.max_context_length()
+    }
+
+    async fn complete(&self, prompt: &str) -> edgequake_llm::Result<LLMResponse> {
+        match self.inner.complete(prompt).await {
+            Ok(ok) => Ok(ok),
+            Err(err) if oauth_error_needs_refresh(&err) => {
+                self.refresh_oauth_token().await?;
+                let retry = self.rebuild_inner()?;
+                retry.complete(prompt).await
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn complete_with_options(
+        &self,
+        prompt: &str,
+        options: &CompletionOptions,
+    ) -> edgequake_llm::Result<LLMResponse> {
+        match self.inner.complete_with_options(prompt, options).await {
+            Ok(ok) => Ok(ok),
+            Err(err) if oauth_error_needs_refresh(&err) => {
+                self.refresh_oauth_token().await?;
+                let retry = self.rebuild_inner()?;
+                retry.complete_with_options(prompt, options).await
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn chat(
+        &self,
+        messages: &[ChatMessage],
+        options: Option<&CompletionOptions>,
+    ) -> edgequake_llm::Result<LLMResponse> {
+        match self.inner.chat(messages, options).await {
+            Ok(ok) => Ok(ok),
+            Err(err) if oauth_error_needs_refresh(&err) => {
+                self.refresh_oauth_token().await?;
+                let retry = self.rebuild_inner()?;
+                retry.chat(messages, options).await
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    async fn chat_with_tools(
+        &self,
+        messages: &[ChatMessage],
+        tools: &[ToolDefinition],
+        tool_choice: Option<ToolChoice>,
+        options: Option<&CompletionOptions>,
+    ) -> edgequake_llm::Result<LLMResponse> {
+        match self
+            .inner
+            .chat_with_tools(messages, tools, tool_choice.clone(), options)
+            .await
+        {
+            Ok(ok) => Ok(ok),
+            Err(err) if oauth_error_needs_refresh(&err) => {
+                self.refresh_oauth_token().await?;
+                let retry = self.rebuild_inner()?;
+                retry
+                    .chat_with_tools(messages, tools, tool_choice, options)
+                    .await
+            }
+            Err(err) => Err(err),
+        }
+    }
+
+    fn supports_streaming(&self) -> bool {
+        self.inner.supports_streaming()
+    }
+
+    fn supports_tool_streaming(&self) -> bool {
+        self.inner.supports_tool_streaming()
+    }
+
+    fn supports_json_mode(&self) -> bool {
+        self.inner.supports_json_mode()
+    }
+
+    fn supports_function_calling(&self) -> bool {
+        self.inner.supports_function_calling()
+    }
 }
 
 #[tokio::main]
@@ -280,7 +524,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     let model = runtime.config.model.default_model.clone();
-    let provider = create_provider(&model)?;
+    let provider = create_provider_async(&model).await?;
     let state_db = open_state_db(&runtime.state_db_path)?;
     let tool_registry = build_tool_registry_with_mcp_discovery(&runtime.config).await;
 
@@ -1159,7 +1403,7 @@ async fn run_acp(args: &CliArgs) -> anyhow::Result<()> {
         args.toolset.as_deref(),
     )?;
     let model_str = runtime.config.model.default_model.clone();
-    let provider = create_provider(&model_str)?;
+    let provider = create_provider_async(&model_str).await?;
     let state_db = open_state_db(&runtime.state_db_path)?;
     let tool_registry = build_tool_registry_with_mcp_discovery(&runtime.config).await;
     let agent = build_agent(

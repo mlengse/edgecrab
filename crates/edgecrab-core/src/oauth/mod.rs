@@ -4,7 +4,11 @@
 //! or `edgequake_llm` (Copilot GitHub device flow). This module holds shared
 //! crypto and provider identifiers for the model router phase.
 
+pub mod anthropic;
+pub mod auth_store;
+pub mod codex;
 pub mod pkce;
+pub mod runtime;
 
 /// Hermes-compatible provider id for xAI Grok OAuth.
 pub const XAI_OAUTH_PROVIDER: &str = "xai-oauth";
@@ -26,3 +30,23 @@ pub fn is_xai_oauth_alias(target: &str) -> bool {
     let t = target.to_ascii_lowercase();
     t == XAI_OAUTH_PROVIDER || XAI_OAUTH_ALIASES.contains(&t.as_str())
 }
+
+/// CLI targets for Claude Pro OAuth (`edgecrab auth add claude-pro`).
+pub const ANTHROPIC_OAUTH_ALIASES: &[&str] = &["anthropic", "claude-pro", "claude_pro", "claude"];
+
+pub fn is_anthropic_oauth_alias(target: &str) -> bool {
+    let t = target.to_ascii_lowercase();
+    ANTHROPIC_OAUTH_ALIASES.contains(&t.as_str())
+}
+
+pub use anthropic::{
+    anthropic_oauth_path, login_anthropic_oauth, read_anthropic_oauth_file,
+    refresh_anthropic_from_store, remove_anthropic_oauth_file, resolve_anthropic_oauth_access_token,
+    AnthropicOAuthLoginOptions,
+};
+pub use codex::{
+    codex_has_credentials, is_openai_codex_alias, login_codex_device_oauth, remove_codex_oauth,
+    refresh_codex_from_store, resolve_codex_access_token, CodexDeviceLoginOptions,
+    CodexDevicePrompt, OPENAI_CODEX_PROVIDER,
+};
+pub use runtime::{inject_subscription_oauth_env, prepare_openai_codex_compatible_env};

@@ -89,29 +89,16 @@ pub fn resolve_route(
         }));
     }
 
-    let (runtime_provider, model_name) = if let Some(resolved) = ModelCatalog::resolve_spec(&spec) {
-        (resolved.runtime_provider, resolved.model_name)
-    } else {
-        let (provider_raw, model_name) = spec.split_once('/').ok_or_else(|| {
-            ProxyError::ModelNotFound(format!(
-                "invalid model spec '{spec}' (expected provider/model or forward:name)"
-            ))
-        })?;
-        if model_name.is_empty() {
-            return Err(ProxyError::ModelNotFound(format!(
-                "invalid model spec '{spec}' (empty model name)"
-            )));
-        }
-        (
-            edgecrab_tools::vision_models::normalize_provider_name(provider_raw),
-            edgecrab_tools::vision_models::normalize_model_name(provider_raw, model_name),
-        )
-    };
+    let backend = ModelCatalog::resolve_spec_lenient(&spec).ok_or_else(|| {
+        ProxyError::ModelNotFound(format!(
+            "invalid model spec '{spec}' (expected provider/model or forward:name)"
+        ))
+    })?;
 
     Ok(ResolvedRoute::Provider(ResolvedBackend {
         display_model,
-        runtime_provider,
-        model_name,
+        runtime_provider: backend.runtime_provider,
+        model_name: backend.model_name,
     }))
 }
 
@@ -143,6 +130,14 @@ mod tests {
         let r = resolve_model("mock/test-model", &HashMap::new(), None).expect("resolve");
         assert_eq!(r.runtime_provider, "mock");
         assert_eq!(r.model_name, "test-model");
+    }
+
+    #[test]
+    fn resolves_discovered_lmstudio_model() {
+        let r = resolve_model("lmstudio/liquid/lfm2.5-1.2b", &HashMap::new(), None)
+            .expect("resolve dynamic lmstudio model");
+        assert_eq!(r.runtime_provider, "lmstudio");
+        assert_eq!(r.model_name, "liquid/lfm2.5-1.2b");
     }
 
     #[test]

@@ -1,11 +1,12 @@
 //! xAI Grok OAuth PKCE login (`edgecrab auth add xai-oauth` / `edgecrab auth add grok`).
 
-use std::io;
-use std::path::Path;
+use std::io::{self, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
-use chrono::Utc;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
 use reqwest::Client;
 use serde_json::{json, Value};
 use url::Url;
@@ -24,6 +25,31 @@ pub const XAI_OAUTH_SCOPE: &str =
 pub const XAI_OAUTH_REDIRECT_PORT: u16 = 56121;
 pub const XAI_OAUTH_REDIRECT_PATH: &str = "/callback";
 pub const XAI_OAUTH_REFERRER: &str = "edgecrab";
+
+const PENDING_SESSION_VERSION: u32 = 1;
+/// OAuth codes and PKCE verifiers are short-lived; reject stale pending files.
+pub const PENDING_SESSION_MAX_AGE_SECS: i64 = 1800;
+
+/// Saved PKCE session between `start` and `finish` (two-step Grok login).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct XaiOAuthPendingSession {
+    pub version: u32,
+    pub verifier: String,
+    pub challenge: String,
+    pub state: String,
+    pub redirect_uri: String,
+    pub authorize_url: String,
+    pub authorization_endpoint: String,
+    pub token_endpoint: String,
+    pub created_at: String,
+}
+
+/// Result of `start_xai_oauth_login` — user completes in browser, then runs `finish`.
+#[derive(Debug, Clone)]
+pub struct XaiOAuthStarted {
+    pub authorize_url: String,
+    pub pending_path: PathBuf,
+}
 
 #[derive(Debug, Clone)]
 pub struct XaiDiscovery {
@@ -45,6 +71,8 @@ pub struct XaiOAuthLoginOptions {
     pub open_browser: bool,
     pub manual_paste: bool,
     pub timeout_secs: u64,
+    /// Pre-supplied authorization code (bypasses stdin; for flaky terminals).
+    pub pasted_code: Option<String>,
     /// When set, EdgeCrab CLI owns sign-in output and browser open (like Copilot `device_code_flow`).
     pub on_authorize: Option<Arc<dyn Fn(XaiOAuthAuthorizePrompt) + Send + Sync>>,
 }
@@ -55,6 +83,7 @@ impl std::fmt::Debug for XaiOAuthLoginOptions {
             .field("open_browser", &self.open_browser)
             .field("manual_paste", &self.manual_paste)
             .field("timeout_secs", &self.timeout_secs)
+            .field("pasted_code", &self.pasted_code.is_some())
             .field("on_authorize", &self.on_authorize.is_some())
             .finish()
     }
@@ -275,9 +304,36 @@ fn tokens_from_exchange(payload: &Value) -> Result<Value, ProxyError> {
 }
 
 fn parse_manual_callback_url(input: &str, expected_redirect: &str) -> Result<OAuthCallback, ProxyError> {
-    let trimmed = input.trim();
+    let trimmed = input
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim_matches('`');
     if trimmed.is_empty() {
         return Err(ProxyError::UpstreamAuth("empty callback paste".into()));
+    }
+    // Accept callback fragments (e.g. "code=...&state=..." or "?code=...").
+    if trimmed.starts_with("?") || trimmed.starts_with("code=") || trimmed.starts_with("error=") {
+        let raw = trimmed.trim_start_matches('?');
+        let mut code = None;
+        let mut state = None;
+        let mut error = None;
+        let mut error_description = None;
+        for (k, v) in url::form_urlencoded::parse(raw.as_bytes()) {
+            match k.as_ref() {
+                "code" => code = Some(v.into_owned()),
+                "state" => state = Some(v.into_owned()),
+                "error" => error = Some(v.into_owned()),
+                "error_description" => error_description = Some(v.into_owned()),
+                _ => {}
+            }
+        }
+        return Ok(OAuthCallback {
+            code,
+            state,
+            error,
+            error_description,
+        });
     }
     if trimmed.starts_with("http://") || trimmed.starts_with("https://") {
         let url = Url::parse(trimmed)
@@ -315,13 +371,106 @@ fn parse_manual_callback_url(input: &str, expected_redirect: &str) -> Result<OAu
     })
 }
 
+/// Extract the OAuth `code` from a pasted callback URL, query string, or raw token.
+pub fn extract_xai_oauth_code_from_paste(input: &str) -> Result<String, ProxyError> {
+    let redirect_uri = format!(
+        "http://{LOOPBACK_HOST}:{XAI_OAUTH_REDIRECT_PORT}{XAI_OAUTH_REDIRECT_PATH}"
+    );
+    let cb = parse_manual_callback_url(input, &redirect_uri)?;
+    cb.code
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ProxyError::UpstreamAuth("no authorization code in pasted text".into()))
+}
+
+fn normalize_pasted_input(raw: &str) -> String {
+    raw.trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim_matches('`')
+        .replace('\r', "")
+}
+
+fn print_stdin_paste_help() {
+    eprintln!("\nPaste your authorization code on ONE line, then press Enter.");
+    eprintln!("(Code must be on the same line as the prompt — Enter only submits what read_line() receives.)");
+    eprintln!("No terminal paste? Use:");
+    eprintln!("  edgecrab auth grok finish --oauth-code 'YOUR_CODE'");
+}
+
+fn read_pasted_code_from_stdin() -> Result<String, ProxyError> {
+    print_stdin_paste_help();
+
+    for attempt in 1..=5 {
+        eprint!("code> ");
+        let _ = io::stdout().flush();
+        let mut line = String::new();
+        match io::stdin().read_line(&mut line) {
+            Ok(0) => {
+                return Err(ProxyError::UpstreamAuth(
+                    "stdin closed before authorization code was received".into(),
+                ));
+            }
+            Err(e) => {
+                return Err(ProxyError::UpstreamAuth(format!("stdin: {e}")));
+            }
+            Ok(_) => {
+                let normalized = normalize_pasted_input(&line);
+                if normalized.is_empty() {
+                    if attempt < 5 {
+                        eprintln!("(empty line — paste the code on this line, then Enter)");
+                        continue;
+                    }
+                    return Err(ProxyError::UpstreamAuth("empty callback paste".into()));
+                }
+                return Ok(normalized);
+            }
+        }
+    }
+
+    Err(ProxyError::UpstreamAuth(
+        "no authorization code received from stdin after 5 attempts".into(),
+    ))
+}
+
 fn prompt_manual_paste(redirect_uri: &str) -> Result<OAuthCallback, ProxyError> {
-    eprintln!("\nPaste the full callback URL (or authorization code only):");
-    let mut line = String::new();
-    io::stdin()
-        .read_line(&mut line)
-        .map_err(|e| ProxyError::UpstreamAuth(format!("stdin: {e}")))?;
-    parse_manual_callback_url(&line, redirect_uri)
+    let code = read_pasted_code_from_stdin()?;
+    parse_manual_callback_url(&code, redirect_uri)
+}
+
+async fn read_pasted_callback_async(redirect_uri: &str) -> Result<OAuthCallback, ProxyError> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+
+    print_stdin_paste_help();
+    let mut reader = BufReader::new(tokio::io::stdin());
+    for attempt in 1..=5 {
+        eprint!("code> ");
+        let _ = tokio::io::stdout().flush().await;
+        let mut line = String::new();
+        match reader.read_line(&mut line).await {
+            Ok(0) => {
+                return Err(ProxyError::UpstreamAuth(
+                    "stdin closed before authorization code was received".into(),
+                ));
+            }
+            Err(e) => {
+                return Err(ProxyError::UpstreamAuth(format!("stdin: {e}")));
+            }
+            Ok(_) => {
+                let normalized = normalize_pasted_input(&line);
+                if normalized.is_empty() {
+                    if attempt < 5 {
+                        eprintln!("(empty line — paste the code on this line, then Enter)");
+                        continue;
+                    }
+                    return Err(ProxyError::UpstreamAuth("empty callback paste".into()));
+                }
+                return parse_manual_callback_url(&normalized, redirect_uri);
+            }
+        }
+    }
+    Err(ProxyError::UpstreamAuth(
+        "no authorization code received from stdin after 5 attempts".into(),
+    ))
 }
 
 fn open_browser(url: &str) {
@@ -337,8 +486,247 @@ fn open_browser(url: &str) {
         .status();
 }
 
+pub fn default_xai_pending_path() -> PathBuf {
+    edgecrab_core::config::edgecrab_home()
+        .join("oauth-pending")
+        .join("xai-grok.json")
+}
+
+/// Load a non-expired pending session, if any. Stale files are removed (same as `finish`).
+pub fn peek_xai_pending_session(path: Option<&Path>) -> Option<XaiOAuthPendingSession> {
+    let path = path.map_or_else(default_xai_pending_path, |p| p.to_path_buf());
+    load_pending_session(&path).ok()
+}
+
+fn write_pending_session(path: &Path, session: &XaiOAuthPendingSession) -> Result<(), ProxyError> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| {
+            ProxyError::UpstreamAuth(format!("oauth-pending dir: {e}"))
+        })?;
+    }
+    let json = serde_json::to_string_pretty(session).map_err(|e| {
+        ProxyError::UpstreamAuth(format!("oauth-pending serialize: {e}"))
+    })?;
+    std::fs::write(path, json).map_err(|e| {
+        ProxyError::UpstreamAuth(format!("oauth-pending write: {e}"))
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+    }
+    Ok(())
+}
+
+fn load_pending_session(path: &Path) -> Result<XaiOAuthPendingSession, ProxyError> {
+    let raw = std::fs::read_to_string(path).map_err(|e| {
+        ProxyError::UpstreamAuth(format!(
+            "no pending Grok OAuth session at {} ({e}). Run `edgecrab auth grok start` first.",
+            path.display()
+        ))
+    })?;
+    let session: XaiOAuthPendingSession = serde_json::from_str(&raw).map_err(|e| {
+        ProxyError::UpstreamAuth(format!("oauth-pending parse: {e}"))
+    })?;
+    if session.version != PENDING_SESSION_VERSION {
+        return Err(ProxyError::UpstreamAuth(
+            "pending Grok OAuth session version mismatch — run `edgecrab auth grok start` again"
+                .into(),
+        ));
+    }
+    let created = DateTime::parse_from_rfc3339(&session.created_at)
+        .map_err(|e| ProxyError::UpstreamAuth(format!("oauth-pending timestamp: {e}")))?;
+    let age = Utc::now().signed_duration_since(created.with_timezone(&Utc));
+    if age.num_seconds() > PENDING_SESSION_MAX_AGE_SECS {
+        let _ = std::fs::remove_file(path);
+        let mins = PENDING_SESSION_MAX_AGE_SECS / 60;
+        return Err(ProxyError::UpstreamAuth(format!(
+            "pending Grok OAuth session expired ({mins} min). Run `edgecrab auth grok start` again."
+        )));
+    }
+    Ok(session)
+}
+
+fn clear_pending_session(path: &Path) {
+    let _ = std::fs::remove_file(path);
+}
+
+async fn prepare_xai_oauth_session(
+    client: &Client,
+) -> Result<(XaiDiscovery, XaiOAuthPendingSession), ProxyError> {
+    let discovery = fetch_xai_discovery(client).await?;
+    let verifier = code_verifier();
+    let challenge = code_challenge(&verifier);
+    let state = uuid::Uuid::new_v4().simple().to_string();
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let redirect_uri = format!(
+        "http://{LOOPBACK_HOST}:{XAI_OAUTH_REDIRECT_PORT}{XAI_OAUTH_REDIRECT_PATH}"
+    );
+    validate_loopback_redirect_uri(&redirect_uri)?;
+    let authorize_url = build_authorize_url(
+        &discovery.authorization_endpoint,
+        &redirect_uri,
+        &challenge,
+        &state,
+        &nonce,
+    );
+    let pending = XaiOAuthPendingSession {
+        version: PENDING_SESSION_VERSION,
+        verifier,
+        challenge,
+        state,
+        redirect_uri,
+        authorize_url: authorize_url.clone(),
+        authorization_endpoint: discovery.authorization_endpoint.clone(),
+        token_endpoint: discovery.token_endpoint.clone(),
+        created_at: Utc::now().to_rfc3339(),
+    };
+    Ok((discovery, pending))
+}
+
+async fn exchange_pending_session(
+    client: &Client,
+    discovery: &XaiDiscovery,
+    pending: &XaiOAuthPendingSession,
+    callback: OAuthCallback,
+) -> Result<Value, ProxyError> {
+    if let Some(err) = callback.error.as_deref() {
+        let detail = callback
+            .error_description
+            .as_deref()
+            .unwrap_or(err);
+        return Err(ProxyError::UpstreamAuth(format!(
+            "xAI authorization failed: {detail}"
+        )));
+    }
+
+    let mut callback_state = callback.state.clone();
+    if callback_state.is_none() {
+        callback_state = Some(pending.state.clone());
+    }
+    if callback_state.as_deref() != Some(pending.state.as_str()) {
+        return Err(ProxyError::UpstreamAuth("xAI authorization: state mismatch".into()));
+    }
+
+    let code = callback
+        .code
+        .as_deref()
+        .filter(|s| !s.is_empty())
+        .ok_or_else(|| ProxyError::UpstreamAuth("xAI authorization: missing code".into()))?;
+
+    let payload = exchange_authorization_code(
+        client,
+        &pending.token_endpoint,
+        code,
+        &pending.redirect_uri,
+        &pending.verifier,
+        &pending.challenge,
+    )
+    .await?;
+
+    let tokens = tokens_from_exchange(&payload)?;
+    let base_url = validate_xai_inference_base_url(
+        std::env::var("XAI_BASE_URL")
+            .ok()
+            .as_deref()
+            .or(std::env::var("EDGECRAB_XAI_BASE_URL").ok().as_deref()),
+    );
+
+    Ok(build_provider_state(
+        tokens,
+        discovery,
+        &pending.redirect_uri,
+        &base_url,
+    ))
+}
+
+/// Step 1: open browser / copy URL; persist PKCE so step 2 can run in a fresh command.
+pub async fn start_xai_oauth_login(opts: &XaiOAuthLoginOptions) -> Result<XaiOAuthStarted, ProxyError> {
+    let client = build_http_client(Duration::from_secs(20))?;
+    let (discovery, pending) = prepare_xai_oauth_session(&client).await?;
+    let path = default_xai_pending_path();
+    write_pending_session(&path, &pending)?;
+    emit_authorize_prompt(
+        opts,
+        &pending.authorize_url,
+        &pending.redirect_uri,
+    );
+    let _ = discovery;
+    Ok(XaiOAuthStarted {
+        authorize_url: pending.authorize_url,
+        pending_path: path,
+    })
+}
+
+/// Step 2: submit authorization code (flag or stdin) and exchange tokens.
+pub async fn finish_xai_oauth_login(
+    code: Option<String>,
+    pending_path: Option<&Path>,
+    _opts: &XaiOAuthLoginOptions,
+) -> Result<Value, ProxyError> {
+    let path = pending_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(default_xai_pending_path);
+    let pending = load_pending_session(&path)?;
+    let client = build_http_client(Duration::from_secs(20))?;
+    let discovery = XaiDiscovery {
+        authorization_endpoint: pending.authorization_endpoint.clone(),
+        token_endpoint: pending.token_endpoint.clone(),
+        raw: Value::Null,
+    };
+
+    let normalized = match code {
+        Some(c) => normalize_pasted_input(&c),
+        None => read_pasted_code_from_stdin()?,
+    };
+    let callback = parse_manual_callback_url(&normalized, &pending.redirect_uri)?;
+    let state = exchange_pending_session(&client, &discovery, &pending, callback).await?;
+    clear_pending_session(&path);
+    Ok(state)
+}
+
+pub async fn login_xai_oauth_finish(
+    auth_path: Option<&Path>,
+    code: Option<String>,
+    pending_path: Option<&Path>,
+    opts: &XaiOAuthLoginOptions,
+) -> Result<String, ProxyError> {
+    let path = auth_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(default_auth_path);
+    let state = finish_xai_oauth_login(code, pending_path, opts).await?;
+    persist_xai_oauth(&path, state).await?;
+    Ok(format!(
+        "xAI Grok OAuth saved to {}. Start proxy: edgecrab proxy enable grok && edgecrab proxy start --provider xai",
+        path.display()
+    ))
+}
+
+/// Paste-first login: `start` + wait for code + `finish` (recommended for x.ai manual fallback).
+pub async fn xai_oauth_login_paste_first(opts: &XaiOAuthLoginOptions) -> Result<Value, ProxyError> {
+    let started = start_xai_oauth_login(opts).await?;
+    finish_xai_oauth_login(opts.pasted_code.clone(), Some(&started.pending_path), opts).await
+}
+
 /// Run PKCE loopback (or manual-paste) login without persisting.
 pub async fn xai_oauth_login(opts: &XaiOAuthLoginOptions) -> Result<Value, ProxyError> {
+    if opts.manual_paste {
+        return xai_oauth_login_paste_first(opts).await;
+    }
+
+    let pending_path = default_xai_pending_path();
+    if let Some(code) = opts
+        .pasted_code
+        .as_ref()
+        .map(|s| normalize_pasted_input(s))
+        .filter(|s| !s.is_empty())
+    {
+        if pending_path.exists() {
+            return finish_xai_oauth_login(Some(code), Some(&pending_path), opts).await;
+        }
+        return xai_oauth_login_paste_first(opts).await;
+    }
+
     let timeout = Duration::from_secs(opts.timeout_secs.max(30));
     let client = build_http_client(Duration::from_secs(20))?;
     let discovery = fetch_xai_discovery(&client).await?;
@@ -348,22 +736,12 @@ pub async fn xai_oauth_login(opts: &XaiOAuthLoginOptions) -> Result<Value, Proxy
     let state = uuid::Uuid::new_v4().simple().to_string();
     let nonce = uuid::Uuid::new_v4().simple().to_string();
 
-    let (redirect_uri, callback) = if opts.manual_paste {
-        let redirect_uri = format!(
-            "http://{LOOPBACK_HOST}:{XAI_OAUTH_REDIRECT_PORT}{XAI_OAUTH_REDIRECT_PATH}"
-        );
-        validate_loopback_redirect_uri(&redirect_uri)?;
-        let authorize_url = build_authorize_url(
-            &discovery.authorization_endpoint,
-            &redirect_uri,
-            &challenge,
-            &state,
-            &nonce,
-        );
-        emit_authorize_prompt(opts, &authorize_url, &redirect_uri);
-        let cb = prompt_manual_paste(&redirect_uri)?;
-        (redirect_uri, cb)
-    } else {
+    let redirect_uri = format!(
+        "http://{LOOPBACK_HOST}:{XAI_OAUTH_REDIRECT_PORT}{XAI_OAUTH_REDIRECT_PATH}"
+    );
+    validate_loopback_redirect_uri(&redirect_uri)?;
+
+    let (redirect_uri, callback) = {
         let server = LoopbackServer::start(XAI_OAUTH_REDIRECT_PORT, XAI_OAUTH_REDIRECT_PATH).await?;
         let redirect_uri = server.redirect_uri.clone();
         validate_loopback_redirect_uri(&redirect_uri)?;
@@ -376,63 +754,44 @@ pub async fn xai_oauth_login(opts: &XaiOAuthLoginOptions) -> Result<Value, Proxy
         );
 
         emit_authorize_prompt(opts, &authorize_url, &redirect_uri);
+        eprintln!(
+            "If the browser shows \"Could not establish connection\", paste the code below (Enter works immediately — no need to wait for timeout)."
+        );
 
-        let wait = server.wait_for_callback(timeout).await;
-        let cb = match wait {
-            Ok(cb) => cb,
-            Err(_) if !opts.manual_paste => {
-                eprintln!("Loopback timed out. Paste the callback URL or code:");
-                prompt_manual_paste(&redirect_uri)?
+        let uri_for_stdin = redirect_uri.clone();
+        let stdin_fut = read_pasted_callback_async(&uri_for_stdin);
+        tokio::pin!(stdin_fut);
+
+        let cb = tokio::select! {
+            wait = server.wait_for_callback(timeout) => {
+                match wait {
+                    Ok(cb) => cb,
+                    Err(_) => {
+                        eprintln!("Loopback timed out (xAI could not reach {redirect_uri}).");
+                        prompt_manual_paste(&redirect_uri)?
+                    }
+                }
             }
-            Err(e) => return Err(e),
+            pasted = &mut stdin_fut => {
+                pasted?
+            }
         };
         server.shutdown().await;
         (redirect_uri, cb)
     };
 
-    if let Some(err) = callback.error.as_deref() {
-        let detail = callback
-            .error_description
-            .as_deref()
-            .unwrap_or(err);
-        return Err(ProxyError::UpstreamAuth(format!(
-            "xAI authorization failed: {detail}"
-        )));
-    }
-
-    let mut callback_state = callback.state.clone();
-    if callback_state.is_none() && opts.manual_paste {
-        callback_state = Some(state.clone());
-    }
-    if callback_state.as_deref() != Some(state.as_str()) {
-        return Err(ProxyError::UpstreamAuth("xAI authorization: state mismatch".into()));
-    }
-
-    let code = callback
-        .code
-        .as_deref()
-        .filter(|s| !s.is_empty())
-        .ok_or_else(|| ProxyError::UpstreamAuth("xAI authorization: missing code".into()))?;
-
-    let payload = exchange_authorization_code(
-        &client,
-        &discovery.token_endpoint,
-        code,
-        &redirect_uri,
-        &verifier,
-        &challenge,
-    )
-    .await?;
-
-    let tokens = tokens_from_exchange(&payload)?;
-    let base_url = validate_xai_inference_base_url(
-        std::env::var("XAI_BASE_URL")
-            .ok()
-            .as_deref()
-            .or(std::env::var("EDGECRAB_XAI_BASE_URL").ok().as_deref()),
-    );
-
-    Ok(build_provider_state(tokens, &discovery, &redirect_uri, &base_url))
+    let pending = XaiOAuthPendingSession {
+        version: PENDING_SESSION_VERSION,
+        verifier,
+        challenge,
+        state: state.clone(),
+        redirect_uri: redirect_uri.clone(),
+        authorize_url: String::new(),
+        authorization_endpoint: discovery.authorization_endpoint.clone(),
+        token_endpoint: discovery.token_endpoint.clone(),
+        created_at: Utc::now().to_rfc3339(),
+    };
+    exchange_pending_session(&client, &discovery, &pending, callback).await
 }
 
 pub async fn persist_xai_oauth(auth_path: &Path, state: Value) -> Result<(), ProxyError> {
@@ -469,6 +828,41 @@ mod tests {
         let c = code_challenge(&v);
         assert!(!c.is_empty());
         assert_ne!(v, c);
+    }
+
+    #[test]
+    fn extract_code_from_callback_url() {
+        let url = "http://127.0.0.1:56121/callback?code=abc123&state=xyz";
+        let code = extract_xai_oauth_code_from_paste(url).expect("extract");
+        assert_eq!(code, "abc123");
+    }
+
+    #[test]
+    fn extract_code_from_raw_token() {
+        let code = extract_xai_oauth_code_from_paste("raw-token_value").expect("extract");
+        assert_eq!(code, "raw-token_value");
+    }
+
+    #[test]
+    fn parse_manual_callback_accepts_code_only() {
+        let cb = parse_manual_callback_url(
+            "code-only-token",
+            "http://127.0.0.1:56121/callback",
+        )
+        .expect("parse");
+        assert_eq!(cb.code.as_deref(), Some("code-only-token"));
+        assert!(cb.state.is_none());
+    }
+
+    #[test]
+    fn parse_manual_callback_accepts_query_fragment() {
+        let cb = parse_manual_callback_url(
+            "?code=abc123&state=st-1",
+            "http://127.0.0.1:56121/callback",
+        )
+        .expect("parse");
+        assert_eq!(cb.code.as_deref(), Some("abc123"));
+        assert_eq!(cb.state.as_deref(), Some("st-1"));
     }
 
     #[tokio::test]

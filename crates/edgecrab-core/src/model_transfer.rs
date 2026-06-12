@@ -79,7 +79,9 @@ impl std::fmt::Display for ModelTransferError {
                     "Invalid format: use provider/model (e.g. copilot/gpt-5-mini)"
                 )
             }
-            Self::UnknownModel(m) => write!(f, "Unknown model '{m}' — not in model catalog"),
+            Self::UnknownModel(m) => {
+                write!(f, "Invalid model spec '{m}' (expected provider/model)")
+            }
             Self::SameModel => write!(f, "Already on the requested model"),
             Self::ProviderAuth(msg) => write!(f, "Provider auth failed: {msg}"),
             Self::CompressionFailed { reason } => {
@@ -100,19 +102,16 @@ impl std::error::Error for ModelTransferError {}
 const MODEL_TRANSFER_USER_PREFIX: &str = "Continuing from previous session";
 const STRUCTURAL_TURN_LIMIT: usize = 6;
 
-/// Parse and validate a handoff target against the compiled model catalog.
+/// Parse and validate a handoff target (catalog + dynamically discovered models).
 pub fn resolve_model_transfer_target(
     model_str: &str,
 ) -> Result<ModelTransferTarget, ModelTransferError> {
     let display = model_str.trim();
-    if display.is_empty() {
+    if display.is_empty() || !display.contains('/') {
         return Err(ModelTransferError::InvalidFormat);
     }
-    if !display.contains('/') {
-        return Err(ModelTransferError::InvalidFormat);
-    }
-    let resolved = ModelCatalog::resolve_spec(display)
-        .ok_or_else(|| ModelTransferError::UnknownModel(display.to_string()))?;
+    let resolved = ModelCatalog::resolve_spec_lenient(display)
+        .ok_or(ModelTransferError::InvalidFormat)?;
     Ok(ModelTransferTarget {
         display: resolved.display,
         provider: resolved.runtime_provider,
@@ -413,7 +412,7 @@ impl ModelTransferOrchestrator {
             }
         };
 
-        if target.display.eq_ignore_ascii_case(ctx.current_model) {
+        if ModelCatalog::equivalent_model_specs(&target.display, ctx.current_model) {
             return Err(ModelTransferError::SameModel);
         }
 
@@ -477,9 +476,36 @@ mod tests {
     }
 
     #[test]
-    fn resolve_unknown_model_fails() {
-        let err = resolve_model_transfer_target("fakeprovider/unknown-model-xyz").unwrap_err();
-        assert!(matches!(err, ModelTransferError::UnknownModel(_)));
+    fn resolve_dynamic_lmstudio_model_succeeds() {
+        let target = resolve_model_transfer_target("lmstudio/liquid/lfm2.5-1.2b")
+            .expect("discovered lmstudio model should resolve");
+        assert_eq!(target.display, "lmstudio/liquid/lfm2.5-1.2b");
+        assert_eq!(target.provider, "lmstudio");
+        assert_eq!(target.model_name, "liquid/lfm2.5-1.2b");
+        assert_eq!(target.context_window, 128_000);
+    }
+
+    #[test]
+    fn resolve_lmstudio_alias_normalizes_display() {
+        let target = resolve_model_transfer_target("lm-studio/liquid/lfm2.5-1.2b")
+            .expect("lm-studio alias should resolve");
+        assert_eq!(target.display, "lmstudio/liquid/lfm2.5-1.2b");
+    }
+
+    #[test]
+    fn resolve_empty_model_name_is_invalid_format() {
+        assert!(matches!(
+            resolve_model_transfer_target("lmstudio/"),
+            Err(ModelTransferError::InvalidFormat)
+        ));
+    }
+
+    #[test]
+    fn resolve_unknown_provider_still_parses_for_provider_auth() {
+        let target = resolve_model_transfer_target("fakeprovider/unknown-model-xyz")
+            .expect("lenient resolve accepts provider/model syntax");
+        assert_eq!(target.provider, "fakeprovider");
+        assert_eq!(target.model_name, "unknown-model-xyz");
     }
 
     #[test]
@@ -580,6 +606,24 @@ mod tests {
         };
         let err = create_model_transfer_provider(&target);
         assert!(matches!(err, Err(ModelTransferError::ProviderAuth(_))));
+    }
+
+    #[tokio::test]
+    async fn orchestrator_same_model_rejected_for_provider_alias() {
+        let mut messages = sample_messages(2);
+        let provider: Arc<dyn LLMProvider> = Arc::new(MockProvider::new());
+        let cfg = CompressionConfig::default();
+        let mut ctx = ModelTransferContext {
+            current_model: "lmstudio/liquid/lfm2.5-1.2b",
+            messages: &mut messages,
+            system_prompt: None,
+            compression_cfg: &cfg,
+            main_provider: provider,
+            auxiliary_model: None,
+        };
+        let err =
+            ModelTransferOrchestrator::execute(&mut ctx, "lm-studio/liquid/lfm2.5-1.2b").await;
+        assert!(matches!(err, Err(ModelTransferError::SameModel)));
     }
 
     #[tokio::test]

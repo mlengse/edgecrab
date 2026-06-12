@@ -27,7 +27,6 @@ use std::sync::Arc;
 use tokio::sync::mpsc;
 
 use crate::cli_args::{CliArgs, CronCommand};
-use crate::create_provider;
 use crate::gateway_cmd;
 use crate::runtime::{
     build_agent, build_tool_registry_with_mcp_discovery, load_runtime, open_state_db,
@@ -969,7 +968,7 @@ async fn execute_job(job: &CronJob, args: &CliArgs) -> anyhow::Result<String> {
         model_override,
         args.toolset.as_deref(),
     )?;
-    let provider = create_provider(&runtime.config.model.default_model)?;
+    let provider = crate::create_provider_async(&runtime.config.model.default_model).await?;
     let state_db = open_state_db(&runtime.state_db_path)?;
     let tool_registry = build_tool_registry_with_mcp_discovery(&runtime.config).await;
 

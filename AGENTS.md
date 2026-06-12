@@ -535,21 +535,32 @@ When the agent includes `MEDIA:/path/to/file` in its response, `DeliveryRouter` 
 
 ## Subscription OAuth (spec 024)
 
-Consumer subscriptions (SuperGrok, Nous Portal) use OAuth stored in
-`~/.edgecrab/auth.json` (Hermes-shaped `providers.<id>`). Copilot uses
-`edgequake_llm` GitHub device flow + a separate token cache — not `auth.json`.
+Consumer subscriptions use Hermes-parity OAuth in `edgecrab-core/src/oauth/`:
+
+| Target | Storage | Flow |
+|--------|---------|------|
+| `grok` / `nous` | `~/.edgecrab/auth.json` | Proxy: PKCE loopback / device code |
+| `claude-pro` | `~/.edgecrab/.anthropic_oauth.json` | PKCE + paste auth code |
+| `chatgpt-pro` | `auth.json` `providers.openai-codex` | OpenAI device code |
+| `copilot` | `~/.config/edgequake/copilot` | `edgequake_llm` GitHub device flow |
 
 ```bash
 edgecrab auth add grok          # xAI PKCE loopback (SuperGrok / X Premium+)
 edgecrab auth add nous          # Nous device code
+edgecrab auth add claude-pro    # Claude Pro / Max OAuth (paste code)
+edgecrab auth add chatgpt-pro   # ChatGPT Pro / Codex device code
 edgecrab auth login copilot     # GitHub device code → Copilot token cache
 edgecrab auth status grok
 edgecrab auth remove grok
 ```
 
-Shared PKCE: `edgecrab-core/src/oauth/`. Loopback + provider login:
+TUI: `/login claude-pro`, `/login grok`, `/login chatgpt-pro` (terminal handoff like Copilot).
+
+Shared PKCE: `edgecrab-core/src/oauth/pkce.rs`. Proxy loopback login:
 `edgecrab-proxy/src/oauth/` + `backend/xai/oauth_login.rs`,
 `backend/nous/device_flow.rs`.
+
+When `ANTHROPIC_API_KEY` is unset, `anthropic/…` models use `.anthropic_oauth.json`.
 
 Remote OAuth: `edgecrab auth add grok --no-browser` or `--manual-paste`.
 

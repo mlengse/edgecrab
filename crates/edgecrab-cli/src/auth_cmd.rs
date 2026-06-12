@@ -7,6 +7,12 @@ use std::sync::Arc;
 
 use anyhow::{Context, anyhow, bail};
 use chrono::Utc;
+use edgecrab_core::oauth::{
+    is_anthropic_oauth_alias, is_openai_codex_alias, login_anthropic_oauth,
+    login_codex_device_oauth, remove_anthropic_oauth_file, remove_codex_oauth,
+    read_anthropic_oauth_file, AnthropicOAuthLoginOptions, CodexDeviceLoginOptions,
+    CodexDevicePrompt, OPENAI_CODEX_PROVIDER,
+};
 use edgecrab_core::AppConfig;
 use edgecrab_tools::tools::mcp_client::{read_mcp_token_status, remove_mcp_token, write_mcp_token};
 use edgequake_llm::providers::vscode::{auth::GitHubAuth, token::TokenManager};
@@ -21,6 +27,8 @@ enum AuthTarget {
     Mcp(String),
     NousPortal,
     XaiOAuth,
+    AnthropicOAuth,
+    OpenaiCodex,
     Provider(&'static ProviderAuthSpec),
 }
 
@@ -159,6 +167,43 @@ pub(crate) fn render_copilot_device_prompt(prompt: &CopilotDevicePrompt) -> Stri
     )
 }
 
+fn terminal_hyperlink(label: &str, url: &str) -> String {
+    // OSC-8 hyperlinks are clickable in modern terminals (including VS Code).
+    format!("\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\")
+}
+
+fn persist_last_oauth_url(url: &str) -> Option<PathBuf> {
+    let path = edgecrab_core::edgecrab_home().join("last_oauth_url.txt");
+    if let Some(parent) = path.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    std::fs::write(&path, format!("{url}\n")).ok()?;
+    Some(path)
+}
+
+fn print_open_url_block(
+    stderr: &mut io::Stderr,
+    url: &str,
+    open_browser: bool,
+    short_hint: &str,
+) {
+    let clickable = terminal_hyperlink("Open authorization page", url);
+    let _ = writeln!(stderr, "{short_hint}\n");
+    let _ = writeln!(stderr, "{clickable}");
+    let _ = writeln!(stderr, "{url}\n");
+    if let Some(path) = persist_last_oauth_url(url) {
+        let _ = writeln!(
+            stderr,
+            "Saved URL: {} (fallback if terminal links fail)\n",
+            path.display()
+        );
+    }
+    if open_browser {
+        let _ = open_auth_url(url);
+        let _ = writeln!(stderr, "Browser opened (if supported).");
+    }
+}
+
 fn friendly_grok_login_error(message: &str) -> String {
     let lower = message.to_ascii_lowercase();
     if lower.contains("http 403") || lower.contains("tier_denied") {
@@ -169,14 +214,27 @@ fn friendly_grok_login_error(message: &str) -> String {
     }
     if lower.contains("timed out") || lower.contains("callback") {
         return "xAI sign-in timed out waiting for the browser callback. \
-                On a remote machine use: edgecrab auth add grok --no-browser \
-                (and ssh -L 56121:127.0.0.1:56121) or --manual-paste."
+                Use the paste flow: edgecrab auth grok start && edgecrab auth grok finish --oauth-code 'CODE'"
             .into();
     }
     if lower.contains("state mismatch") {
         return "xAI sign-in failed: OAuth state mismatch. Run `edgecrab auth add grok` again.".into();
     }
+    if is_grok_pending_expired_error(message) {
+        return "Grok sign-in session expired. In the TUI press Enter to open a fresh x.ai page, \
+                or run `edgecrab auth grok start`."
+            .into();
+    }
     message.to_string()
+}
+
+pub(crate) fn render_grok_oauth_steps(authorize_url: &str, finish_hint: &str) -> String {
+    format!(
+        "1. Open x.ai and sign in (browser should open automatically).\n\
+         2. If you see \"Could not establish connection\", copy the code on that page.\n\
+         3. {finish_hint}\n\n\
+         Sign-in URL:\n   {authorize_url}"
+    )
 }
 
 fn print_grok_oauth_signin(prompt: &edgecrab_proxy::XaiOAuthAuthorizePrompt, open_browser: bool) {
@@ -184,38 +242,65 @@ fn print_grok_oauth_signin(prompt: &edgecrab_proxy::XaiOAuthAuthorizePrompt, ope
     let _ = write!(stderr, "\x1b[2J\x1b[H");
     let _ = writeln!(stderr, "xAI Grok sign-in (SuperGrok / X Premium+)");
     let _ = writeln!(stderr, "=======================================\n");
-    let _ = writeln!(stderr, "Open this URL to authorize EdgeCrab:\n");
-    let _ = writeln!(stderr, "{}\n", prompt.authorize_url);
-    if prompt.manual_paste {
-        let _ = writeln!(
-            stderr,
-            "After approving, paste the full callback URL (or code) at the prompt below."
-        );
+
+    let finish_hint = if prompt.manual_paste {
+        "Paste the code at the code> prompt below (same line, then Enter)."
     } else {
+        "Paste the code at code> below, or run: edgecrab auth grok finish --oauth-code 'CODE'"
+    };
+    let _ = writeln!(
+        stderr,
+        "{}",
+        render_grok_oauth_steps(&prompt.authorize_url, finish_hint)
+    );
+    let _ = writeln!(stderr);
+    let clickable = terminal_hyperlink("Open authorization page", &prompt.authorize_url);
+    let _ = writeln!(stderr, "{clickable}\n");
+    if let Some(path) = persist_last_oauth_url(&prompt.authorize_url) {
+        let _ = writeln!(stderr, "Saved URL: {}\n", path.display());
+    }
+    if open_browser {
+        let _ = open_auth_url(&prompt.authorize_url);
+        let _ = writeln!(stderr, "Browser opened (if supported).\n");
+    }
+    if !prompt.manual_paste {
         let _ = writeln!(stderr, "Waiting for callback on {}", prompt.redirect_uri);
         let _ = writeln!(
             stderr,
-            "Remote host? Tunnel: ssh -L 56121:127.0.0.1:56121 user@host\n"
+            "(Loopback mode — x.ai often cannot reach localhost; prefer `edgecrab auth grok start` + `finish`.)\n"
         );
-        if open_browser {
-            open_auth_url(&prompt.authorize_url);
-            let _ = writeln!(stderr, "Browser opened (if supported).");
-        }
     }
     let _ = stderr.flush();
 }
 
-fn xai_oauth_options(no_browser: bool, manual_paste: bool) -> edgecrab_proxy::XaiOAuthLoginOptions {
-    let open_browser = !no_browser && !manual_paste;
+fn grok_use_paste_flow(_manual_paste: bool, loopback: bool) -> bool {
+    !(loopback || oauth_flag(false, "EDGECRAB_AUTH_LOOPBACK"))
+}
+
+fn xai_oauth_options(
+    no_browser: bool,
+    manual_paste: bool,
+    loopback: bool,
+    oauth_code: Option<String>,
+) -> edgecrab_proxy::XaiOAuthLoginOptions {
+    let manual_paste = grok_use_paste_flow(manual_paste, loopback);
+    let open_browser = !no_browser && oauth_code.is_none();
     let on_authorize = Arc::new(move |prompt: edgecrab_proxy::XaiOAuthAuthorizePrompt| {
         print_grok_oauth_signin(&prompt, open_browser);
     });
     edgecrab_proxy::XaiOAuthLoginOptions {
         open_browser,
         manual_paste,
+        pasted_code: oauth_code,
         on_authorize: Some(on_authorize),
         ..Default::default()
     }
+}
+
+fn resolve_oauth_code(cli: Option<String>) -> Option<String> {
+    cli.or_else(|| std::env::var("EDGECRAB_XAI_AUTH_CODE").ok())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
 }
 
 fn friendly_copilot_login_error(message: &str) -> String {
@@ -233,6 +318,12 @@ fn print_copilot_device_prompt(prompt: &CopilotDevicePrompt) {
     let _ = write!(stderr, "\x1b[2J\x1b[H");
     let _ = writeln!(stderr, "GitHub Copilot sign-in");
     let _ = writeln!(stderr, "=======================\n");
+    let _ = writeln!(
+        stderr,
+        "{}",
+        terminal_hyperlink("Open device login page", &prompt.open_url)
+    );
+    let _ = writeln!(stderr, "{}\n", prompt.display_url);
     let _ = writeln!(stderr, "{}\n", render_copilot_device_prompt(prompt));
     let _ = stderr.flush();
 }
@@ -254,34 +345,56 @@ pub async fn run_capture(command: AuthCommand) -> anyhow::Result<String> {
             token,
             no_browser,
             manual_paste,
-        } => add_target(&target, token, no_browser, manual_paste).await,
+            loopback,
+            oauth_code,
+        } => add_target(
+            &target, token, no_browser, manual_paste, loopback, oauth_code,
+        )
+        .await,
         AuthCommand::Login {
             target,
             no_browser,
             manual_paste,
+            loopback,
+            oauth_code,
         } => {
             login_target_capture(
                 target.as_deref().unwrap_or("copilot"),
                 no_browser,
                 manual_paste,
+                loopback,
+                oauth_code,
             )
             .await
         }
+        AuthCommand::Grok { command } => run_grok_auth(command).await,
         AuthCommand::Remove { target } => remove_target(&target).await,
         AuthCommand::Reset { target } => reset_target(target.as_deref()).await,
     }
 }
 
 /// True when `auth add` should run a browser/device OAuth flow (no `--token`).
+pub fn is_grok_auth_target(raw_target: &str) -> bool {
+    matches!(
+        resolve_target(raw_target),
+        Ok(AuthTarget::XaiOAuth)
+    )
+}
+
 pub fn target_uses_interactive_oauth(raw_target: &str) -> bool {
     matches!(
         resolve_target(raw_target),
-        Ok(AuthTarget::NousPortal | AuthTarget::XaiOAuth)
+        Ok(
+            AuthTarget::NousPortal
+                | AuthTarget::XaiOAuth
+                | AuthTarget::AnthropicOAuth
+                | AuthTarget::OpenaiCodex
+        )
     )
 }
 
 pub async fn login_target(raw_target: &str) -> anyhow::Result<()> {
-    let report = login_target_capture(raw_target, false, false).await?;
+    let report = login_target_capture(raw_target, false, false, false, None).await?;
     if !report.trim().is_empty() {
         println!("{report}");
     }
@@ -292,6 +405,8 @@ pub async fn login_target_capture(
     raw_target: &str,
     no_browser: bool,
     manual_paste: bool,
+    loopback: bool,
+    oauth_code: Option<String>,
 ) -> anyhow::Result<String> {
     match resolve_target(raw_target)? {
         AuthTarget::Copilot => {
@@ -310,7 +425,7 @@ pub async fn login_target_capture(
                         user_code: code.user_code.clone(),
                     };
                     print_copilot_device_prompt(&prompt);
-                    open_auth_url(&prompt.open_url);
+                    let _ = open_auth_url(&prompt.open_url);
                 })
                 .await
             {
@@ -332,7 +447,11 @@ pub async fn login_target_capture(
             Ok(summary)
         }
         AuthTarget::NousPortal => login_nous_portal_capture(None).await,
-        AuthTarget::XaiOAuth => login_xai_oauth_capture(no_browser, manual_paste).await,
+        AuthTarget::XaiOAuth => {
+            login_xai_oauth_capture(no_browser, manual_paste, loopback, oauth_code).await
+        }
+        AuthTarget::AnthropicOAuth => login_anthropic_oauth_capture(no_browser).await,
+        AuthTarget::OpenaiCodex => login_openai_codex_capture().await,
         AuthTarget::Provider(spec) => {
             if spec.interactive_login {
                 bail!(
@@ -361,10 +480,229 @@ async fn login_nous_portal_capture(label: Option<&str>) -> anyhow::Result<String
     Ok(msg)
 }
 
-async fn login_xai_oauth_capture(no_browser: bool, manual_paste: bool) -> anyhow::Result<String> {
+fn print_claude_oauth_signin(authorize_url: &str, open_browser: bool) {
+    let mut stderr = io::stderr();
+    let _ = write!(stderr, "\x1b[2J\x1b[H");
+    let _ = writeln!(stderr, "Claude Pro / Max OAuth");
+    let _ = writeln!(stderr, "=====================\n");
+    print_open_url_block(
+        &mut stderr,
+        authorize_url,
+        open_browser,
+        "Open this URL in your browser:",
+    );
+    let _ = writeln!(
+        stderr,
+        "After approving, paste the authorization code at the prompt below.\n"
+    );
+    let _ = stderr.flush();
+}
+
+async fn login_anthropic_oauth_capture(no_browser: bool) -> anyhow::Result<String> {
+    let no_browser = oauth_flag(no_browser, "EDGECRAB_AUTH_NO_BROWSER");
+    let open_browser = !no_browser;
+    let on_authorize = Arc::new(move |url: &str| {
+        print_claude_oauth_signin(url, open_browser);
+    });
+    let msg = login_anthropic_oauth(&AnthropicOAuthLoginOptions {
+        open_browser,
+        on_authorize: Some(on_authorize),
+    })
+    .await
+    .map_err(anyhow::Error::msg)?;
+    Ok(msg)
+}
+
+fn print_codex_device_prompt(prompt: &CodexDevicePrompt) {
+    let mut stderr = io::stderr();
+    let _ = write!(stderr, "\x1b[2J\x1b[H");
+    let _ = writeln!(stderr, "ChatGPT Pro / Codex sign-in");
+    let _ = writeln!(stderr, "============================\n");
+    print_open_url_block(
+        &mut stderr,
+        &prompt.sign_in_url,
+        false,
+        "1. Open this URL in your browser:",
+    );
+    let _ = writeln!(stderr, "2. Enter this one-time code:\n");
+    let _ = writeln!(stderr, "   {}\n", prompt.user_code);
+    let _ = writeln!(stderr, "Waiting for sign-in...");
+    let _ = stderr.flush();
+}
+
+async fn login_openai_codex_capture() -> anyhow::Result<String> {
+    let on_device_code = Arc::new(|prompt: CodexDevicePrompt| {
+        print_codex_device_prompt(&prompt);
+        let _ = open_auth_url(&prompt.sign_in_url);
+    });
+    let msg = login_codex_device_oauth(None, &CodexDeviceLoginOptions {
+        on_device_code: Some(on_device_code),
+    })
+    .await
+    .map_err(anyhow::Error::msg)?;
+    Ok(msg)
+}
+
+async fn run_grok_auth(command: crate::cli_args::GrokAuthCommand) -> anyhow::Result<String> {
+    use crate::cli_args::GrokAuthCommand;
+    match command {
+        GrokAuthCommand::Start { no_browser } => grok_auth_start(no_browser).await,
+        GrokAuthCommand::Finish { oauth_code } => {
+            grok_auth_finish(resolve_oauth_code(oauth_code)).await
+        }
+    }
+}
+
+pub fn grok_pending_path() -> std::path::PathBuf {
+    edgecrab_proxy::default_xai_pending_path()
+}
+
+/// Non-expired pending session (stale `oauth-pending/xai-grok.json` is removed).
+pub fn grok_load_valid_pending() -> Option<(String, std::path::PathBuf)> {
+    let path = grok_pending_path();
+    let session = edgecrab_proxy::peek_xai_pending_session(Some(&path))?;
+    Some((session.authorize_url, path))
+}
+
+pub fn grok_has_valid_pending_session() -> bool {
+    grok_load_valid_pending().is_some()
+}
+
+pub fn is_grok_pending_expired_error(message: &str) -> bool {
+    let lower = message.to_ascii_lowercase();
+    lower.contains("pending grok oauth session expired")
+        || lower.contains("no pending grok oauth session")
+        || lower.contains("run `edgecrab auth grok start`")
+}
+
+/// Begin Grok OAuth (TUI step 1).
+pub async fn grok_auth_start_for_ui(no_browser: bool) -> anyhow::Result<(String, std::path::PathBuf)> {
+    let no_browser = oauth_flag(no_browser, "EDGECRAB_AUTH_NO_BROWSER");
+    let opts = xai_oauth_options(no_browser, true, false, None);
+    let started = edgecrab_proxy::start_xai_oauth_login(&opts)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", friendly_grok_login_error(&e.to_string())))?;
+    Ok((started.authorize_url, started.pending_path))
+}
+
+/// Complete Grok OAuth with a pasted code (TUI step 2).
+pub async fn grok_auth_finish_for_ui(code: String) -> anyhow::Result<String> {
+    let code = code.trim().to_string();
+    if code.is_empty() {
+        anyhow::bail!("authorization code is empty");
+    }
+    let opts = xai_oauth_options(false, true, false, None);
+    edgecrab_proxy::login_xai_oauth_finish(None, Some(code), None, &opts)
+        .await
+        .map_err(|e| anyhow::anyhow!("{}", friendly_grok_login_error(&e.to_string())))
+}
+
+async fn grok_auth_start(no_browser: bool) -> anyhow::Result<String> {
+    let (authorize_url, path) = grok_auth_start_for_ui(no_browser).await?;
+    Ok(format!(
+        "Grok sign-in started.\n\
+         Session: {path}\n\
+         Next: edgecrab auth grok finish --oauth-code 'PASTE_CODE_FROM_X_AI'\n\
+         Or in TUI: /login grok\n\
+         URL: {authorize_url}",
+        path = path.display(),
+    ))
+}
+
+async fn grok_auth_finish(oauth_code: Option<String>) -> anyhow::Result<String> {
+    let code = resolve_oauth_code(oauth_code)
+        .ok_or_else(|| anyhow::anyhow!("missing --oauth-code (or run /login grok in the TUI)"))?;
+    grok_auth_finish_for_ui(code).await
+}
+
+pub fn open_grok_authorize_url(url: &str) -> anyhow::Result<()> {
+    open_auth_url(url)
+}
+
+fn open_auth_url(url: &str) -> anyhow::Result<()> {
+    #[cfg(target_os = "macos")]
+    let status = std::process::Command::new("open").arg(url).status();
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    let status = std::process::Command::new("xdg-open").arg(url).status();
+
+    #[cfg(windows)]
+    let status = std::process::Command::new("cmd")
+        .args(["/C", "start", "", url])
+        .status();
+
+    status
+        .map_err(|e| anyhow::anyhow!("failed to launch browser: {e}"))?
+        .success()
+        .then_some(())
+        .ok_or_else(|| anyhow::anyhow!("browser launcher exited with an error (url: {url})"))
+}
+
+/// Mask a code for on-screen status (first/last 4 chars).
+pub fn mask_grok_code(code: &str) -> String {
+    let chars: Vec<char> = code.chars().collect();
+    if chars.len() <= 12 {
+        return "••••".to_string();
+    }
+    let head: String = chars.iter().take(4).collect();
+    let tail: String = chars.iter().skip(chars.len().saturating_sub(4)).collect();
+    format!("{head}…{tail} ({} chars)", chars.len())
+}
+
+/// Parse clipboard or pasted text into an xAI authorization code.
+pub fn extract_grok_auth_code(input: &str) -> anyhow::Result<String> {
+    edgecrab_proxy::extract_xai_oauth_code_from_paste(input)
+        .map_err(|e| anyhow::anyhow!("{}", friendly_grok_login_error(&e.to_string())))
+}
+
+/// Read authorization code from the system clipboard (macOS/Linux/Windows).
+pub fn grok_read_clipboard_code() -> anyhow::Result<String> {
+    let text = arboard::Clipboard::new()
+        .and_then(|mut cb| cb.get_text())
+        .map_err(|e| anyhow::anyhow!("clipboard: {e}"))?;
+    extract_grok_auth_code(&text)
+}
+
+const GROK_FINISH_PROMPT: &str = "Copy the authorization code from the x.ai page.\n\
+    Paste it on the line below and press Enter.\n\
+    (Paste the code only — not the full URL.)\n";
+
+/// Suspend the TUI and read one line from the real terminal (reliable Enter handling).
+pub fn prompt_and_read_grok_code(stdout: &mut impl io::Write) -> anyhow::Result<String> {
+    use std::io::{self, BufRead};
+
+    let title = "Grok sign-in — paste code";
+    writeln!(stdout, "\n{title}")?;
+    writeln!(stdout, "{}", "=".repeat(title.len()))?;
+    writeln!(stdout)?;
+    for line in GROK_FINISH_PROMPT.lines() {
+        writeln!(stdout, "{line}")?;
+    }
+    writeln!(stdout)?;
+    write!(stdout, "code> ")?;
+    stdout.flush()?;
+    let mut line = String::new();
+    io::stdin()
+        .lock()
+        .read_line(&mut line)
+        .map_err(|e| anyhow::anyhow!("stdin: {e}"))?;
+    extract_grok_auth_code(&line)
+}
+
+async fn login_xai_oauth_capture(
+    no_browser: bool,
+    manual_paste: bool,
+    loopback: bool,
+    oauth_code: Option<String>,
+) -> anyhow::Result<String> {
     let no_browser = oauth_flag(no_browser, "EDGECRAB_AUTH_NO_BROWSER");
     let manual_paste = oauth_flag(manual_paste, "EDGECRAB_AUTH_MANUAL_PASTE");
-    let msg = edgecrab_proxy::login_xai_oauth(None, &xai_oauth_options(no_browser, manual_paste))
+    let loopback = oauth_flag(loopback, "EDGECRAB_AUTH_LOOPBACK");
+    let oauth_code = resolve_oauth_code(oauth_code);
+    let msg = edgecrab_proxy::login_xai_oauth(
+        None,
+        &xai_oauth_options(no_browser, manual_paste, loopback, oauth_code),
+    )
         .await
         .map_err(|e| anyhow::anyhow!("{}", friendly_grok_login_error(&e.to_string())))?;
     Ok(msg)
@@ -403,6 +741,8 @@ pub fn command_from_slash_args(args: &str) -> Result<AuthCommand, String> {
             target: parts.get(1).cloned(),
             no_browser: false,
             manual_paste: false,
+            loopback: false,
+            oauth_code: None,
         }),
         Some("remove") | Some("logout") | Some("rm") => {
             let Some(target) = parts.get(1).cloned() else {
@@ -423,6 +763,8 @@ pub fn command_from_slash_args(args: &str) -> Result<AuthCommand, String> {
                 token,
                 no_browser: false,
                 manual_paste: false,
+                loopback: false,
+                oauth_code: None,
             })
         }
         Some(_) => Err(auth_usage().into()),
@@ -434,7 +776,7 @@ pub fn login_target_from_slash_args(args: &str) -> Result<String, String> {
     match parts.as_slice() {
         [] => Ok("copilot".into()),
         [target] if !target.trim().is_empty() => Ok(target.clone()),
-        _ => Err("Usage: /login [target]\nTargets: copilot, provider/<name>, mcp/<server>, or a configured MCP server name\nDefault target: copilot".into()),
+        _ => Err("Usage: /login [target]\nTargets: copilot, grok, claude-pro, chatgpt-pro, nous, provider/<name>, mcp/<server>\nDefault target: copilot".into()),
     }
 }
 
@@ -491,6 +833,26 @@ async fn list_targets() -> anyhow::Result<String> {
         )?;
     }
 
+    let claude_oauth = read_anthropic_oauth_file()
+        .ok()
+        .flatten()
+        .is_some();
+    writeln!(
+        out,
+        "claude-pro oauth-file={} ({})",
+        yes_no(claude_oauth),
+        edgecrab_core::oauth::anthropic_oauth_path().display(),
+    )?;
+
+    let codex_path = edgecrab_core::oauth::auth_store::default_auth_path();
+    let codex_oauth = edgecrab_core::oauth::codex_has_credentials(&codex_path);
+    writeln!(
+        out,
+        "chatgpt-pro auth-file={} oauth={}",
+        yes_no(codex_oauth),
+        codex_path.display(),
+    )?;
+
     for spec in PROVIDER_AUTH_SPECS {
         let stored = store.providers.contains_key(spec.canonical);
         let active = store.active_provider.as_deref() == Some(spec.canonical);
@@ -535,6 +897,8 @@ async fn status_target(raw_target: Option<&str>) -> anyhow::Result<String> {
             AuthTarget::Mcp(name) => mcp_support::render_mcp_auth_guide(&name),
             AuthTarget::NousPortal => show_nous_status(),
             AuthTarget::XaiOAuth => show_xai_oauth_status(),
+            AuthTarget::AnthropicOAuth => show_anthropic_oauth_status(),
+            AuthTarget::OpenaiCodex => show_openai_codex_status(),
             AuthTarget::Provider(spec) => show_provider_status(spec),
         },
     }
@@ -545,6 +909,8 @@ async fn add_target(
     token: Option<String>,
     no_browser: bool,
     manual_paste: bool,
+    loopback: bool,
+    oauth_code: Option<String>,
 ) -> anyhow::Result<String> {
     match resolve_target(raw_target)? {
         AuthTarget::NousPortal => {
@@ -561,7 +927,23 @@ async fn add_target(
                     "xAI Grok uses browser OAuth (SuperGrok / X Premium+), not a static token. Run `edgecrab auth add grok` or `edgecrab auth add xai-oauth`"
                 );
             }
-            login_xai_oauth_capture(no_browser, manual_paste).await
+            login_xai_oauth_capture(no_browser, manual_paste, loopback, oauth_code).await
+        }
+        AuthTarget::AnthropicOAuth => {
+            if token.is_some() {
+                bail!(
+                    "Claude Pro uses browser OAuth (paste authorization code), not a static token. Run `edgecrab auth add claude-pro`"
+                );
+            }
+            login_anthropic_oauth_capture(no_browser).await
+        }
+        AuthTarget::OpenaiCodex => {
+            if token.is_some() {
+                bail!(
+                    "ChatGPT Pro / Codex uses device-code OAuth, not a static token. Run `edgecrab auth add chatgpt-pro`"
+                );
+            }
+            login_openai_codex_capture().await
         }
         AuthTarget::Copilot => {
             let token = token.as_deref();
@@ -651,6 +1033,20 @@ async fn remove_target(raw_target: &str) -> anyhow::Result<String> {
                 path.display()
             ))
         }
+        AuthTarget::AnthropicOAuth => {
+            remove_anthropic_oauth_file().map_err(anyhow::Error::msg)?;
+            Ok(format!(
+                "Removed Claude Pro OAuth credentials from {}.",
+                edgecrab_core::oauth::anthropic_oauth_path().display()
+            ))
+        }
+        AuthTarget::OpenaiCodex => {
+            remove_codex_oauth(None).map_err(anyhow::Error::msg)?;
+            Ok(format!(
+                "Removed ChatGPT Pro / Codex OAuth from {}.",
+                edgecrab_core::oauth::auth_store::default_auth_path().display()
+            ))
+        }
         AuthTarget::Provider(spec) => {
             for env_var in spec.env_vars {
                 gateway_setup::remove_env_key(env_var).with_context(|| {
@@ -692,12 +1088,14 @@ async fn reset_all() -> anyhow::Result<String> {
     }
     clear_provider_auth_store()?;
     clear_proxy_oauth_providers()?;
-    Ok("Cleared EdgeCrab-managed Copilot, provider, proxy OAuth (nous/grok), and MCP auth caches.".into())
+    let _ = remove_anthropic_oauth_file();
+    let _ = remove_codex_oauth(None);
+    Ok("Cleared EdgeCrab-managed Copilot, Claude/Codex OAuth, provider, proxy OAuth (nous/grok), and MCP auth caches.".into())
 }
 
 fn clear_proxy_oauth_providers() -> anyhow::Result<()> {
     let path = edgecrab_proxy::default_auth_path();
-    for provider in ["nous", edgecrab_proxy::XAI_OAUTH_PROVIDER] {
+    for provider in ["nous", edgecrab_proxy::XAI_OAUTH_PROVIDER, OPENAI_CODEX_PROVIDER] {
         let _ = edgecrab_proxy::remove_provider_state(&path, provider);
     }
     Ok(())
@@ -747,6 +1145,51 @@ fn show_nous_status() -> anyhow::Result<String> {
     writeln!(
         out,
         "proxy:      edgecrab proxy enable nous && edgecrab proxy start --provider nous"
+    )?;
+    Ok(out.trim_end().to_string())
+}
+
+fn show_anthropic_oauth_status() -> anyhow::Result<String> {
+    let path = edgecrab_core::oauth::anthropic_oauth_path();
+    let creds = read_anthropic_oauth_file().map_err(anyhow::Error::msg)?;
+    let mut out = String::from("claude-pro / anthropic (Claude Pro / Max OAuth)\n");
+    writeln!(out, "oauth-file: {}", path.display())?;
+    writeln!(
+        out,
+        "logged-in:  {}",
+        yes_no(creds.as_ref().is_some_and(|c| !c.access_token.is_empty()))
+    )?;
+    if let Some(c) = creds {
+        writeln!(
+            out,
+            "expires-at: {}",
+            if c.expires_at_ms > 0 {
+                c.expires_at_ms.to_string()
+            } else {
+                "unknown".into()
+            }
+        )?;
+    }
+    writeln!(
+        out,
+        "login:      edgecrab auth add claude-pro  |  edgecrab auth login claude-pro"
+    )?;
+    writeln!(
+        out,
+        "model:      anthropic/claude-sonnet-4  (OAuth token used when ANTHROPIC_API_KEY unset)"
+    )?;
+    Ok(out.trim_end().to_string())
+}
+
+fn show_openai_codex_status() -> anyhow::Result<String> {
+    let path = edgecrab_core::oauth::auth_store::default_auth_path();
+    let ready = edgecrab_core::oauth::codex_has_credentials(&path);
+    let mut out = String::from("chatgpt-pro / openai-codex (ChatGPT Pro device OAuth)\n");
+    writeln!(out, "auth-file:  {}", path.display())?;
+    writeln!(out, "logged-in:  {}", yes_no(ready))?;
+    writeln!(
+        out,
+        "login:      edgecrab auth add chatgpt-pro  |  edgecrab auth login chatgpt-pro"
     )?;
     Ok(out.trim_end().to_string())
 }
@@ -817,6 +1260,12 @@ fn resolve_target(raw_target: &str) -> anyhow::Result<AuthTarget> {
     if is_xai_oauth_target(target) {
         return Ok(AuthTarget::XaiOAuth);
     }
+    if is_anthropic_oauth_alias(target) {
+        return Ok(AuthTarget::AnthropicOAuth);
+    }
+    if is_openai_codex_alias(target) {
+        return Ok(AuthTarget::OpenaiCodex);
+    }
 
     let config = AppConfig::load()?;
     if let Some(name) = target.strip_prefix("mcp/") {
@@ -839,7 +1288,7 @@ fn resolve_target(raw_target: &str) -> anyhow::Result<AuthTarget> {
     }
 
     bail!(
-        "unknown auth target '{target}' (expected `copilot`, `nous`, `grok`/`xai-oauth`, `provider/<name>`, `mcp/<server>`, or a configured MCP server name)"
+        "unknown auth target '{target}' (expected `copilot`, `nous`, `grok`, `claude-pro`, `chatgpt-pro`, `provider/<name>`, `mcp/<server>`, or a configured MCP server name)"
     )
 }
 
@@ -902,19 +1351,6 @@ fn yes_no(value: bool) -> &'static str {
     if value { "yes" } else { "no" }
 }
 
-fn open_auth_url(url: &str) {
-    #[cfg(target_os = "macos")]
-    let _ = std::process::Command::new("open").arg(url).status();
-
-    #[cfg(all(unix, not(target_os = "macos")))]
-    let _ = std::process::Command::new("xdg-open").arg(url).status();
-
-    #[cfg(windows)]
-    let _ = std::process::Command::new("cmd")
-        .args(["/C", "start", "", url])
-        .status();
-}
-
 fn copilot_cache_dir() -> anyhow::Result<std::path::PathBuf> {
     dirs::config_dir()
         .map(|base| base.join("edgequake").join("copilot"))
@@ -922,7 +1358,7 @@ fn copilot_cache_dir() -> anyhow::Result<std::path::PathBuf> {
 }
 
 fn auth_usage() -> &'static str {
-    "Usage: /auth [list|status [target]|add <target> [--token <secret>]|login [target]|remove <target>|reset [target]]\nTargets: copilot, nous, grok (xai-oauth), provider/<name>, mcp/<server>, or a configured MCP server name"
+    "Usage: /auth [list|status [target]|add <target> [--token <secret>]|login [target]|remove <target>|reset [target]]\nTargets: copilot, nous, grok, claude-pro, chatgpt-pro, provider/<name>, mcp/<server>, or a configured MCP server name"
 }
 
 fn auth_store_path() -> PathBuf {
@@ -1056,9 +1492,14 @@ mod tests {
                 token,
                 no_browser,
                 manual_paste,
+                loopback,
+                oauth_code,
             } => {
                 assert_eq!(target, "provider/openai");
                 assert_eq!(token.as_deref(), Some("sk-test"));
+                assert!(!manual_paste);
+                assert!(!loopback);
+                assert!(oauth_code.is_none());
                 assert!(!no_browser);
                 assert!(!manual_paste);
             }
@@ -1096,6 +1537,44 @@ mod tests {
         assert!(matches!(target, AuthTarget::XaiOAuth));
         let target = resolve_target("xai-oauth").expect("xai-oauth target");
         assert!(matches!(target, AuthTarget::XaiOAuth));
+    }
+
+    #[test]
+    fn extract_grok_code_from_url_or_token() {
+        let url = "http://127.0.0.1:56121/callback?code=abcDEF123&state=s";
+        let code = extract_grok_auth_code(url).expect("from url");
+        assert_eq!(code, "abcDEF123");
+        let raw = extract_grok_auth_code("XRG_tntFEcKoU8").expect("raw");
+        assert_eq!(raw, "XRG_tntFEcKoU8");
+    }
+
+    #[test]
+    fn mask_grok_code_hides_middle() {
+        let masked = mask_grok_code("abcdefghijklmnop");
+        assert!(masked.contains("abcd"));
+        assert!(masked.contains("mnop"));
+    }
+
+    #[test]
+    fn resolves_claude_pro_auth_target() {
+        let target = resolve_target("claude-pro").expect("claude-pro");
+        assert!(matches!(target, AuthTarget::AnthropicOAuth));
+        let target = resolve_target("anthropic").expect("anthropic oauth");
+        assert!(matches!(target, AuthTarget::AnthropicOAuth));
+    }
+
+    #[test]
+    fn resolves_chatgpt_pro_auth_target() {
+        let target = resolve_target("chatgpt-pro").expect("chatgpt-pro");
+        assert!(matches!(target, AuthTarget::OpenaiCodex));
+        let target = resolve_target("openai-codex").expect("openai-codex");
+        assert!(matches!(target, AuthTarget::OpenaiCodex));
+    }
+
+    #[test]
+    fn target_uses_interactive_oauth_for_claude_and_codex() {
+        assert!(target_uses_interactive_oauth("claude-pro"));
+        assert!(target_uses_interactive_oauth("chatgpt-pro"));
     }
 
     #[test]

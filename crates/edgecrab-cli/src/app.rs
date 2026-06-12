@@ -4898,6 +4898,8 @@ pub struct App {
     web_setup: crate::web_setup_tui::WebSetupTui,
     /// In-TUI OpenAI-compat proxy setup (`/proxy`).
     proxy_setup: crate::proxy_setup_tui::ProxySetupTui,
+    /// In-TUI xAI Grok OAuth (`/login grok`).
+    grok_auth: crate::grok_auth_tui::GrokAuthTui,
     /// Status bar picker overlay (activated by `/statusbar` with no args)
     statusbar_selector_active: bool,
     /// Which row is highlighted in the statusbar picker (0=Visible, 1=Hidden)
@@ -5860,6 +5862,7 @@ impl App {
             proxy_setup: crate::proxy_setup_tui::ProxySetupTui::new(
                 edgecrab_core::edgecrab_home().join("config.yaml"),
             ),
+            grok_auth: crate::grok_auth_tui::GrokAuthTui::new(),
             statusbar_selector_active: false,
             statusbar_selector_cursor: 0, // default to Visible
             shadow_judge_selector_active: false,
@@ -9342,6 +9345,25 @@ impl App {
     /// added to `pending_images` instead of the textarea so it is automatically
     /// analysed by the vision LLM when the user sends their next message.
     pub fn handle_paste(&mut self, text: String) {
+        if self.grok_auth.active
+            && self.grok_auth.screen == crate::grok_auth_tui::GrokAuthScreen::Finish
+        {
+            match crate::auth_cmd::extract_grok_auth_code(&text) {
+                Ok(code) => {
+                    self.grok_auth.set_pending_code(code);
+                    self.push_output(
+                        "Grok sign-in: code loaded — press Enter to save.",
+                        OutputRole::System,
+                    );
+                }
+                Err(e) => {
+                    self.grok_auth.set_error(e.to_string());
+                }
+            }
+            self.needs_redraw = true;
+            return;
+        }
+
         let trimmed = text.trim();
         if Self::is_image_path(trimmed) && std::path::Path::new(trimmed).is_file() {
             let path = std::path::PathBuf::from(trimmed);
@@ -9444,6 +9466,12 @@ impl App {
         let key = normalize_fallback_paging_key(normalize_terminal_control_key(key));
 
         self.needs_redraw = true;
+
+        // Modal overlays must run before global shortcuts and the main chat textarea.
+        if self.grok_auth.active {
+            self.handle_grok_auth_key(key);
+            return;
+        }
 
         if key_matches_binding(&key, &self.voice_push_to_talk_key) {
             self.toggle_voice_recording(true);
@@ -9665,9 +9693,15 @@ impl App {
                     self.needs_redraw = true;
                 }
                 crate::proxy_setup_tui::ProxySetupAction::RunOAuthLogin(target) => {
-                    self.run_login_target_with_terminal_handoff(target, false, false);
-                    self.proxy_setup.toast =
-                        Some("OAuth login finished — check ✓ on the preset.".into());
+                    if crate::auth_cmd::is_grok_auth_target(target) {
+                        self.open_grok_auth_overlay(crate::grok_auth_tui::GrokAuthScreen::Start);
+                        self.proxy_setup.toast =
+                            Some("Grok sign-in — follow the overlay (paste code from x.ai).".into());
+                    } else {
+                        self.run_login_target_with_terminal_handoff(target, false, false);
+                        self.proxy_setup.toast =
+                            Some("OAuth sign-in finished — check ✓ on the preset.".into());
+                    }
                     self.needs_redraw = true;
                 }
                 crate::proxy_setup_tui::ProxySetupAction::None => {}
@@ -12565,6 +12599,7 @@ impl App {
                         target,
                         no_browser,
                         manual_paste,
+                        ..
                     } => Some((
                         target.as_deref().unwrap_or("copilot"),
                         *no_browser,
@@ -12575,6 +12610,7 @@ impl App {
                         token,
                         no_browser,
                         manual_paste,
+                        ..
                     } if token.is_none()
                         && crate::auth_cmd::target_uses_interactive_oauth(target) =>
                     {
@@ -12582,8 +12618,23 @@ impl App {
                     }
                     _ => None,
                 };
-                if let Some((target, no_browser, manual_paste)) = oauth_handoff {
-                    self.run_login_target_with_terminal_handoff(target, no_browser, manual_paste);
+                if let crate::cli_args::AuthCommand::Grok { command } = &command {
+                    use crate::cli_args::GrokAuthCommand;
+                    let screen = match command {
+                        GrokAuthCommand::Start { .. } => {
+                            crate::grok_auth_tui::GrokAuthScreen::Start
+                        }
+                        GrokAuthCommand::Finish { .. } => {
+                            crate::grok_auth_tui::GrokAuthScreen::Finish
+                        }
+                    };
+                    self.open_grok_auth_overlay(screen);
+                } else if let Some((target, no_browser, manual_paste)) = oauth_handoff {
+                    if crate::auth_cmd::is_grok_auth_target(target) {
+                        self.open_grok_auth_overlay(crate::grok_auth_tui::GrokAuthScreen::Start);
+                    } else {
+                        self.run_login_target_with_terminal_handoff(target, no_browser, manual_paste);
+                    }
                 } else {
                     match self
                         .rt_handle
@@ -12596,7 +12647,11 @@ impl App {
                 }
             }
             CommandResult::LoginTarget(target) => {
-                self.run_login_target_with_terminal_handoff(&target, false, false);
+                if crate::auth_cmd::is_grok_auth_target(&target) {
+                    self.open_grok_auth_overlay(crate::grok_auth_tui::GrokAuthScreen::Start);
+                } else {
+                    self.run_login_target_with_terminal_handoff(&target, false, false);
+                }
             }
             CommandResult::LogoutTarget(target) => {
                 match self
@@ -21482,12 +21537,157 @@ impl App {
         action_result
     }
 
+    fn open_grok_auth_overlay(&mut self, screen: crate::grok_auth_tui::GrokAuthScreen) {
+        self.grok_auth.open(screen);
+        if self.grok_auth.screen == crate::grok_auth_tui::GrokAuthScreen::Start {
+            self.run_grok_oauth_start();
+        }
+        self.needs_redraw = true;
+    }
+
+    fn run_grok_oauth_start(&mut self) {
+        self.grok_auth.busy = true;
+        self.grok_auth.error = None;
+        self.needs_redraw = true;
+        let no_browser = self.grok_auth.no_browser;
+        let result = self
+            .rt_handle
+            .block_on(async { crate::auth_cmd::grok_auth_start_for_ui(no_browser).await });
+        match result {
+            Ok((url, path)) => match crate::auth_cmd::open_grok_authorize_url(&url) {
+                Ok(()) => {
+                    self.grok_auth.set_start_result(url, path);
+                    self.push_output(
+                        "Grok: x.ai opened in your browser. Copy the code, then press Enter in the overlay.",
+                        OutputRole::System,
+                    );
+                }
+                Err(e) => {
+                    self.grok_auth.set_start_result(url, path);
+                    self.grok_auth.set_error(format!(
+                        "Could not open browser: {e}. Press o to retry, or open the URL from step 2."
+                    ));
+                }
+            },
+            Err(e) => self.grok_auth.set_error(e.to_string()),
+        }
+        self.needs_redraw = true;
+    }
+
+    fn resolve_grok_auth_code_for_finish(&mut self) -> anyhow::Result<String> {
+        if let Some(code) = self.grok_auth.pending_code.take() {
+            return Ok(code);
+        }
+        if let Ok(code) = crate::auth_cmd::grok_read_clipboard_code() {
+            return Ok(code);
+        }
+        self.with_tui_suspended(crate::auth_cmd::prompt_and_read_grok_code)
+    }
+
+    fn exchange_grok_auth_code(&mut self, code: String) {
+        self.grok_auth.active = true;
+        self.grok_auth.screen = crate::grok_auth_tui::GrokAuthScreen::Finish;
+        self.grok_auth.busy = true;
+        self.grok_auth.error = None;
+        self.needs_redraw = true;
+        let result = self
+            .rt_handle
+            .block_on(async { crate::auth_cmd::grok_auth_finish_for_ui(code).await });
+        match result {
+            Ok(msg) => {
+                self.grok_auth.set_finish_success(msg);
+                self.push_output(
+                    "Grok OAuth saved. Use /proxy to enable the preset or `edgecrab proxy start --provider xai`.",
+                    OutputRole::System,
+                );
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                if crate::auth_cmd::is_grok_pending_expired_error(&msg) {
+                    self.run_grok_oauth_start();
+                    self.push_output(
+                        "Grok session expired — opened a fresh x.ai sign-in in your browser. Paste the new code and press Enter.",
+                        OutputRole::System,
+                    );
+                } else {
+                    self.grok_auth.set_error(msg);
+                }
+            }
+        }
+        self.needs_redraw = true;
+    }
+
+    fn handle_grok_auth_key(&mut self, key: crossterm::event::KeyEvent) {
+        use crate::grok_auth_tui::GrokAuthAction;
+
+        let action = self.grok_auth.handle_key(key);
+        match action {
+            GrokAuthAction::None => {}
+            GrokAuthAction::Close => {
+                self.grok_auth.close();
+                self.needs_redraw = true;
+            }
+            GrokAuthAction::OpenBrowser => {
+                if let Some(url) = self.grok_auth.authorize_url.clone() {
+                    if let Err(e) = crate::auth_cmd::open_grok_authorize_url(&url) {
+                        self.grok_auth.set_error(e.to_string());
+                    }
+                } else {
+                    self.run_grok_oauth_start();
+                }
+                self.needs_redraw = true;
+            }
+            GrokAuthAction::RunStart => {
+                self.run_grok_oauth_start();
+            }
+            GrokAuthAction::LoadClipboard => match crate::auth_cmd::grok_read_clipboard_code() {
+                Ok(code) => {
+                    self.grok_auth.set_pending_code(code);
+                    self.needs_redraw = true;
+                }
+                Err(e) => {
+                    self.grok_auth.set_error(e.to_string());
+                    self.needs_redraw = true;
+                }
+            },
+            GrokAuthAction::RunFinish => {
+                if !crate::auth_cmd::grok_has_valid_pending_session() {
+                    self.run_grok_oauth_start();
+                    self.needs_redraw = true;
+                    return;
+                }
+                match self.resolve_grok_auth_code_for_finish() {
+                    Ok(code) => self.exchange_grok_auth_code(code),
+                    Err(e) => {
+                        let msg = e.to_string();
+                        if crate::auth_cmd::is_grok_pending_expired_error(&msg) {
+                            self.run_grok_oauth_start();
+                        } else if let Some(url) = self.grok_auth.authorize_url.clone() {
+                            let _ = crate::auth_cmd::open_grok_authorize_url(&url);
+                            self.grok_auth.set_error(format!(
+                                "{msg}\nReopened x.ai — paste your code and press Enter again."
+                            ));
+                        } else {
+                            self.grok_auth.active = true;
+                            self.grok_auth.set_error(msg);
+                        }
+                        self.needs_redraw = true;
+                    }
+                }
+            }
+        }
+    }
+
     fn run_login_target_with_terminal_handoff(
         &mut self,
         raw_target: &str,
         no_browser: bool,
         manual_paste: bool,
     ) {
+        if crate::auth_cmd::is_grok_auth_target(raw_target) {
+            self.open_grok_auth_overlay(crate::grok_auth_tui::GrokAuthScreen::Start);
+            return;
+        }
         let target = raw_target.trim().to_string();
         let handle = self.rt_handle.clone();
         let result = self.with_tui_suspended(|stdout| {
@@ -21497,7 +21697,8 @@ impl App {
                 "Requesting a fresh login code...",
             )?;
             handle.block_on(async {
-                crate::auth_cmd::login_target_capture(&target, no_browser, manual_paste).await
+                crate::auth_cmd::login_target_capture(&target, no_browser, manual_paste, false, None)
+                    .await
             })
         });
 
@@ -21537,6 +21738,23 @@ impl App {
     }
 
     fn handle_paste_clipboard(&mut self) {
+        if self.grok_auth.active
+            && self.grok_auth.screen == crate::grok_auth_tui::GrokAuthScreen::Finish
+        {
+            match crate::auth_cmd::grok_read_clipboard_code() {
+                Ok(code) => {
+                    self.grok_auth.set_pending_code(code);
+                    self.push_output(
+                        "Grok sign-in: code loaded from clipboard — press Enter to save.",
+                        OutputRole::System,
+                    );
+                }
+                Err(e) => self.grok_auth.set_error(e.to_string()),
+            }
+            self.needs_redraw = true;
+            return;
+        }
+
         // Try text first
         match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
             Ok(text) if !text.is_empty() => {
@@ -23163,7 +23381,9 @@ impl App {
         if self.show_status_bar {
             self.render_status_bar(frame, chunks[2]);
         }
-        self.render_input(frame, chunks[3]);
+        if !self.grok_auth.active {
+            self.render_input(frame, chunks[3]);
+        }
 
         // Model selector overlay (full screen)
         if self.model_selector.active {
@@ -23277,6 +23497,10 @@ impl App {
 
         if self.proxy_setup.active {
             self.render_proxy_setup_tui(frame, frame.area());
+        }
+
+        if self.grok_auth.active {
+            self.render_grok_auth_tui(frame, frame.area());
         }
 
         // Stream picker overlay (compact centered popup)
@@ -29771,6 +29995,37 @@ impl App {
             crate::proxy_setup_tui::ProxySetupTui::help_line()
         };
         frame.render_widget(Paragraph::new(help), chunks[2]);
+    }
+
+    fn render_grok_auth_tui(&self, frame: &mut Frame, area: Rect) {
+        use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
+
+        frame.render_widget(Clear, area);
+        let chunks = picker_three_layout(area);
+        let accent = crate::proxy_hub::PROXY_ACCENT;
+
+        frame.render_widget(
+            Paragraph::new("SuperGrok / X Premium+ — subscription OAuth").block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .border_style(Style::default().fg(accent))
+                    .title(self.grok_auth.title()),
+            ),
+            chunks[0],
+        );
+
+        frame.render_widget(
+            Paragraph::new(self.grok_auth.body_lines())
+                .wrap(Wrap { trim: true })
+                .block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(" Instructions "),
+                ),
+            chunks[1],
+        );
+
+        frame.render_widget(Paragraph::new(self.grok_auth.help_line()), chunks[2]);
     }
 
     fn render_skin_browser(&self, frame: &mut Frame, area: Rect) {

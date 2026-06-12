@@ -160,6 +160,8 @@ impl ProxySetupTui {
             Line::from(format!("CLI: {}", recipe.hermes_auth_cmd)),
             Line::from(if probe_oauth_auth(recipe) == AuthProbe::Ready {
                 "TUI: signed in — Enter enables preset".to_string()
+            } else if recipe.key == "xai" {
+                "TUI: press a or /login grok — in-app paste-code sign-in".to_string()
             } else {
                 "TUI: press a to sign in (browser OAuth)".to_string()
             }),

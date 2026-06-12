@@ -17,12 +17,15 @@ pub enum VisionSupportLevel {
 
 pub fn normalize_provider_name(provider: &str) -> String {
     match provider.trim().to_ascii_lowercase().as_str() {
-        "claude" => "anthropic".to_string(),
+        "claude" | "claude-pro" | "claude_pro" => "anthropic".to_string(),
+        "chatgpt-pro" | "chatgpt_pro" | "openai-codex" | "codex" => "openai-codex".to_string(),
+        "super-grok" | "super_grok" => "xai".to_string(),
         "copilot" | "vscode" => "vscode-copilot".to_string(),
         "google" => "gemini".to_string(),
         "grok" => "xai".to_string(),
         "nvidia-nim" | "nim" => "nvidia".to_string(),
         "open-router" => "openrouter".to_string(),
+        "lm-studio" | "lm_studio" => "lmstudio".to_string(),
         "vertex" | "vertex-ai" => "vertexai".to_string(),
         "azure-openai" | "azure_openai" | "azureopenai" => "azure".to_string(),
         "aws-bedrock" | "aws_bedrock" | "aws bedrock" => "bedrock".to_string(),
@@ -175,6 +178,11 @@ mod tests {
         assert_eq!(normalize_provider_name("nvidia-nim"), "nvidia");
         assert_eq!(normalize_provider_name("vertex-ai"), "vertexai");
         assert_eq!(normalize_provider_name("aws-bedrock"), "bedrock");
+        assert_eq!(normalize_provider_name("claude-pro"), "anthropic");
+        assert_eq!(normalize_provider_name("chatgpt-pro"), "openai-codex");
+        assert_eq!(normalize_provider_name("super-grok"), "xai");
+        assert_eq!(normalize_provider_name("lm-studio"), "lmstudio");
+        assert_eq!(normalize_provider_name("lm_studio"), "lmstudio");
     }
 
     #[test]

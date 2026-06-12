@@ -657,6 +657,22 @@ pub enum MemoryCommand {
 }
 
 #[derive(Subcommand, Debug, Clone)]
+pub enum GrokAuthCommand {
+    /// Open x.ai sign-in and save a short-lived PKCE session (~10 min)
+    Start {
+        /// Do not open a browser (print URL only)
+        #[arg(long)]
+        no_browser: bool,
+    },
+    /// Paste the authorization code from x.ai and save tokens
+    Finish {
+        /// Code from the x.ai page (skips interactive paste)
+        #[arg(long = "oauth-code")]
+        oauth_code: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
 pub enum AuthCommand {
     /// List auth targets and their local state
     List,
@@ -675,9 +691,15 @@ pub enum AuthCommand {
         /// OAuth: do not open a browser (print URL only; for SSH/remote hosts)
         #[arg(long)]
         no_browser: bool,
-        /// OAuth: skip loopback listener; paste callback URL or code from stdin
+        /// OAuth: paste code flow (default for grok; x.ai rarely reaches localhost)
         #[arg(long)]
         manual_paste: bool,
+        /// OAuth: try localhost callback (often fails on x.ai; use paste flow instead)
+        #[arg(long)]
+        loopback: bool,
+        /// OAuth: authorization code (use after `auth grok start`, or with `--oauth-code`)
+        #[arg(long = "oauth-code")]
+        oauth_code: Option<String>,
     },
     /// Start an interactive login/import flow
     Login {
@@ -686,9 +708,20 @@ pub enum AuthCommand {
         /// OAuth: do not open a browser (print URL only)
         #[arg(long)]
         no_browser: bool,
-        /// OAuth: manual callback paste mode
+        /// OAuth: paste code flow (default for grok)
         #[arg(long)]
         manual_paste: bool,
+        /// OAuth: try localhost callback
+        #[arg(long)]
+        loopback: bool,
+        /// OAuth: authorization code
+        #[arg(long = "oauth-code")]
+        oauth_code: Option<String>,
+    },
+    /// xAI Grok OAuth — two-step sign-in (recommended)
+    Grok {
+        #[command(subcommand)]
+        command: GrokAuthCommand,
     },
     /// Remove local cached credentials for one target
     #[command(visible_aliases = ["logout", "rm"])]
@@ -1995,11 +2028,15 @@ mod tests {
                 token,
                 no_browser,
                 manual_paste,
+                loopback,
+                oauth_code,
             }
             }) if target == "copilot"
                 && token.as_deref() == Some("ghu_test")
                 && !no_browser
                 && !manual_paste
+                && !loopback
+                && oauth_code.is_none()
         ));
     }
 

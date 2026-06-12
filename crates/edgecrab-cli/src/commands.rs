@@ -1032,9 +1032,16 @@ impl CommandRegistry {
         });
 
         self.register(Command {
+            name: "providers",
+            aliases: &["provider-auth"],
+            description: "List subscription OAuth and API-key auth status",
+            handler: |_| CommandResult::AuthCommand(crate::cli_args::AuthCommand::List),
+        });
+
+        self.register(Command {
             name: "login",
             aliases: &[],
-            description: "Run one auth login/import flow",
+            description: "Run auth login (e.g. /login grok = in-TUI SuperGrok OAuth)",
             handler: |args| match crate::auth_cmd::login_target_from_slash_args(args) {
                 Ok(target) => CommandResult::LoginTarget(target),
                 Err(err) => CommandResult::Output(err),
@@ -2537,6 +2544,10 @@ mod tests {
         match reg.dispatch("/login grok") {
             Some(CommandResult::LoginTarget(target)) => assert_eq!(target, "grok"),
             _ => panic!("expected LoginTarget for /login grok"),
+        }
+        match reg.dispatch("/providers") {
+            Some(CommandResult::AuthCommand(crate::cli_args::AuthCommand::List)) => {}
+            _ => panic!("expected /providers -> AuthCommand::List"),
         }
         match reg.dispatch("/logout provider/openai") {
             Some(CommandResult::LogoutTarget(target)) => {
