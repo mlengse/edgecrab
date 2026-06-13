@@ -269,8 +269,12 @@ pub fn list_log_files(home: &Path) -> anyhow::Result<Vec<LogFileInfo>> {
         });
     }
 
-    // Sort DESC by last-modified time so the most recently touched log appears first.
-    entries.sort_by_key(|entry| std::cmp::Reverse(entry.modified));
+    // Sort DESC by last-modified time; tie-break by name for stable ordering.
+    entries.sort_by(|a, b| {
+        b.modified
+            .cmp(&a.modified)
+            .then_with(|| a.name.cmp(&b.name))
+    });
     Ok(entries)
 }
 

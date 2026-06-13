@@ -8,9 +8,9 @@ use std::process::Command;
 
 use common::registry_guard;
 use edgecrab_tools::tools::web::search::backends::ddgs::{
-    DdgsEngine, DdgsSelectionMode, DdgsSettings, ImpersonateOs,
-    metasearch_text, parse_bing_html, parse_ddg_html, pick_random_profile, resolve_profile,
-    resolve_profile_with, select_ranked, select_raw,
+    DdgsEngine, DdgsSelectionMode, DdgsSettings, ImpersonateOs, metasearch_text, parse_bing_html,
+    parse_ddg_html, pick_random_profile, resolve_profile, resolve_profile_with, select_ranked,
+    select_raw,
 };
 use edgecrab_tools::tools::web::search::config::SearchOptions;
 
