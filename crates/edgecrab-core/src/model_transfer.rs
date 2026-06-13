@@ -59,6 +59,29 @@ impl ModelTransferOutcome {
     }
 }
 
+/// Instant switch when there is no in-flight conversation to preserve (Hermes `config.set` parity).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ModelSwitchOutcome {
+    pub from_model: String,
+    pub to_model: String,
+}
+
+/// Result of `/model` — fast switch or full transfer with brief.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelChangeOutcome {
+    Fast(ModelSwitchOutcome),
+    Transfer(ModelTransferOutcome),
+}
+
+impl ModelChangeOutcome {
+    pub fn to_model(&self) -> &str {
+        match self {
+            Self::Fast(o) => &o.to_model,
+            Self::Transfer(o) => &o.to_model,
+        }
+    }
+}
+
 /// Handoff failure — always returned before session mutation when possible.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ModelTransferError {
@@ -230,6 +253,11 @@ pub async fn generate_model_transfer_brief(
     main_model: &str,
     auxiliary_model: Option<&str>,
 ) -> ModelTransferBrief {
+    let transcript = build_model_transfer_transcript(messages);
+    if transcript.trim().is_empty() {
+        return structural_model_transfer_brief(messages);
+    }
+
     let (aux_provider, aux_model) = crate::auxiliary_model::resolve_side_task_provider_and_model(
         None,
         auxiliary_model,
@@ -238,7 +266,6 @@ pub async fn generate_model_transfer_brief(
         "model transfer brief",
     );
 
-    let transcript = build_model_transfer_transcript(messages);
     let prompt = format!(
         "Summarize the in-flight task from this conversation in ONE concise paragraph \
          (3-5 sentences). Focus on: current goal, progress so far, blockers, and immediate \
@@ -295,13 +322,65 @@ fn is_prior_model_transfer_message(text: &str) -> bool {
     text.trim_start().starts_with(MODEL_TRANSFER_USER_PREFIX)
 }
 
+/// True when the session has user/assistant turns worth preserving via transfer brief.
+pub fn session_requires_model_transfer(messages: &[Message]) -> bool {
+    use edgecrab_types::Role;
+    messages.iter().any(|msg| {
+        if !matches!(msg.role, Role::User | Role::Assistant) {
+            return false;
+        }
+        if msg
+            .tool_calls
+            .as_ref()
+            .is_some_and(|calls| !calls.is_empty())
+        {
+            return true;
+        }
+        let text = msg.text_content();
+        !text.trim().is_empty() && !is_prior_model_transfer_message(&text)
+    })
+}
+
+pub fn format_model_change_confirmation(outcome: &ModelChangeOutcome) -> String {
+    match outcome {
+        ModelChangeOutcome::Fast(o) => format_model_switch_confirmation(o),
+        ModelChangeOutcome::Transfer(o) => format_model_transfer_confirmation(o),
+    }
+}
+
+/// User-facing success text after model switch/transfer (CLI + gateway DRY).
+pub fn format_model_change_result(
+    result: Result<ModelChangeOutcome, ModelTransferError>,
+) -> String {
+    match result {
+        Ok(ModelChangeOutcome::Fast(outcome)) => format_model_switch_confirmation(&outcome),
+        Ok(ModelChangeOutcome::Transfer(outcome)) => format_model_transfer_confirmation(&outcome),
+        Err(err) => format_model_change_error(&err),
+    }
+}
+
+pub fn format_model_switch_confirmation(outcome: &ModelSwitchOutcome) -> String {
+    if outcome.from_model.is_empty() {
+        format!("Model → {}", outcome.to_model)
+    } else {
+        format!("Model → {} (was {})", outcome.to_model, outcome.from_model)
+    }
+}
+
+pub fn format_model_change_error(err: &ModelTransferError) -> String {
+    match err {
+        ModelTransferError::SameModel => "Already using that model.".into(),
+        other => format!("Model switch failed: {other}"),
+    }
+}
+
 /// User-facing success text after `Agent::perform_model_transfer` (CLI + gateway DRY).
 pub fn format_model_transfer_result(
     result: Result<ModelTransferOutcome, ModelTransferError>,
 ) -> String {
     match result {
         Ok(outcome) => format_model_transfer_confirmation(&outcome),
-        Err(err) => format!("Model transfer failed: {err}"),
+        Err(err) => format_model_change_error(&err),
     }
 }
 
@@ -695,8 +774,7 @@ mod tests {
     #[test]
     fn format_model_transfer_result_maps_errors() {
         let err = format_model_transfer_result(Err(ModelTransferError::SameModel));
-        assert!(err.contains("Model transfer failed"));
-        assert!(err.contains("Already on the requested model"));
+        assert!(err.contains("Already using that model"));
     }
 
     #[tokio::test]
@@ -759,5 +837,53 @@ mod tests {
                 .expect("handoff with injected provider");
         assert_eq!(outcome.to_model, "anthropic/claude-haiku-4.5");
         assert!(outcome.from_context_window >= outcome.target_context_window);
+    }
+
+    #[test]
+    fn session_requires_model_transfer_false_for_empty_history() {
+        assert!(!session_requires_model_transfer(&[]));
+    }
+
+    #[test]
+    fn session_requires_model_transfer_false_for_system_only() {
+        assert!(!session_requires_model_transfer(&[Message::system("You are helpful.")]));
+    }
+
+    #[test]
+    fn session_requires_model_transfer_true_for_user_turn() {
+        assert!(session_requires_model_transfer(&[Message::user("hello")]));
+    }
+
+    #[test]
+    fn session_requires_model_transfer_ignores_prior_handoff_messages() {
+        let messages = vec![Message::user(&format_model_transfer_user_message(
+            "a/m1",
+            "b/m2",
+            "stale",
+            false,
+        ))];
+        assert!(!session_requires_model_transfer(&messages));
+    }
+
+    #[test]
+    fn format_model_change_confirmation_fast_and_transfer() {
+        let fast = format_model_change_confirmation(&ModelChangeOutcome::Fast(ModelSwitchOutcome {
+            from_model: "a/m1".into(),
+            to_model: "b/m2".into(),
+        }));
+        assert!(fast.contains("b/m2"));
+        assert!(fast.contains("a/m1"));
+
+        let transfer =
+            format_model_change_confirmation(&ModelChangeOutcome::Transfer(ModelTransferOutcome {
+                from_model: "a/m1".into(),
+                to_model: "b/m2".into(),
+                brief: "Keep going.".into(),
+                compressed: false,
+                from_context_window: 200_000,
+                target_context_window: 128_000,
+            }));
+        assert!(transfer.contains("Task brief"));
+        assert!(transfer.contains("Keep going."));
     }
 }

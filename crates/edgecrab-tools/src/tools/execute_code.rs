@@ -1205,32 +1205,61 @@ struct ProcessRunResult {
     outcome: ProcessOutcome,
 }
 
-async fn capture_stdout(mut stdout: tokio::process::ChildStdout) -> Result<String, std::io::Error> {
+async fn capture_stdout(
+    mut stdout: tokio::process::ChildStdout,
+    progress: Option<std::sync::Arc<crate::tool_progress_tail::ToolProgressTail>>,
+) -> Result<String, std::io::Error> {
+    use std::sync::Arc;
     use tokio::io::AsyncReadExt;
 
     let mut capture = HeadTailCapture::new(MAX_STDOUT_BYTES * 2 / 5, MAX_STDOUT_BYTES * 3 / 5);
     let mut buf = [0u8; 4096];
+    let mut writer = progress
+        .as_ref()
+        .map(|reporter| crate::tool_progress_tail::TailByteWriter::stdout(Arc::clone(reporter)));
     loop {
         let read = stdout.read(&mut buf).await?;
         if read == 0 {
             break;
         }
         capture.push(&buf[..read]);
+        if let Some(writer) = writer.as_mut() {
+            writer.push(&buf[..read]);
+        }
+    }
+    if let Some(writer) = writer.as_mut() {
+        writer.finish();
+    }
+    if let Some(reporter) = progress {
+        reporter.flush();
     }
     Ok(capture.into_text())
 }
 
-async fn capture_stderr(mut stderr: tokio::process::ChildStderr) -> Result<String, std::io::Error> {
+async fn capture_stderr(
+    mut stderr: tokio::process::ChildStderr,
+    progress: Option<std::sync::Arc<crate::tool_progress_tail::ToolProgressTail>>,
+) -> Result<String, std::io::Error> {
     use tokio::io::AsyncReadExt;
+    use std::sync::Arc;
 
     let mut capture = HeadOnlyCapture::new(MAX_STDERR_BYTES);
     let mut buf = [0u8; 4096];
+    let mut writer = progress
+        .as_ref()
+        .map(|reporter| crate::tool_progress_tail::TailByteWriter::stderr(Arc::clone(reporter)));
     loop {
         let read = stderr.read(&mut buf).await?;
         if read == 0 {
             break;
         }
         capture.push(&buf[..read]);
+        if let Some(writer) = writer.as_mut() {
+            writer.push(&buf[..read]);
+        }
+    }
+    if let Some(writer) = writer.as_mut() {
+        writer.finish();
     }
     Ok(capture.into_text())
 }
@@ -1309,6 +1338,7 @@ async fn run_command_capture(
     mut cmd: tokio::process::Command,
     timeout_secs: u64,
     cancel: tokio_util::sync::CancellationToken,
+    progress: Option<std::sync::Arc<crate::tool_progress_tail::ToolProgressTail>>,
 ) -> Result<ProcessRunResult, ToolError> {
     use std::process::Stdio;
 
@@ -1334,8 +1364,10 @@ async fn run_command_capture(
             message: "Failed to capture stderr".into(),
         })?;
 
-    let stdout_task = tokio::spawn(capture_stdout(stdout));
-    let stderr_task = tokio::spawn(capture_stderr(stderr));
+    let progress_stdout = progress.clone();
+    let progress_stderr = progress.clone();
+    let stdout_task = tokio::spawn(capture_stdout(stdout, progress_stdout));
+    let stderr_task = tokio::spawn(capture_stderr(stderr, progress_stderr));
 
     let outcome = tokio::select! {
         wait_result = child.wait() => {
@@ -1506,6 +1538,8 @@ async fn execute_remote(
                 provider: ctx.provider.clone(),
                 tool_registry: ctx.tool_registry.clone(),
                 delegate_depth: ctx.delegate_depth,
+                delegate_agent_id: ctx.delegate_agent_id.clone(),
+                delegate_parent_id: ctx.delegate_parent_id.clone(),
                 sub_agent_runner: ctx.sub_agent_runner.clone(),
                 delegation_event_tx: ctx.delegation_event_tx.clone(),
                 clarify_tx: None,
@@ -1557,14 +1591,21 @@ async fn execute_remote(
         )
     );
 
+    let (reporter, options) = crate::tool_progress_tail::ToolProgressTail::reporter_and_options(ctx);
+
     let output = backend
         .execute(
             &remote_command,
             ".",
             Duration::from_secs(timeout_secs),
             ctx.cancel.clone(),
+            options,
         )
         .await?;
+
+    if let Some(reporter) = reporter.as_ref() {
+        reporter.flush();
+    }
 
     rpc_stop.cancel();
     if let Some(task) = rpc_task {
@@ -1692,6 +1733,8 @@ impl ToolHandler for ExecuteCodeToolReal {
             "python" | "python3" | "py" | ""
         );
         let timeout_secs = args.timeout.unwrap_or(DEFAULT_TIMEOUT_SECS).min(600);
+        let (progress_reporter, _) =
+            crate::tool_progress_tail::ToolProgressTail::reporter_and_options(ctx);
         #[cfg(unix)]
         let sandbox_tools = resolve_sandbox_tools(ctx);
 
@@ -1761,6 +1804,8 @@ impl ToolHandler for ExecuteCodeToolReal {
                     provider: ctx.provider.clone(),
                     tool_registry: ctx.tool_registry.clone(),
                     delegate_depth: ctx.delegate_depth,
+                    delegate_agent_id: ctx.delegate_agent_id.clone(),
+                    delegate_parent_id: ctx.delegate_parent_id.clone(),
                     sub_agent_runner: ctx.sub_agent_runner.clone(),
                     delegation_event_tx: ctx.delegation_event_tx.clone(),
                     clarify_tx: None,  // No interactive clarify in sandbox
@@ -1831,7 +1876,13 @@ impl ToolHandler for ExecuteCodeToolReal {
             configure_process_group(&mut compile_cmd);
 
             let compile =
-                run_command_capture(compile_cmd, timeout_secs, ctx.cancel.clone()).await?;
+                run_command_capture(
+                    compile_cmd,
+                    timeout_secs,
+                    ctx.cancel.clone(),
+                    progress_reporter.clone(),
+                )
+                .await?;
             match compile.outcome {
                 ProcessOutcome::Completed(0) => {}
                 ProcessOutcome::Completed(_) => {
@@ -1869,7 +1920,13 @@ impl ToolHandler for ExecuteCodeToolReal {
             let mut run_cmd = tokio::process::Command::new(bin_path);
             run_cmd.current_dir(&ctx.cwd).env_clear().envs(&child_env);
             configure_process_group(&mut run_cmd);
-            run_command_capture(run_cmd, timeout_secs, ctx.cancel.clone()).await?
+            run_command_capture(
+                run_cmd,
+                timeout_secs,
+                ctx.cancel.clone(),
+                progress_reporter.clone(),
+            )
+            .await?
         } else if runtime.contains(' ') {
             let parts: Vec<&str> = runtime.split_whitespace().collect();
             let mut cmd = tokio::process::Command::new(parts[0]);
@@ -1881,7 +1938,13 @@ impl ToolHandler for ExecuteCodeToolReal {
                 .env_clear()
                 .envs(&child_env);
             configure_process_group(&mut cmd);
-            run_command_capture(cmd, timeout_secs, ctx.cancel.clone()).await?
+            run_command_capture(
+                cmd,
+                timeout_secs,
+                ctx.cancel.clone(),
+                progress_reporter.clone(),
+            )
+            .await?
         } else {
             let mut cmd = tokio::process::Command::new(runtime);
             cmd.arg(&script_path)
@@ -1889,7 +1952,13 @@ impl ToolHandler for ExecuteCodeToolReal {
                 .env_clear()
                 .envs(&child_env);
             configure_process_group(&mut cmd);
-            run_command_capture(cmd, timeout_secs, ctx.cancel.clone()).await?
+            run_command_capture(
+                cmd,
+                timeout_secs,
+                ctx.cancel.clone(),
+                progress_reporter.clone(),
+            )
+            .await?
         };
 
         let duration = exec_start.elapsed().as_secs_f64();

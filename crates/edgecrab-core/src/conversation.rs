@@ -309,6 +309,42 @@ pub(crate) fn should_use_native_streaming(
     !provider_prefers_nonstreaming_tool_turns(provider)
 }
 
+fn forward_process_watch_event(
+    event: edgecrab_tools::process_table::WatchEvent,
+    ev_tx: &tokio::sync::mpsc::UnboundedSender<crate::StreamEvent>,
+) {
+    use edgecrab_tools::process_table::WatchEventType;
+    match event.event_type {
+        WatchEventType::TailPreview => {
+            let command_preview = crate::safe_truncate(&event.command, 80).to_string();
+            let _ = ev_tx.send(crate::StreamEvent::BackgroundProcessTail {
+                process_id: event.process_id,
+                command_preview,
+                tail: event.matched_output,
+            });
+        }
+        WatchEventType::Exited => {
+            let _ = ev_tx.send(crate::StreamEvent::BackgroundProcessFinished {
+                process_id: event.process_id,
+                exit_code: event.exit_code,
+            });
+        }
+        _ => {
+            let notice =
+                edgecrab_tools::process_table::format_watch_activity_notice(&event);
+            let _ = ev_tx.send(crate::StreamEvent::ActivityNotice(notice));
+        }
+    }
+}
+
+/// Delegation identity passed into child `execute_loop` runs.
+#[derive(Clone, Debug, Default)]
+pub struct ExecuteLoopDelegateCtx {
+    pub depth: u32,
+    pub agent_id: String,
+    pub parent_id: Option<String>,
+}
+
 /// Build a `ToolContext` from shared agent state.
 ///
 /// WHY extracted: This was duplicated in `execute_loop` and
@@ -333,6 +369,9 @@ fn build_tool_context(
     tool_progress_tx: Option<
         tokio::sync::mpsc::UnboundedSender<edgecrab_tools::ToolProgressUpdate>,
     >,
+    watch_notification_tx: Option<
+        tokio::sync::mpsc::UnboundedSender<edgecrab_tools::process_table::WatchEvent>,
+    >,
     gateway_sender: Option<Arc<dyn edgecrab_tools::registry::GatewaySender>>,
     origin_chat: Option<edgecrab_types::OriginChat>,
     current_tool_call_id: Option<String>,
@@ -345,7 +384,12 @@ fn build_tool_context(
     injected_messages: Option<Arc<tokio::sync::Mutex<Vec<Message>>>>,
     mutation_turn: Option<Arc<edgecrab_tools::MutationTurnState>>,
     lsp_gate: Option<Arc<dyn edgecrab_tools::LspGate>>,
+    delegate_ctx: Option<ExecuteLoopDelegateCtx>,
 ) -> ToolContext {
+    let (delegate_depth, delegate_agent_id, delegate_parent_id) = match &delegate_ctx {
+        Some(d) => (d.depth, Some(d.agent_id.clone()), d.parent_id.clone()),
+        None => (0, None, None),
+    };
     ToolContext {
         task_id: uuid::Uuid::new_v4().to_string(),
         cwd: cwd.to_path_buf(),
@@ -358,7 +402,9 @@ fn build_tool_context(
         process_table: Some(process_table.clone()),
         provider,
         tool_registry,
-        delegate_depth: 0,
+        delegate_depth,
+        delegate_agent_id,
+        delegate_parent_id,
         sub_agent_runner,
         delegation_event_tx,
         clarify_tx,
@@ -387,7 +433,7 @@ fn build_tool_context(
         current_tool_name,
         injected_messages,
         tool_progress_tx,
-        watch_notification_tx: None,
+        watch_notification_tx,
         mutation_turn,
         lsp_gate,
     }
@@ -569,6 +615,15 @@ struct DispatchContext {
     mutation_turn: Arc<edgecrab_tools::MutationTurnState>,
     /// Post-write LSP gate for file mutation tools.
     lsp_gate: Option<Arc<dyn edgecrab_tools::LspGate>>,
+    /// Shared progress channel for all tools in this dispatch batch (parallel-safe).
+    tool_progress_tx: Option<
+        tokio::sync::mpsc::UnboundedSender<edgecrab_tools::ToolProgressUpdate>,
+    >,
+    /// Forward background process watch hits to the UI stream.
+    watch_notification_tx:
+        Option<tokio::sync::mpsc::UnboundedSender<edgecrab_tools::process_table::WatchEvent>>,
+    /// Child delegation identity when this loop runs inside a sub-agent.
+    delegate_ctx: Option<ExecuteLoopDelegateCtx>,
 }
 
 fn post_write_lsp_gate(
@@ -594,6 +649,7 @@ impl Agent {
         history: Option<Vec<Message>>,
         event_tx: Option<&tokio::sync::mpsc::UnboundedSender<crate::StreamEvent>>,
         cwd_override: Option<&std::path::Path>,
+        delegate_ctx: Option<ExecuteLoopDelegateCtx>,
     ) -> Result<ConversationResult, AgentError> {
         tracing::info!(
             msg_len = user_message.len(),
@@ -629,6 +685,14 @@ impl Agent {
             let mut guard = self.steer_rx.lock().expect("steer_rx mutex not poisoned");
             guard.take()
         };
+        if let Some(tx) = event_tx.cloned() {
+            *self
+                .steer_event_tx
+                .lock()
+                .expect("steer_event_tx mutex not poisoned") = Some(tx);
+        }
+        self.steer_pending
+            .store(0, std::sync::atomic::Ordering::Relaxed);
 
         let mutation_turn = Arc::new(edgecrab_tools::MutationTurnState::new());
         mutation_turn.clear();
@@ -707,6 +771,7 @@ impl Agent {
                     None, // clarify_tx not needed for schema resolution
                     None, // approval_tx not needed for schema resolution
                     None, // tool_progress_tx not needed for schema resolution
+                    None, // watch_notification_tx not needed for schema resolution
                     self.gateway_sender.read().await.clone(),
                     config.origin_chat.clone(),
                     None,                // current_tool_call_id not needed for schema resolution
@@ -716,6 +781,7 @@ impl Agent {
                     None, // schema resolution never injects conversation messages
                     None, // mutation_turn not needed for schema resolution
                     None, // lsp_gate not needed for schema resolution
+                    delegate_ctx.clone(),
                 );
 
                 // "all" sentinel / genuinely empty → pass None (no filtering).
@@ -1192,6 +1258,9 @@ impl Agent {
             tokio::spawn(async move {
                 while let Some(req) = approval_req_rx.recv().await {
                     pending_approvals.fetch_add(1, Ordering::Relaxed);
+                    let _ = approval_ev_tx.send(crate::StreamEvent::ActivityNotice(
+                        edgecrab_tools::tool_progress_tail::format_approval_waiting(&req.command),
+                    ));
                     let (decision_tx, decision_rx) =
                         tokio::sync::oneshot::channel::<crate::ApprovalChoice>();
                     if approval_ev_tx
@@ -1226,12 +1295,18 @@ impl Agent {
                             task_index,
                             task_count,
                             goal,
+                            depth,
+                            agent_id,
+                            parent_id,
                         } => {
                             child_runs_in_flight.fetch_add(1, Ordering::Relaxed);
                             let _ = delegation_ev_tx.send(crate::StreamEvent::SubAgentStart {
                                 task_index,
                                 task_count,
                                 goal,
+                                depth,
+                                agent_id,
+                                parent_id,
                             });
                         }
                         DelegationEvent::Thinking {
@@ -1351,6 +1426,20 @@ impl Agent {
             (effective_provider.clone(), config.model.clone())
         };
 
+        let turn_tool_progress_tx = make_tool_progress_tx(event_tx);
+        let watch_notification_tx = if let Some(ev_tx) = event_tx.cloned() {
+            let (tx, mut rx) =
+                tokio::sync::mpsc::unbounded_channel::<edgecrab_tools::process_table::WatchEvent>();
+            tokio::spawn(async move {
+                while let Some(event) = rx.recv().await {
+                    forward_process_watch_event(event, &ev_tx);
+                }
+            });
+            Some(tx)
+        } else {
+            None
+        };
+
         'conversation_loop: loop {
             if tool_defs_dirty {
                 active_tool_defs = if let Some(ref registry) = tool_registry {
@@ -1368,6 +1457,7 @@ impl Agent {
                         None,
                         None,
                         None,
+                        None,
                         self.gateway_sender.read().await.clone(),
                         config.origin_chat.clone(),
                         None,
@@ -1377,6 +1467,7 @@ impl Agent {
                         None,
                         None,
                         None,
+                        delegate_ctx.clone(),
                     );
                     let enabled_filter = if config.enabled_toolsets.is_empty()
                         || edgecrab_tools::toolsets::contains_all_sentinel(&config.enabled_toolsets)
@@ -1465,6 +1556,11 @@ impl Agent {
                 &compression_params,
             ) {
                 CompressionStatus::NeedsCompression => {
+                    if let Some(tx) = event_tx {
+                        let _ = tx.send(crate::StreamEvent::ActivityNotice(
+                            edgecrab_tools::tool_progress_tail::format_compression_started(),
+                        ));
+                    }
                     tracing::info!(
                         messages = session.messages.len(),
                         estimated_prompt_tokens,
@@ -1484,6 +1580,13 @@ impl Agent {
                     // failed 3 times consecutively, skip the LLM call and use
                     // structural-only compression (cheap, never fails).
                     if compression_llm_failures >= MAX_COMPRESSION_LLM_FAILURES {
+                        if let Some(tx) = event_tx {
+                            let _ = tx.send(crate::StreamEvent::ActivityNotice(
+                                edgecrab_tools::tool_progress_tail::format_compression_circuit_breaker(
+                                    compression_llm_failures,
+                                ),
+                            ));
+                        }
                         tracing::warn!(
                             failures = compression_llm_failures,
                             "compression circuit breaker active — using structural fallback only"
@@ -1554,6 +1657,13 @@ impl Agent {
                         session_id = %conversation_session_id,
                         "read dedup cache cleared after compression (FP17)"
                     );
+                    if let Some(tx) = event_tx {
+                        let _ = tx.send(crate::StreamEvent::ActivityNotice(
+                            edgecrab_tools::tool_progress_tail::format_compression_done(
+                                session.messages.len(),
+                            ),
+                        ));
+                    }
                     // Re-check: if compression succeeded, clear the pressure flag.
                     let recomputed_prompt_tokens = estimate_request_prompt_tokens(
                         session.cached_system_prompt.as_deref(),
@@ -1964,6 +2074,9 @@ impl Agent {
                 engine_tool_names: engine_tool_names.clone(),
                 mutation_turn: Arc::clone(&mutation_turn),
                 lsp_gate: lsp_gate.clone(),
+                tool_progress_tx: turn_tool_progress_tx.clone(),
+                watch_notification_tx: watch_notification_tx.clone(),
+                delegate_ctx: delegate_ctx.clone(),
             };
             let action = match process_response(
                 &response,
@@ -2133,6 +2246,8 @@ impl Agent {
                         && let Some((steer_msg, steer_kind)) =
                             crate::steering::drain_pending_steers(rx)
                     {
+                        self.steer_pending
+                            .store(0, std::sync::atomic::Ordering::Relaxed);
                         tracing::info!(
                             kind = %steer_kind,
                             len = steer_msg.len(),
@@ -2477,6 +2592,10 @@ impl Agent {
             let mut guard = self.steer_rx.lock().expect("steer_rx mutex not poisoned");
             *guard = Some(rx);
         }
+        *self
+            .steer_event_tx
+            .lock()
+            .expect("steer_event_tx mutex not poisoned") = None;
 
         Ok(ConversationResult {
             final_response,
@@ -2738,6 +2857,13 @@ fn augment_provider_error(provider: &Arc<dyn LLMProvider>, error: String) -> Str
         if error.contains("api.githubcopilot.com") {
             return format!(
                 "{error} GitHub Copilot direct mode could not reach the remote API. If you rely on a local Copilot proxy, set `VSCODE_COPILOT_DIRECT=false` or configure `VSCODE_COPILOT_PROXY_URL`."
+            );
+        }
+        if lower.contains("unsupported_api_for_model")
+            || (lower.contains("not accessible via the /chat/completions endpoint"))
+        {
+            return format!(
+                "{error} This Copilot model cannot drive the agent loop via /chat/completions. Run `/model copilot/auto` or choose a chat-capable model (not a `*-picker` routing model)."
             );
         }
     }
@@ -3231,6 +3357,7 @@ struct PartialToolCall {
     function_name: Option<String>,
     arguments: String,
     thought_signature: Option<String>,
+    last_generating_emit: Option<std::time::Instant>,
 }
 
 fn finalize_streamed_tool_calls(
@@ -3369,9 +3496,6 @@ async fn api_call_streaming(
                 if let Some(id) = id {
                     entry.id = Some(id);
                 }
-                if let Some(name) = function_name {
-                    entry.function_name = Some(name);
-                }
                 if let Some(args) = function_arguments {
                     entry.arguments.push_str(&args);
                 }
@@ -3379,6 +3503,28 @@ async fn api_call_streaming(
                     entry.thought_signature = thought_signature;
                 }
                 saw_meaningful_chunk = true;
+                let name_just_arrived = function_name.is_some();
+                let tool_id = entry
+                    .id
+                    .clone()
+                    .unwrap_or_else(|| format!("stream-tool-{index}"));
+                if let Some(name) = function_name {
+                    entry.function_name = Some(name.clone());
+                    let now = std::time::Instant::now();
+                    if name_just_arrived
+                        || edgecrab_tools::tool_progress_tail::should_emit_progress(
+                            entry.last_generating_emit,
+                            now,
+                        )
+                    {
+                        entry.last_generating_emit = Some(now);
+                        let _ = event_tx.send(crate::StreamEvent::ToolGenerating {
+                            tool_call_id: tool_id,
+                            name,
+                            partial_args: entry.arguments.clone(),
+                        });
+                    }
+                }
             }
             StreamChunk::Finished { reason, usage, .. } => {
                 saw_meaningful_chunk = true;
@@ -3874,7 +4020,8 @@ async fn api_call_with_retry(
                             | edgequake_llm::LlmError::InvalidRequest(_)
                             | edgequake_llm::LlmError::ModelNotFound(_)
                             | edgequake_llm::LlmError::TokenLimitExceeded { .. }
-                    ) {
+                    ) || crate::multimodal_tool_content::is_tool_message_order_error(&e.to_string())
+                    {
                         break 'attempt_loop;
                     }
                     // FP19: For rate-limit errors, parse the provider-stated
@@ -4355,6 +4502,9 @@ async fn process_response(
                 let engine_tool_names = dctx.engine_tool_names.clone();
                 let mutation_turn = Arc::clone(&dctx.mutation_turn);
                 let lsp_gate = dctx.lsp_gate.clone();
+                let tool_progress_tx = dctx.tool_progress_tx.clone();
+                let watch_notification_tx = dctx.watch_notification_tx.clone();
+                let delegate_ctx = dctx.delegate_ctx.clone();
 
                 parallel_tasks.spawn(async move {
                     let started = std::time::Instant::now();
@@ -4383,6 +4533,9 @@ async fn process_response(
                         engine_tool_names,
                         mutation_turn,
                         lsp_gate,
+                        tool_progress_tx,
+                        watch_notification_tx,
+                        delegate_ctx,
                     };
                     let result = dispatch_single_tool(&tc_id, &tc_name, &tc_args, &inner).await;
                     let duration_ms = started.elapsed().as_millis() as u64;
@@ -4921,7 +5074,8 @@ async fn dispatch_single_tool(
         dctx.delegation_event_tx.clone(),
         dctx.clarify_tx.clone(),
         dctx.approval_tx.clone(),
-        make_tool_progress_tx(dctx.event_tx.as_ref()),
+        dctx.tool_progress_tx.clone(),
+        dctx.watch_notification_tx.clone(),
         dctx.gateway_sender.clone(),
         dctx.origin_chat.clone(),
         Some(tool_call_id.to_string()),
@@ -4931,6 +5085,7 @@ async fn dispatch_single_tool(
         Some(injected_messages.clone()),
         Some(Arc::clone(&dctx.mutation_turn)),
         dctx.lsp_gate.clone(),
+        dctx.delegate_ctx.clone(),
     );
 
     let args: serde_json::Value = match serde_json::from_str(args_json) {
@@ -5191,6 +5346,9 @@ async fn run_learning_reflection_bg(ctx: BackgroundReflectionCtx) {
         engine_tool_names: Arc::new(std::collections::HashSet::new()),
         mutation_turn: Arc::new(edgecrab_tools::MutationTurnState::new()),
         lsp_gate: post_write_lsp_gate(&ctx.app_config_ref),
+        tool_progress_tx: None,
+        watch_notification_tx: None,
+        delegate_ctx: None,
     };
 
     // Work on local session clone — we don't need results propagated back.
@@ -6505,7 +6663,7 @@ def register(ctx):
             .expect("build");
 
         let result = agent
-            .execute_loop("hello", Some("Be helpful."), None, None, None)
+            .execute_loop("hello", Some("Be helpful."), None, None, None, None)
             .await
             .expect("loop");
 
@@ -6528,7 +6686,7 @@ def register(ctx):
         ];
 
         let result = agent
-            .execute_loop("follow-up", None, Some(history), None, None)
+            .execute_loop("follow-up", None, Some(history), None, None, None)
             .await
             .expect("loop");
 
@@ -6549,7 +6707,7 @@ def register(ctx):
         ];
 
         let result = agent
-            .execute_loop("follow-up", None, Some(history), None, None)
+            .execute_loop("follow-up", None, Some(history), None, None, None)
             .await
             .expect("loop");
 
@@ -6648,7 +6806,7 @@ def register(ctx):
         .expect("write AGENTS.md");
 
         agent
-            .execute_loop("hello", None, None, None, Some(workspace.path()))
+            .execute_loop("hello", None, None, None, Some(workspace.path()), None)
             .await
             .expect("loop");
 
@@ -6701,7 +6859,7 @@ def register(ctx):
         agent.interrupt();
 
         let result = agent
-            .execute_loop("hello", None, None, None, None)
+            .execute_loop("hello", None, None, None, None, None)
             .await
             .expect("loop");
 
@@ -6726,7 +6884,7 @@ def register(ctx):
             .expect("build");
 
         let result = agent
-            .execute_loop("hello", None, None, None, None)
+            .execute_loop("hello", None, None, None, None, None)
             .await
             .expect("loop");
 
@@ -7001,7 +7159,7 @@ def register(ctx):
             .expect("build");
 
         let result = agent
-            .execute_loop("do something", Some("Be helpful."), None, None, None)
+            .execute_loop("do something", Some("Be helpful."), None, None, None, None)
             .await
             .expect("loop should not error on budget exhaustion");
 
@@ -7065,7 +7223,7 @@ def register(ctx):
             .expect("build");
 
         let result = agent
-            .execute_loop("hello", Some("Be helpful."), None, None, None)
+            .execute_loop("hello", Some("Be helpful."), None, None, None, None)
             .await
             .expect("loop");
 
@@ -7090,7 +7248,7 @@ def register(ctx):
             .expect("build");
 
         let result = agent
-            .execute_loop("hello", None, None, None, None)
+            .execute_loop("hello", None, None, None, None, None)
             .await
             .expect("loop");
 
@@ -7117,7 +7275,7 @@ def register(ctx):
             .expect("build");
 
         let result = agent
-            .execute_loop("run", None, None, None, None)
+            .execute_loop("run", None, None, None, None, None)
             .await
             .expect("loop");
 
@@ -7144,7 +7302,7 @@ def register(ctx):
             .expect("build");
 
         let result = agent
-            .execute_loop("do something and respond", None, None, None, None)
+            .execute_loop("do something and respond", None, None, None, None, None)
             .await
             .expect("loop");
 
@@ -7586,6 +7744,9 @@ def register(ctx):
             engine_tool_names: Arc::new(std::collections::HashSet::new()),
             mutation_turn: Arc::new(edgecrab_tools::MutationTurnState::new()),
             lsp_gate: None,
+            tool_progress_tx: None,
+            watch_notification_tx: None,
+            delegate_ctx: None,
         }
     }
 
@@ -7768,7 +7929,7 @@ def register(ctx):
 
         // A single text iteration completes normally; no budget exhausted, no interrupt.
         let result = agent
-            .execute_loop("hello", None, None, None, None)
+            .execute_loop("hello", None, None, None, None, None)
             .await
             .expect("loop");
 

@@ -9,6 +9,7 @@ use super::config::{ResolvedChain, SearchOptions};
 use super::error::{ChainFailureSummary, SearchError};
 use super::rate_limit::RateLimiter;
 use super::registry::get_web_search_backend;
+use crate::tool_progress_tail::{OutputProgressFn, ToolProgressTail};
 
 static GLOBAL_RATE_LIMITER: OnceLock<Arc<RateLimiter>> = OnceLock::new();
 
@@ -71,14 +72,32 @@ impl BackendChain {
     pub async fn search(
         &self,
         query: &str,
+        opts: SearchOptions,
+    ) -> Result<(Vec<SearchResult>, String), SearchError> {
+        self.search_with_progress(query, opts, None::<OutputProgressFn>)
+            .await
+    }
+
+    pub async fn search_with_progress(
+        &self,
+        query: &str,
         mut opts: SearchOptions,
+        on_progress: Option<OutputProgressFn>,
     ) -> Result<(Vec<SearchResult>, String), SearchError> {
         if opts.timeout_secs == 0 {
             opts.timeout_secs = self.default_timeout_secs;
         }
+        ToolProgressTail::emit_progress_fn(
+            &on_progress,
+            &crate::tool_progress_tail::format_search_milestone(query),
+        );
         let mut attempts: Vec<(String, String)> = Vec::new();
 
         for (name, backend) in &self.backends {
+            ToolProgressTail::emit_progress_fn(
+                &on_progress,
+                &crate::tool_progress_tail::format_backend_attempt_milestone(name, "searching"),
+            );
             if !self.rate_limiter.is_available(name) {
                 attempts.push((name.clone(), "rate limit budget exhausted".into()));
                 continue;
@@ -100,7 +119,13 @@ impl BackendChain {
                         "web_search: ddgs returned empty, trying next in chain"
                     );
                 }
-                Ok(results) => return Ok((results, backend.name().to_string())),
+                Ok(results) => {
+                    ToolProgressTail::emit_progress_fn(
+                        &on_progress,
+                        &crate::tool_progress_tail::format_results_milestone(results.len(), name),
+                    );
+                    return Ok((results, backend.name().to_string()));
+                }
                 Err(err) if err.is_fallback_eligible() => {
                     if matches!(err.kind, super::error::SearchErrorKind::NotConfigured) {
                         tracing::debug!(

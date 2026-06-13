@@ -222,7 +222,8 @@ mod tests {
         let dir = TempDir::new().expect("tmpdir");
         let view = describe_execution_filesystem(&config_for(BackendKind::Local), dir.path());
         let prompt = view.render_prompt_block();
-        assert!(prompt.contains("File-tool `/tmp` is a virtual alias"));
+        assert!(prompt.contains("File-tool `/tmp/…`"));
+        assert!(prompt.contains("virtual aliases"));
         assert!(prompt.contains("temp-aware programs converge"));
         assert!(
             prompt.contains(

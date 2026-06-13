@@ -549,6 +549,8 @@ async fn build_effective_text(agent: &Agent, msg: &IncomingMessage) -> String {
             provider: Some(provider.clone()),
             tool_registry: None,
             delegate_depth: 0,
+            delegate_agent_id: None,
+            delegate_parent_id: None,
             sub_agent_runner: None,
             delegation_event_tx: None,
             clarify_tx: None,
@@ -615,6 +617,8 @@ async fn build_effective_text(agent: &Agent, msg: &IncomingMessage) -> String {
             provider: None,
             tool_registry: None,
             delegate_depth: 0,
+            delegate_agent_id: None,
+            delegate_parent_id: None,
             sub_agent_runner: None,
             delegation_event_tx: None,
             clarify_tx: None,
@@ -940,6 +944,8 @@ async fn maybe_send_voice_reply(
         provider: None,
         tool_registry: None,
         delegate_depth: 0,
+        delegate_agent_id: None,
+        delegate_parent_id: None,
         sub_agent_runner: None,
         delegation_event_tx: None,
         clarify_tx: None,
@@ -1340,6 +1346,27 @@ impl Gateway {
         Ok(guard.agent.clone())
     }
 
+    async fn handle_session_model_switch(
+        &self,
+        msg: &IncomingMessage,
+        origin_chat_id: &str,
+        target: &str,
+    ) -> String {
+        let Ok(agent) = self
+            .resolve_command_session_agent(msg, origin_chat_id)
+            .await
+        else {
+            return "No agent configured.".into();
+        };
+
+        edgecrab_core::format_model_change_result(
+            agent
+                .switch_model_fast(target)
+                .await
+                .map(edgecrab_core::ModelChangeOutcome::Fast),
+        )
+    }
+
     async fn handle_session_model_transfer(
         &self,
         msg: &IncomingMessage,
@@ -1353,8 +1380,11 @@ impl Gateway {
             return "No agent configured.".into();
         };
 
-        edgecrab_core::format_model_transfer_result(
-            agent.perform_model_transfer(target, None).await,
+        edgecrab_core::format_model_change_result(
+            agent
+                .perform_model_transfer(target, None)
+                .await
+                .map(edgecrab_core::ModelChangeOutcome::Transfer),
         )
     }
 
@@ -1384,7 +1414,7 @@ impl Gateway {
             let current = agent.model().await;
             return format!(
                 "Current model: {current}\nUsage: /model <provider>/<model>\n\
-                 Session switches run the model-transfer pipeline (brief, window check, audit)."
+                 Switches instantly (Hermes parity). Use /transfer-model for brief + window check."
             );
         }
 
@@ -1392,7 +1422,7 @@ impl Gateway {
             return format!("Invalid model target '{target}'. Use /model <provider>/<model>.");
         }
 
-        self.handle_session_model_transfer(msg, origin_chat_id, target)
+        self.handle_session_model_switch(msg, origin_chat_id, target)
             .await
     }
 
@@ -2687,11 +2717,14 @@ impl Gateway {
                                                                 .await;
                                                         }
                                                 }
-                                                edgecrab_core::StreamEvent::SubAgentStart {
-                                                    task_index,
-                                                    task_count,
-                                                    goal,
-                                                } => {
+                                                    edgecrab_core::StreamEvent::SubAgentStart {
+                                                        task_index,
+                                                        task_count,
+                                                        goal,
+                                                        depth: _,
+                                                        agent_id: _,
+                                                        parent_id: _,
+                                                    } => {
                                                     if let Some(adapter) = adapter.as_ref() {
                                                         let _ = adapter
                                                             .send_status(

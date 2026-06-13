@@ -35,6 +35,19 @@ use edgecrab_types::{ToolError, ToolSchema};
 use edgequake_llm::traits::{ChatMessage, ImageData};
 
 use crate::registry::{ToolContext, ToolHandler};
+use crate::tool_progress_tail::{
+    emit_tool_progress, format_browser_milestone, format_browser_wait_milestone,
+    HEARTBEAT_INTERVAL_SECS,
+};
+
+/// Emit a browser milestone to the agent progress channel (when wired).
+fn browser_progress(ctx: &ToolContext, action: &str, detail: &str) {
+    emit_tool_progress(ctx, &format_browser_milestone(action, detail));
+}
+
+fn browser_wait_heartbeat(ctx: &ToolContext, label: &str, elapsed_secs: u64) {
+    emit_tool_progress(ctx, &format_browser_wait_milestone(label, elapsed_secs));
+}
 
 // ═══════════════════════════════════════════════════════════════
 // Configuration constants
@@ -821,6 +834,10 @@ impl SessionManager {
         }
     }
 
+    fn has_session(&self, task_id: &str) -> bool {
+        self.sessions.contains_key(task_id)
+    }
+
     /// Get or create a session for the given task.
     async fn get_or_create(&self, task_id: &str) -> Result<Arc<BrowserSession>, ToolError> {
         // Fast path: session already exists
@@ -960,7 +977,16 @@ fn session_manager() -> &'static Arc<SessionManager> {
 /// in that session), so all browser tools in a conversation share the same tab.
 /// This matches hermes-agent's `task_id="default"` behaviour for sequential operations.
 async fn get_session(ctx: &ToolContext) -> Result<Arc<BrowserSession>, ToolError> {
-    session_manager().get_or_create(&ctx.session_id).await
+    let mgr = session_manager();
+    let is_new = !mgr.has_session(&ctx.session_id);
+    if is_new {
+        browser_progress(ctx, "connecting", "Chrome/CDP");
+    }
+    let session = mgr.get_or_create(&ctx.session_id).await?;
+    if is_new {
+        browser_progress(ctx, "session ready", "tab attached");
+    }
+    Ok(session)
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2287,8 +2313,10 @@ impl ToolHandler for BrowserNavigateTool {
         validate_browser_url(&args.url)?;
 
         let session = get_session(ctx).await?;
+        browser_progress(ctx, "navigating", &args.url);
 
         let (nav_result, final_url, title) = navigate_session(&session, &args.url).await?;
+        browser_progress(ctx, "loaded", &title);
 
         // Auto-start recording on first navigation if enabled.
         // Guarded by recording_started flag so we start at most once per session.
@@ -2413,6 +2441,11 @@ impl ToolHandler for BrowserSnapshotTool {
             serde_json::from_value(args.clone()).unwrap_or(SnapshotArgs { full: false });
 
         let session = get_session(ctx).await?;
+        browser_progress(
+            ctx,
+            "snapshot",
+            if args.full { "full page" } else { "interactive" },
+        );
 
         // Wait for page to reach interactive state before snapshotting.
         // SPA frameworks and dynamic pages may still be rendering. We poll
@@ -2444,6 +2477,7 @@ impl ToolHandler for BrowserSnapshotTool {
         )
         .await;
 
+        browser_progress(ctx, "snapshot ready", &format!("{} chars", result.len()));
         Ok(result)
     }
 }
@@ -2513,6 +2547,7 @@ impl ToolHandler for BrowserClickTool {
         })?;
 
         let session = get_session(ctx).await?;
+        browser_progress(ctx, "click", &args.r#ref);
         let ref_id = normalize_ref(&args.r#ref)?;
 
         // Step 1: find element, scroll into view, get viewport-relative centre.
@@ -2645,6 +2680,11 @@ impl ToolHandler for BrowserTypeTool {
         })?;
 
         let session = get_session(ctx).await?;
+        browser_progress(
+            ctx,
+            "typing",
+            &format!("{} → {}", args.r#ref, crate::safe_truncate(&args.text, 40)),
+        );
         let ref_id = normalize_ref(&args.r#ref)?;
 
         // Step 1: Find element, scroll into view, get viewport-relative centre.
@@ -2810,6 +2850,12 @@ impl ToolHandler for BrowserScrollTool {
 
         let session = get_session(ctx).await?;
 
+        browser_progress(
+            ctx,
+            "scroll",
+            &format!("{} {}px", args.direction, args.amount),
+        );
+
         let scroll_y = match args.direction.as_str() {
             "up" => -args.amount,
             "down" => args.amount,
@@ -2904,6 +2950,7 @@ impl ToolHandler for BrowserPressTool {
         })?;
 
         let session = get_session(ctx).await?;
+        browser_progress(ctx, "press key", &args.key);
 
         // Use CDP Input.dispatchKeyEvent for proper key simulation
         let key_code = key_to_code(&args.key);
@@ -2983,6 +3030,7 @@ impl ToolHandler for BrowserBackTool {
         ctx: &ToolContext,
     ) -> Result<String, ToolError> {
         let session = get_session(ctx).await?;
+        browser_progress(ctx, "back", "history");
 
         cdp_evaluate(&session.ws_url, "window.history.back()").await?;
         // Use the same navigation-commit polling as browser_navigate rather than
@@ -3045,6 +3093,10 @@ impl ToolHandler for BrowserCloseTool {
         ctx: &ToolContext,
     ) -> Result<String, ToolError> {
         let had_session = session_manager().sessions.contains_key(&ctx.session_id);
+
+        if had_session {
+            browser_progress(ctx, "closing", "session");
+        }
 
         session_manager().close_session(&ctx.session_id).await;
 
@@ -3118,6 +3170,11 @@ impl ToolHandler for BrowserConsoleTool {
             serde_json::from_value(args.clone()).unwrap_or(ConsoleArgs { clear: false });
 
         let session = get_session(ctx).await?;
+        browser_progress(
+            ctx,
+            "console",
+            if args.clear { "read + clear" } else { "read" },
+        );
 
         let clear_code = if args.clear {
             "window.__ecrab_msgs = []; window.__ecrab_errs = [];"
@@ -3220,6 +3277,7 @@ impl ToolHandler for BrowserGetImagesTool {
         ctx: &ToolContext,
     ) -> Result<String, ToolError> {
         let session = get_session(ctx).await?;
+        browser_progress(ctx, "listing images", "page scan");
 
         let js = r#"
 JSON.stringify(
@@ -3312,6 +3370,7 @@ impl ToolHandler for BrowserVisionTool {
             })?;
 
         let session = get_session(ctx).await?;
+        browser_progress(ctx, "screenshot", &args.question);
 
         // If annotate mode, overlay numbered labels on interactive elements
         // before taking the screenshot (matches hermes-agent parity)
@@ -3388,6 +3447,8 @@ impl ToolHandler for BrowserVisionTool {
         if let Err(e) = std::fs::write(&screenshot_path, &png_bytes) {
             tracing::warn!("browser_vision: could not save screenshot: {e}");
         }
+
+        browser_progress(ctx, "analyzing", &args.question);
 
         // Analyze with vision LLM
         let analysis = if let Some(provider) = &ctx.provider {
@@ -3560,6 +3621,18 @@ impl ToolHandler for BrowserWaitForTool {
         let timeout_secs = args.timeout.min(30);
         let session = get_session(ctx).await?;
 
+        let mut wait_label = String::new();
+        if let Some(t) = &args.text {
+            wait_label.push_str(&format!("text \"{t}\""));
+        }
+        if let Some(s) = &args.selector {
+            if !wait_label.is_empty() {
+                wait_label.push_str(" + ");
+            }
+            wait_label.push_str(&format!("selector \"{s}\""));
+        }
+        browser_progress(ctx, "waiting for", &wait_label);
+
         let text_js = match &args.text {
             Some(t) => format!(
                 "(document.body && document.body.innerText.includes({}))",
@@ -3577,6 +3650,8 @@ impl ToolHandler for BrowserWaitForTool {
 
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
         let mut found = false;
+        let mut last_heartbeat = std::time::Instant::now()
+            - std::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
 
         while tokio::time::Instant::now() < deadline {
             let result = cdp_evaluate(&session.ws_url, &check_js)
@@ -3585,6 +3660,16 @@ impl ToolHandler for BrowserWaitForTool {
             if result == "true" {
                 found = true;
                 break;
+            }
+            let now = std::time::Instant::now();
+            if now.duration_since(last_heartbeat).as_secs() >= HEARTBEAT_INTERVAL_SECS {
+                let elapsed = timeout_secs.saturating_sub(
+                    deadline
+                        .saturating_duration_since(tokio::time::Instant::now())
+                        .as_secs(),
+                );
+                browser_wait_heartbeat(ctx, &wait_label, elapsed);
+                last_heartbeat = now;
             }
             tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         }
@@ -3698,6 +3783,12 @@ impl ToolHandler for BrowserSelectTool {
 
         let session = get_session(ctx).await?;
         let ref_id = normalize_ref(&args.r#ref)?;
+        browser_progress(
+            ctx,
+            "select",
+            &format!("{} → {}", args.r#ref, crate::safe_truncate(&args.option, 40)),
+        );
+
         let option_escaped = escape_js_string(&args.option);
 
         let js = format!(
@@ -3811,6 +3902,7 @@ impl ToolHandler for BrowserHoverTool {
 
         let session = get_session(ctx).await?;
         let ref_id = normalize_ref(&args.r#ref)?;
+        browser_progress(ctx, "hover", &args.r#ref);
 
         // Get element's center coordinates via JS
         let coords_js = format!(

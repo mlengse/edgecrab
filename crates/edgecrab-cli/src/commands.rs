@@ -157,6 +157,16 @@ pub enum CommandResult {
     SubgoalDone,
     /// Run a prompt in the background
     BackgroundPrompt(String),
+    /// Open background process output overlay (`/tail <process_id>`).
+    ShowProcessTail(String),
+    /// Open delegate spawn-tree dashboard (`/agents`).
+    ShowAgentsOverlay,
+    /// Replay a completed spawn turn in `/agents` (`/replay [N|last|list|load <path>]`).
+    ShowAgentsReplay(String),
+    /// Per-section shelf disclosure (`/details`).
+    ShelfDetails(String),
+    /// Status-bar busy indicator style (`/indicator`).
+    StatusIndicator(String),
     /// Ask an ephemeral side question using the current session context.
     SideQuestion(String),
     /// Fork the current session into a new branch and switch to it.
@@ -530,8 +540,8 @@ impl CommandRegistry {
             description:
                 "Show model selector or transfer model (e.g. /model openrouter/openai/gpt-5.4)",
             // WHY return ModelSwitch: The handler can't access the agent directly
-            // (fn pointer, not closure). The App event loop runs the model-transfer
-            // pipeline via `Agent::perform_model_transfer`.
+            // (fn pointer, not closure). The App event loop runs an instant hot-swap
+            // via `Agent::switch_model_fast` (Hermes `/model` parity).
             handler: |args| {
                 if args.is_empty() {
                     CommandResult::ModelSelector
@@ -826,6 +836,22 @@ impl CommandRegistry {
                     CommandResult::SetToolProgress(args.to_string())
                 }
             },
+        });
+
+        self.register(Command {
+            name: "details",
+            aliases: &["detail", "shelf"],
+            description:
+                "Activity shelf disclosure — open interactive panel or set section visibility",
+            handler: |args| CommandResult::ShelfDetails(args.trim().to_string()),
+        });
+
+        self.register(Command {
+            name: "indicator",
+            aliases: &["face", "spinner"],
+            description:
+                "Status-bar busy indicator: /indicator [kaomoji|emoji|unicode|ascii|status]",
+            handler: |args| CommandResult::StatusIndicator(args.trim().to_string()),
         });
 
         self.register(Command {
@@ -1250,6 +1276,27 @@ impl CommandRegistry {
         });
 
         self.register(Command {
+            name: "tail",
+            aliases: &[],
+            description: "View background process output (/tail [process_id])",
+            handler: |args| CommandResult::ShowProcessTail(args.trim().to_string()),
+        });
+
+        self.register(Command {
+            name: "agents",
+            aliases: &["delegate", "subagents"],
+            description: "Monitor active delegate sub-agents (/agents)",
+            handler: |_| CommandResult::ShowAgentsOverlay,
+        });
+
+        self.register(Command {
+            name: "replay",
+            aliases: &[],
+            description: "Replay spawn tree (/replay [N|last|list|load <path>])",
+            handler: |args| CommandResult::ShowAgentsReplay(args.trim().to_string()),
+        });
+
+        self.register(Command {
             name: "branch",
             aliases: &["fork"],
             description: "Branch the current session and switch to the new copy",
@@ -1626,6 +1673,36 @@ pub fn gateway_commands_page(page: usize, skill_names: &[String]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dispatch_replay_command() {
+        let reg = CommandRegistry::new();
+        assert!(matches!(
+            reg.dispatch("/replay list"),
+            Some(CommandResult::ShowAgentsReplay(_))
+        ));
+        assert!(matches!(
+            reg.dispatch("/replay 2"),
+            Some(CommandResult::ShowAgentsReplay(_))
+        ));
+    }
+
+    #[test]
+    fn dispatch_agents_overlay() {
+        let reg = CommandRegistry::new();
+        assert!(matches!(
+            reg.dispatch("/agents"),
+            Some(CommandResult::ShowAgentsOverlay)
+        ));
+        assert!(matches!(
+            reg.dispatch("/delegate"),
+            Some(CommandResult::ShowAgentsOverlay)
+        ));
+        assert!(matches!(
+            reg.dispatch("/subagents"),
+            Some(CommandResult::ShowAgentsOverlay)
+        ));
+    }
 
     #[test]
     fn dispatch_help() {
@@ -2151,6 +2228,19 @@ mod tests {
         assert!(matches!(
             reg.dispatch("/statusbar off"),
             Some(CommandResult::SetStatusBar(args)) if args == "off"
+        ));
+    }
+
+    #[test]
+    fn dispatch_indicator_command() {
+        let reg = CommandRegistry::new();
+        assert!(matches!(
+            reg.dispatch("/indicator"),
+            Some(CommandResult::StatusIndicator(args)) if args.is_empty()
+        ));
+        assert!(matches!(
+            reg.dispatch("/indicator emoji"),
+            Some(CommandResult::StatusIndicator(args)) if args == "emoji"
         ));
     }
 

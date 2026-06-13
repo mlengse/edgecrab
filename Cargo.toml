@@ -69,8 +69,8 @@ lsp-types = { version = "0.97.0", features = ["proposed"] }
 regex = "1"
 url = "2"
 
-# LLM backend — local patch at end of file until edgequake-llm v0.6.24 tag.
-edgequake-llm = { git = "https://github.com/raphaelmansuy/edgequake-llm.git", tag = "v0.6.23", features = ["bedrock"] }
+# LLM backend — pinned to edgequake-llm v0.6.24 (Mistral tool_calls + Bedrock coalesce).
+edgequake-llm = { git = "https://github.com/raphaelmansuy/edgequake-llm.git", tag = "v0.6.24", features = ["bedrock"] }
 
 # Image processing (vision tool: resize/compress before base64 encoding)
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
@@ -171,6 +171,3 @@ split-debuginfo = "unpacked"
 
 [profile.dev.build-override]
 opt-level = 3
-
-[patch."https://github.com/raphaelmansuy/edgequake-llm.git"]
-edgequake-llm = { path = "../edgequake-llm" }

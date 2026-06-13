@@ -114,6 +114,12 @@ pub struct Agent {
     // Agent::steer_sender() which clones the Arc-less Sender.
     pub(crate) steer_tx: crate::steering::SteeringSender,
     pub(crate) steer_rx: std::sync::Mutex<Option<crate::steering::SteeringReceiver>>,
+    /// Stream sink active only while `execute_loop` is running (SteerPending events).
+    pub(crate) steer_event_tx: std::sync::Mutex<
+        Option<tokio::sync::mpsc::UnboundedSender<crate::StreamEvent>>,
+    >,
+    /// Count of steering events queued but not yet injected at a tool boundary.
+    pub(crate) steer_pending: std::sync::atomic::AtomicUsize,
 }
 
 /// Options for cloning an agent into a fresh isolated session.
@@ -677,6 +683,8 @@ impl Agent {
             context_engine,
             steer_tx,
             steer_rx: std::sync::Mutex::new(Some(steer_rx)),
+            steer_event_tx: std::sync::Mutex::new(None),
+            steer_pending: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -805,7 +813,7 @@ impl Agent {
         });
 
         match self
-            .execute_loop(message, None, None, Some(&event_tx), None)
+            .execute_loop(message, None, None, Some(&event_tx), None, None)
             .await
         {
             Ok(result) => {
@@ -864,6 +872,7 @@ impl Agent {
             conversation_history,
             None,
             None,
+            None,
         )
         .await
     }
@@ -882,6 +891,7 @@ impl Agent {
             conversation_history,
             None,
             Some(cwd),
+            None,
         )
         .await
     }
@@ -932,6 +942,11 @@ impl Agent {
             .cancel();
     }
 
+    /// Shared background process table (terminal tools, `/tail` panel).
+    pub fn process_table(&self) -> Arc<ProcessTable> {
+        self.process_table.clone()
+    }
+
     /// Whether the cancellation token has been triggered.
     pub fn is_cancelled(&self) -> bool {
         self.cancel
@@ -954,6 +969,24 @@ impl Agent {
     /// ```
     pub fn steer_sender(&self) -> crate::steering::SteeringSender {
         self.steer_tx.clone()
+    }
+
+    /// Send a steering event and notify streaming clients of the pending count.
+    pub fn send_steering(
+        &self,
+        event: crate::steering::SteeringEvent,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<crate::steering::SteeringEvent>> {
+        use std::sync::atomic::Ordering;
+        let count = self.steer_pending.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Some(tx) = self
+            .steer_event_tx
+            .lock()
+            .expect("steer_event_tx mutex not poisoned")
+            .clone()
+        {
+            let _ = tx.send(crate::StreamEvent::SteerPending { count });
+        }
+        self.steer_tx.send(event)
     }
 
     /// Reset session state for a new conversation.
@@ -1026,9 +1059,42 @@ impl Agent {
         }
     }
 
+    /// Instant model switch — Hermes `/model` parity (no brief, no auxiliary LLM).
+    pub async fn switch_model_fast(
+        &self,
+        target_spec: &str,
+    ) -> Result<crate::model_transfer::ModelSwitchOutcome, crate::model_transfer::ModelTransferError>
+    {
+        use crate::model_catalog::ModelCatalog;
+        use crate::model_transfer::{
+            ModelSwitchOutcome, create_model_transfer_provider, resolve_model_transfer_target,
+        };
+
+        let target = resolve_model_transfer_target(target_spec)?;
+        let current_model = self.config.read().await.model.clone();
+        if ModelCatalog::equivalent_model_specs(&target.display, &current_model) {
+            return Err(crate::model_transfer::ModelTransferError::SameModel);
+        }
+        let provider = create_model_transfer_provider(&target)?;
+        self.swap_model(target.display.clone(), provider).await;
+
+        if let Some(db) = &self.state_db
+            && let Some(session_id) = self.session.read().await.session_id.as_deref()
+            && let Err(err) = db.update_session_model(session_id, &target.display)
+        {
+            tracing::warn!(error = %err, "fast model switch session DB update failed");
+        }
+
+        Ok(ModelSwitchOutcome {
+            from_model: current_model,
+            to_model: target.display,
+        })
+    }
+
     /// Transfer the live session to another model with brief + window check.
     ///
-    /// Single entry point for `/model` and `/transfer-model` in CLI and gateway.
+    /// Used by `/transfer-model` in CLI and gateway. For instant hot-swap use
+    /// [`switch_model_fast`](Self::switch_model_fast) (`/model`).
     pub async fn perform_model_transfer(
         &self,
         target_model: &str,
@@ -1735,6 +1801,8 @@ impl Agent {
             provider: Some(self.provider.read().await.clone()),
             tool_registry: Some(registry.clone()),
             delegate_depth: 0,
+            delegate_agent_id: None,
+            delegate_parent_id: None,
             sub_agent_runner: None,
             delegation_event_tx: None,
             clarify_tx: None,
@@ -1958,6 +2026,15 @@ pub enum StreamEvent {
     Token(String),
     /// A reasoning / think-mode chunk.
     Reasoning(String),
+    /// The model is streaming a tool call before arguments are complete.
+    ToolGenerating {
+        /// Stable tool call id from the LLM tool invocation (or stream placeholder).
+        tool_call_id: String,
+        /// Tool name being drafted (e.g. "terminal")
+        name: String,
+        /// Partial JSON arguments accumulated so far.
+        partial_args: String,
+    },
     /// A tool execution has started.
     ToolExec {
         /// Stable tool call id from the LLM tool invocation.
@@ -1996,6 +2073,12 @@ pub enum StreamEvent {
         task_index: usize,
         task_count: usize,
         goal: String,
+        /// Delegation depth from parent agent (1 = first-level delegate).
+        depth: u32,
+        /// Stable subagent id for tree grouping / replay.
+        agent_id: String,
+        /// Parent subagent id when nested; `None` for top-level spawns.
+        parent_id: Option<String>,
     },
     /// A delegated child agent surfaced intermediate reasoning text.
     SubAgentReasoning {
@@ -2090,6 +2173,19 @@ pub enum StreamEvent {
         /// Compression threshold in tokens (context_window × threshold_fraction).
         threshold_tokens: usize,
     },
+    /// Ephemeral human-facing activity notice (compression, background process watch, etc.).
+    ActivityNotice(String),
+    /// Throttled tail from a background process (survives after `run_process` ToolDone).
+    BackgroundProcessTail {
+        process_id: String,
+        command_preview: String,
+        tail: String,
+    },
+    /// Background process exited (updates the monitor line in the TUI).
+    BackgroundProcessFinished {
+        process_id: String,
+        exit_code: Option<i32>,
+    },
     /// A steering event is waiting in the channel (pending injection).
     ///
     /// Emitted when the TUI sends a steer but before the loop has reached
@@ -2121,6 +2217,7 @@ impl std::fmt::Debug for StreamEvent {
         match self {
             Self::Token(t) => write!(f, "Token({t:?})"),
             Self::Reasoning(t) => write!(f, "Reasoning({t:?})"),
+            Self::ToolGenerating { name, .. } => write!(f, "ToolGenerating({name:?})"),
             Self::ToolExec { name, .. } => write!(f, "ToolExec({name:?})"),
             Self::ToolProgress { name, message, .. } => {
                 write!(f, "ToolProgress({name:?}, {message:?})")
@@ -2137,9 +2234,12 @@ impl std::fmt::Debug for StreamEvent {
                 task_index,
                 task_count,
                 goal,
+                depth,
+                agent_id,
+                parent_id,
             } => write!(
                 f,
-                "SubAgentStart({}/{}, {:?})",
+                "SubAgentStart({}/{}, d{depth}, id={agent_id}, parent={parent_id:?}, {:?})",
                 task_index + 1,
                 task_count,
                 goal
@@ -2209,6 +2309,22 @@ impl std::fmt::Debug for StreamEvent {
                 f,
                 "ContextPressure(est={estimated_tokens}, threshold={threshold_tokens})"
             ),
+            Self::ActivityNotice(text) => {
+                let preview = &text[..text.len().min(60)];
+                write!(f, "ActivityNotice({preview:?}…)")
+            }
+            Self::BackgroundProcessTail {
+                process_id,
+                tail,
+                ..
+            } => {
+                let preview = &tail[..tail.len().min(40)];
+                write!(f, "BackgroundProcessTail({process_id}, {preview:?}…)")
+            }
+            Self::BackgroundProcessFinished {
+                process_id,
+                exit_code,
+            } => write!(f, "BackgroundProcessFinished({process_id}, {exit_code:?})"),
             Self::SteerPending { count } => write!(f, "SteerPending({count})"),
             Self::SteerApplied { message } => {
                 let preview = &message[..message.len().min(60)];

@@ -1470,6 +1470,60 @@ fn remove_provider_auth_state(provider_id: &str) -> anyhow::Result<()> {
     })
 }
 
+/// True when `/model` Ctrl+D can clear managed credentials for a catalog provider slug.
+pub fn provider_disconnect_supported(catalog_provider: &str) -> bool {
+    let canonical = edgecrab_core::normalize_discovery_provider(catalog_provider);
+    if resolve_provider(&canonical).is_some() {
+        return true;
+    }
+    is_anthropic_oauth_alias(&canonical)
+        || is_openai_codex_alias(&canonical)
+        || is_xai_oauth_target(&canonical)
+}
+
+/// Synchronous provider disconnect for the TUI model picker (Hermes `model.disconnect` parity).
+pub fn disconnect_catalog_provider(catalog_provider: &str) -> Result<String, String> {
+    let canonical = edgecrab_core::normalize_discovery_provider(catalog_provider);
+    if let Some(spec) = resolve_provider(&canonical) {
+        for env_var in spec.env_vars {
+            gateway_setup::remove_env_key(env_var).map_err(|e| e.to_string())?;
+        }
+        remove_provider_auth_state(spec.canonical).map_err(|e| e.to_string())?;
+        return Ok(format!(
+            "Removed {} from {} and {}.",
+            spec.description,
+            spec.env_vars.join(", "),
+            auth_store_path().display()
+        ));
+    }
+    if is_anthropic_oauth_alias(&canonical) {
+        remove_anthropic_oauth_file().map_err(|e| e.to_string())?;
+        return Ok(format!(
+            "Removed Claude Pro OAuth credentials from {}.",
+            edgecrab_core::oauth::anthropic_oauth_path().display()
+        ));
+    }
+    if is_openai_codex_alias(&canonical) {
+        remove_codex_oauth(None).map_err(|e| e.to_string())?;
+        return Ok(format!(
+            "Removed ChatGPT Pro / Codex OAuth from {}.",
+            edgecrab_core::oauth::auth_store::default_auth_path().display()
+        ));
+    }
+    if is_xai_oauth_target(&canonical) {
+        let path = edgecrab_proxy::default_auth_path();
+        edgecrab_proxy::remove_provider_state(&path, edgecrab_proxy::XAI_OAUTH_PROVIDER)
+            .map_err(|e| e.to_string())?;
+        return Ok(format!(
+            "Removed xAI Grok OAuth credentials from {}.",
+            path.display()
+        ));
+    }
+    Err(format!(
+        "No managed credentials to disconnect for provider '{catalog_provider}'."
+    ))
+}
+
 fn clear_provider_auth_store() -> anyhow::Result<()> {
     with_auth_store_lock(|| {
         let mut store = read_auth_store_unlocked()?;
@@ -1610,6 +1664,13 @@ mod tests {
         unsafe {
             std::env::remove_var("EDGECRAB_HOME");
         }
+    }
+
+    #[test]
+    fn catalog_provider_disconnect_supported_for_known_providers() {
+        assert!(provider_disconnect_supported("openai"));
+        assert!(provider_disconnect_supported("anthropic"));
+        assert!(!provider_disconnect_supported("totally-unknown-provider"));
     }
 
     #[test]

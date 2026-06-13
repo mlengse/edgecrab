@@ -440,7 +440,7 @@ The `send_message` tool (in `advanced.rs`) uses the `GatewaySender` trait to sen
 | Tools | `/tools` `/toolsets` `/reload-mcp` `/mcp-token` `/plugins` |
 | Memory | `/memory` |
 | Analysis | `/cost` `/usage` `/compress` `/insights` |
-| Appearance | `/theme` `/paste` |
+| Appearance | `/theme` `/paste` `/details` `/tail` |
 | Advanced | `/goal` `/subgoal` `/done` `/queue` `/background` `/rollback [checkpoint]` `/debug` `/dump` |
 | Gateway | `/platforms` `/approve` `/deny` `/sethome` `/update` |
 | Scheduling | `/cron` |
@@ -466,6 +466,20 @@ The `send_message` tool (in `advanced.rs`) uses the `GatewaySender` trait to sen
 | `/skills install owner/repo/path` | Install a skill directly from a public GitHub repo |
 | `/skills remove <name>` | Delete an installed skill |
 | `/skills hub` | Show Skills Hub usage guidance |
+
+### Activity Shelf & Disclosure
+
+When `display.activity_shelf: true` (default), live turn state renders between transcript and status bar.
+
+| Command | Description |
+|---------|-------------|
+| `/details` | Opens interactive picker (like `/reasoning`, `/statusbar`) |
+| `/details [mode\|status\|cycle]` | Global shelf disclosure: `hidden`, `collapsed`, `expanded` |
+| `/details <section> [mode\|reset]` | Per-section override: `thinking`, `tools`, `subagents`, `activity` |
+| `/tail <process_id>` | Full-screen overlay for background process output (4KB tail) |
+| `/agents` | Full-screen delegate monitor (sort, STOP steer via `i`) |
+
+Settings persist to `display.shelf_details` in `config.yaml` (Hermes `details_mode` parity).
 
 ### Voice Mode
 

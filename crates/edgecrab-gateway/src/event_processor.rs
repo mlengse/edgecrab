@@ -44,6 +44,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::Instant;
 
 use edgecrab_core::StreamEvent;
 use tokio::sync::mpsc::{self, UnboundedReceiver};
@@ -259,6 +260,7 @@ impl GatewayEventProcessor {
         }
 
         let mut subagent_batches: HashMap<usize, Vec<String>> = HashMap::new();
+        let mut last_throttled_status_at: Option<Instant> = None;
 
         while let Some(event) = self.event_rx.recv().await {
             match event {
@@ -270,16 +272,36 @@ impl GatewayEventProcessor {
                     }
                 }
 
+                StreamEvent::ToolGenerating { name, .. } => {
+                    if self.cfg.tool_progress {
+                        let status = format!("📝 preparing {name}…");
+                        self.send_status(&status).await;
+                    }
+                }
+
                 StreamEvent::ToolExec { name, .. } => {
                     if self.cfg.tool_progress {
-                        let status = format!("🔧 {}…", name);
+                        last_throttled_status_at = None;
+                        let status =
+                            edgecrab_tools::tool_progress_tail::format_gateway_tool_exec(&name);
                         self.send_status(&status).await;
                     }
                 }
 
                 StreamEvent::ToolProgress { name, message, .. } => {
                     if self.cfg.tool_progress {
-                        self.send_status(&format!("🔧 {}: {}", name, message)).await;
+                        let now = Instant::now();
+                        if edgecrab_tools::tool_progress_tail::should_emit_progress(
+                            last_throttled_status_at,
+                            now,
+                        ) {
+                            last_throttled_status_at = Some(now);
+                            let status =
+                                edgecrab_tools::tool_progress_tail::format_gateway_tool_progress(
+                                    &name, &message,
+                                );
+                            self.send_status(&status).await;
+                        }
                     }
                 }
 
@@ -346,10 +368,18 @@ impl GatewayEventProcessor {
                     task_index,
                     task_count,
                     goal,
+                    depth,
+                    agent_id: _,
+                    parent_id: _,
                 } => {
                     let goal = goal.chars().take(72).collect::<String>();
+                    let depth_suffix = if depth > 1 {
+                        format!(" (depth {depth})")
+                    } else {
+                        String::new()
+                    };
                     let status = format!(
-                        "🔀 [{}/{}] Starting delegated task: {}",
+                        "🔀 [{}/{}] Starting delegated task{depth_suffix}: {}",
                         task_index + 1,
                         task_count,
                         goal
@@ -509,6 +539,41 @@ impl GatewayEventProcessor {
                         threshold_tokens,
                     ))
                     .await;
+                }
+
+                StreamEvent::ActivityNotice(text) => {
+                    self.send_status(&text).await;
+                }
+
+                StreamEvent::BackgroundProcessTail {
+                    process_id,
+                    command_preview,
+                    tail,
+                } => {
+                    let now = Instant::now();
+                    if edgecrab_tools::tool_progress_tail::should_emit_progress(
+                        last_throttled_status_at,
+                        now,
+                    ) {
+                        last_throttled_status_at = Some(now);
+                        let text =
+                            edgecrab_tools::tool_progress_tail::format_background_process_monitor_budget(
+                                &process_id,
+                                &command_preview,
+                                &tail,
+                                self.cfg.bg_tail_chars,
+                            );
+                        self.send_status(&text).await;
+                    }
+                }
+
+                StreamEvent::BackgroundProcessFinished {
+                    process_id,
+                    exit_code,
+                } => {
+                    let status =
+                        edgecrab_tools::tool_progress_tail::format_process_exit_status(exit_code);
+                    self.send_status(&format!("📟 {process_id} {status}")).await;
                 }
 
                 StreamEvent::Approval {
@@ -842,6 +907,9 @@ mod tests {
                 task_index: 0,
                 task_count: 2,
                 goal: "inspect delegation".into(),
+                depth: 1,
+                agent_id: "sa-0".into(),
+                parent_id: None,
             })
             .unwrap();
         event_tx

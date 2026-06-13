@@ -18,6 +18,7 @@ use crate::tools::web::search::config::{
 };
 use crate::tools::web::search::error::SearchError;
 use crate::tools::web::search::response::{build_web_search_agent_notes, success_payload};
+use crate::tool_progress_tail::ToolProgressTail;
 
 pub struct WebSearchTool;
 
@@ -102,8 +103,9 @@ impl ToolHandler for WebSearchTool {
             backend_config: Default::default(),
         };
 
+        let progress = ToolProgressTail::progress_fn_from_context(ctx);
         let (results, used_backend) = chain
-            .search(&args.query, opts)
+            .search_with_progress(&args.query, opts, progress)
             .await
             .map_err(|e: SearchError| e.into_tool_error())?;
 

@@ -53,6 +53,10 @@ use reqwest::Url;
 
 use crate::artifact_spill::apply_web_extract_content_spill;
 use crate::registry::{ToolContext, ToolHandler};
+use crate::tool_progress_tail::{
+    format_backend_attempt_milestone, format_crawl_page_milestone, format_fetch_milestone,
+    format_results_milestone,
+};
 use crate::tools::browser::{browser_is_available, render_page_text};
 use crate::tools::pdf_to_markdown::{extract_pdf_markdown_from_bytes, looks_like_pdf};
 
@@ -1092,10 +1096,20 @@ async fn extract_with_fallback(
     let mut last_err = BackendError::hard(tool, "No extraction backend is available.");
 
     for backend in chain {
+        ctx.emit_progress(format_backend_attempt_milestone(
+            &content_backend_name(backend),
+            "extracting",
+        ));
         match extract_document_for_url(url, backend.clone(), max_chars, render_js_fallback, ctx)
             .await
         {
-            Ok(doc) => return Ok((doc, backend.clone())),
+            Ok(doc) => {
+                ctx.emit_progress(format_results_milestone(
+                    1,
+                    &content_backend_name(backend),
+                ));
+                return Ok((doc, backend.clone()));
+            }
             Err(e) if e.is_transient() => {
                 tracing::warn!(
                     backend = %content_backend_name(backend),
@@ -1303,6 +1317,7 @@ impl ToolHandler for WebExtractTool {
 
         if !batch_mode {
             let only_url = &requested_urls[0];
+            ctx.emit_progress(format_fetch_milestone(only_url));
             let parsed = parse_extract_url(only_url)?;
             let (document, used_backend) = extract_with_fallback(
                 &parsed,
@@ -1336,9 +1351,8 @@ impl ToolHandler for WebExtractTool {
         }
 
         let mut results = Vec::with_capacity(requested_urls.len());
-        // The "primary" backend is the first in the chain (what the user asked
-        // for, or the highest-priority auto choice).  Each URL reports which
-        // backend was actually used so the agent always knows the fallback path.
+        ctx.emit_progress(format!("fetching {} URL(s)…", requested_urls.len()));
+        // The "primary" backend is the first in the chain
         let primary_backend_name = content_backend_name(&chain[0]);
         for requested in requested_urls {
             let entry = match parse_extract_url(&requested) {
@@ -1491,6 +1505,7 @@ impl ToolHandler for WebCrawlTool {
         let render_js_fallback = args.render_js_fallback.unwrap_or(true);
 
         validate_url(&args.url, "web_crawl")?;
+        ctx.emit_progress(format_fetch_milestone(&args.url));
         let start_url = Url::parse(&args.url).map_err(|e| ToolError::InvalidArgs {
             tool: "web_crawl".into(),
             message: format!("Invalid URL: {e}"),
@@ -1502,6 +1517,10 @@ impl ToolHandler for WebCrawlTool {
                 // Reached Native / Browser — handled by BFS below.
                 break;
             }
+            ctx.emit_progress(format_backend_attempt_milestone(
+                &content_backend_name(backend),
+                "crawling",
+            ));
 
             let result = match backend {
                 ContentBackend::Firecrawl => {
@@ -1607,6 +1626,11 @@ impl ToolHandler for WebCrawlTool {
             }
 
             validate_url(&current_key, "web_crawl")?;
+            ctx.emit_progress(format_crawl_page_milestone(
+                pages.len() + 1,
+                max_pages,
+                &current_key,
+            ));
 
             let fetched = match bfs_backend {
                 ContentBackend::Browser => {

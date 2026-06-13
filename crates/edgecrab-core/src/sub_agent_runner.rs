@@ -19,6 +19,8 @@ use edgecrab_tools::{SubAgentResult, SubAgentRunner};
 use edgecrab_types::Platform;
 use edgequake_llm::LLMProvider;
 
+use crate::conversation::ExecuteLoopDelegateCtx;
+
 /// Real implementation of SubAgentRunner that spawns child Agent instances.
 ///
 /// WHY struct with fields: The runner needs the parent's provider and
@@ -66,6 +68,9 @@ impl SubAgentRunner for CoreSubAgentRunner {
             progress_tx,
             task_index,
             task_count,
+            agent_id,
+            parent_id,
+            depth,
         } = request;
         let (child_provider, child_model) =
             self.resolve_child_provider_and_model(model_override.as_deref())?;
@@ -81,6 +86,10 @@ impl SubAgentRunner for CoreSubAgentRunner {
                 .quiet_mode(true)
                 .build()
                 .map_err(|e| format!("Failed to build child agent: {e}"))?,
+        );
+        let _subagent_reg = crate::subagent_registry::SubagentRegistration::new(
+            agent_id.clone(),
+            child.clone(),
         );
 
         // Override enabled toolsets on the child's config
@@ -139,6 +148,12 @@ impl SubAgentRunner for CoreSubAgentRunner {
             None
         };
 
+        let delegate_ctx = ExecuteLoopDelegateCtx {
+            depth,
+            agent_id,
+            parent_id,
+        };
+
         let result = child
             .execute_loop(
                 &goal,
@@ -146,6 +161,7 @@ impl SubAgentRunner for CoreSubAgentRunner {
                 None,
                 Some(&child_event_tx),
                 None,
+                Some(delegate_ctx),
             )
             .await;
         cancel_watch.abort();

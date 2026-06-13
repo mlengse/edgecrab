@@ -239,7 +239,7 @@ impl ToolHandler for SearchFilesTool {
                  The results have not changed. Use the information you already have.]\n",
                 repeat
             );
-            return Ok(warning + &output);
+            return Ok(format!("{warning}{output}"));
         }
 
         Ok(output)

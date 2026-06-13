@@ -14,7 +14,7 @@ use async_trait::async_trait;
 use edgecrab_tools::build_copilot_provider;
 use edgequake_llm::providers::gemini::GeminiModelsResponse;
 use edgequake_llm::{
-    CopilotModel, CopilotModelsResponse, GeminiProvider, LMStudioProvider, OllamaProvider,
+    CopilotModelsResponse, GeminiProvider, LMStudioProvider, OllamaProvider,
     OpenRouterProvider,
 };
 use futures::future::join_all;
@@ -463,21 +463,9 @@ fn extract_copilot_models(response: CopilotModelsResponse) -> Vec<String> {
     response
         .data
         .into_iter()
-        .filter(copilot_model_is_selectable)
+        .filter(crate::copilot_model_policy::copilot_model_is_agent_selectable)
         .map(|model| model.id)
         .collect()
-}
-
-fn copilot_model_is_selectable(model: &CopilotModel) -> bool {
-    let picker_enabled = model.model_picker_enabled.unwrap_or(true);
-    let is_chat = model
-        .capabilities
-        .as_ref()
-        .and_then(|capabilities| capabilities.model_type.as_deref())
-        .map(|model_type| model_type == "chat")
-        .unwrap_or(true);
-
-    picker_enabled && is_chat
 }
 
 async fn fetch_openai_compatible_models(

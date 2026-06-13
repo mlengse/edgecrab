@@ -356,7 +356,7 @@ impl ToolHandler for ReadFileTool {
                  If you are stuck in a loop, stop reading and proceed.]\n",
                 count
             );
-            return Ok(warning + &output);
+            return Ok(format!("{warning}{output}"));
         }
 
         Ok(output)

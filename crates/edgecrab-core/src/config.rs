@@ -1774,6 +1774,34 @@ pub struct DisplayConfig {
     pub skin: String,
     /// Append per-turn file-mutation footers (success log + failure advisory).
     pub file_mutation_verifier: bool,
+    /// Live activity shelf between transcript and status bar (TUI).
+    pub activity_shelf: bool,
+    /// Shelf accordion disclosure (`/details`) — Hermes `details_mode` parity.
+    pub shelf_details: ShelfDetailsConfig,
+    /// Busy status-bar indicator style (`/indicator`): kaomoji, emoji, unicode, ascii.
+    pub status_indicator: String,
+}
+
+/// Persisted shelf section disclosure (`display.shelf_details` in config.yaml).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ShelfDetailsConfig {
+    /// Global default: `hidden`, `collapsed`, or `expanded`.
+    pub mode: String,
+    /// When true, global mode applies to all sections (Hermes command override).
+    pub command_override: bool,
+    /// Per-section overrides (keys: `thinking`, `tools`, `subagents`, `activity`).
+    pub sections: HashMap<String, String>,
+}
+
+impl Default for ShelfDetailsConfig {
+    fn default() -> Self {
+        Self {
+            mode: "collapsed".into(),
+            command_override: false,
+            sections: HashMap::new(),
+        }
+    }
 }
 
 impl Default for DisplayConfig {
@@ -1790,6 +1818,9 @@ impl Default for DisplayConfig {
             update_check_interval_hours: 24,
             skin: "default".into(),
             file_mutation_verifier: true,
+            activity_shelf: true,
+            shelf_details: ShelfDetailsConfig::default(),
+            status_indicator: "kaomoji".into(),
         }
     }
 }

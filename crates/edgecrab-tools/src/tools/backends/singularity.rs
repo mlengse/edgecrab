@@ -263,9 +263,13 @@ impl ExecutionBackend for SingularityBackend {
         cwd: &str,
         timeout: Duration,
         cancel: CancellationToken,
+        options: super::ExecuteOptions,
     ) -> Result<ExecOutput, ToolError> {
         let state = self.ensure_state().await?;
-        state.exec(command, cwd, timeout, cancel).await
+        super::start_execute_progress(&options, "Singularity", command);
+        let output = state.exec(command, cwd, timeout, cancel).await?;
+        super::finalize_execute_progress(&options, &output);
+        Ok(output)
     }
 
     async fn execute_oneshot(
@@ -396,6 +400,7 @@ esac
                 "/workspace",
                 Duration::from_secs(2),
                 CancellationToken::new(),
+                crate::tools::backends::ExecuteOptions::default(),
             )
             .await
             .expect("execute");
@@ -418,6 +423,7 @@ esac
                 "/workspace",
                 Duration::from_secs(2),
                 CancellationToken::new(),
+                crate::tools::backends::ExecuteOptions::default(),
             )
             .await
             .expect("execute exit");
@@ -462,6 +468,7 @@ esac
                 "/workspace",
                 Duration::from_millis(50),
                 CancellationToken::new(),
+                crate::tools::backends::ExecuteOptions::default(),
             )
             .await
             .expect("timeout execute");

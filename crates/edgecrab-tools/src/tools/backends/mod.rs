@@ -271,6 +271,8 @@ impl std::str::FromStr for BackendKind {
 
 // ─── ExecutionBackend trait ───────────────────────────────────────────
 
+pub use crate::tool_progress_tail::{ExecuteOptions, OutputProgressFn};
+
 #[async_trait]
 pub trait ExecutionBackend: Send + Sync {
     async fn execute(
@@ -279,6 +281,7 @@ pub trait ExecutionBackend: Send + Sync {
         cwd: &str,
         timeout: Duration,
         cancel: CancellationToken,
+        options: ExecuteOptions,
     ) -> Result<ExecOutput, ToolError>;
 
     async fn execute_oneshot(
@@ -288,7 +291,8 @@ pub trait ExecutionBackend: Send + Sync {
         timeout: Duration,
         cancel: CancellationToken,
     ) -> Result<ExecOutput, ToolError> {
-        self.execute(command, cwd, timeout, cancel).await
+        self.execute(command, cwd, timeout, cancel, ExecuteOptions::default())
+            .await
     }
 
     async fn cleanup(&self) -> Result<(), ToolError>;
@@ -315,6 +319,16 @@ pub trait ExecutionBackend: Send + Sync {
     async fn is_healthy(&self) -> bool {
         true
     }
+}
+
+/// Emit throttled tail progress after batch backend completion (SSH, Modal, etc.).
+pub fn finalize_execute_progress(options: &ExecuteOptions, output: &ExecOutput) {
+    crate::tool_progress_tail::emit_batch_output_progress(options, &output.stdout, &output.stderr);
+}
+
+/// Emit immediate start milestone for batch-only remote backends.
+pub fn start_execute_progress(options: &ExecuteOptions, backend: &str, command: &str) {
+    crate::tool_progress_tail::emit_execution_start(options, backend, command);
 }
 
 // ─── Config structs ───────────────────────────────────────────────────

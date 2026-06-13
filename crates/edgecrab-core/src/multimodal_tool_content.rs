@@ -55,9 +55,22 @@ pub fn should_attach_computer_use_screenshot(
     }
 }
 
+/// True when the provider rejected tool message ordering / id pairing (not multimodal).
+pub fn is_tool_message_order_error(err: &str) -> bool {
+    let lower = err.to_ascii_lowercase();
+    lower.contains("unexpected tool call id")
+        || lower.contains("invalid_request_message_order")
+        || lower.contains("invalid request message order")
+        || lower.contains("code: 3230")
+        || lower.contains("code 3230")
+}
+
 /// True when a provider error likely means tool messages must not carry image parts.
 pub fn is_tool_content_rejection_error(err: &str) -> bool {
     let lower = err.to_ascii_lowercase();
+    if is_tool_message_order_error(&lower) {
+        return false;
+    }
     const NEEDLES: &[&str] = &[
         "text is not set",
         "tool message",
@@ -199,6 +212,13 @@ mod tests {
             "Invalid request: text is not set for tool message"
         ));
         assert!(!is_tool_content_rejection_error("rate limit exceeded"));
+    }
+
+    #[test]
+    fn mistral_tool_call_id_mismatch_is_not_content_rejection() {
+        let err = "mistral API error 400: Unexpected tool call id 5wBWzuv53 in tool results type: invalid_request_message_order, code: 3230";
+        assert!(is_tool_message_order_error(err));
+        assert!(!is_tool_content_rejection_error(err));
     }
 
     #[test]

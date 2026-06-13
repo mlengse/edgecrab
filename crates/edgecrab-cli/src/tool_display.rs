@@ -1119,11 +1119,12 @@ pub fn build_tool_verbose_lines_width(
         .map(str::trim)
         .filter(|text| !text.is_empty())
     {
+        let result = crate::transcript_heights::truncate_verbose_trail(result);
         // Use the same rich-result formatter as the compact done-line so
         // verbose mode benefits from per-tool formatting with a wider budget.
-        let rich = format_tool_result(tool_name, result, verbose_width);
+        let rich = format_tool_result(tool_name, &result, verbose_width);
         let display = if rich.is_empty() {
-            unicode_trunc(result, verbose_width)
+            unicode_trunc(&result, verbose_width)
         } else {
             rich
         };
@@ -2280,7 +2281,7 @@ fn format_web_search_result(val: &serde_json::Value, max_cols: usize) -> String 
         .filter(|s| !s.is_empty());
     if count == 0 {
         let msg = match backend {
-            Some(b) => edgecrab_tools::summarize_web_search_backend(b, fallback),
+            Some(b) => format!("no results ({b})"),
             None => "no results".to_string(),
         };
         return unicode_trunc(&msg, max_cols);
