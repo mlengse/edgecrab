@@ -113,13 +113,15 @@ This order matches the DAG in [`002_architecture/002_crate_dependency_graph.md`]
 3. GitHub repo → Settings → Secrets and variables → Actions → New repository secret
 4. Name: `CARGO_REGISTRY_TOKEN`, value: paste token
 
-### `NPM_TOKEN`
+### npm OIDC Trusted Publishing (no token needed)
 
 1. Log in to [npmjs.com](https://npmjs.com)
-2. Access Tokens → Generate New Token → Automation (for CI)
-3. GitHub repo → Settings → Environments → Create `npm` environment
-4. Add environment secret: `NPM_TOKEN`
-5. (Recommended) Add required reviewer to the `npm` environment
+2. For each package (`edgecrab-sdk`, `edgecrab-cli`) → Settings → Trusted publishers → GitHub Actions
+3. Fill in: owner `raphaelmansuy`, repository `edgecrab`, workflow filename (`release-node.yml` or `release-npm-cli.yml`), environment `npm`
+4. GitHub repo → Settings → Environments → ensure `npm` environment exists (optional required reviewer)
+5. Workflows need `permissions: id-token: write` — no `NPM_TOKEN` secret
+
+Legacy fallback: Automation token as repo/environment secret `NPM_TOKEN` (not used when OIDC is configured).
 
 ### PyPI OIDC Trusted Publishing (no token needed)
 

@@ -7,8 +7,11 @@ name: Release — npm CLI (edgecrab-cli)
 # `npm install edgecrab-cli`, so this workflow is gated on the GitHub Release
 # being published.
 #
-# Secret required:
-#   NPM_TOKEN  (environment secret on the "npm" GitHub environment)
+# Uses OIDC trusted publishing — no long-lived NPM_TOKEN. The "npm" environment
+# must have a trusted publisher on npmjs.com for this workflow file.
+#
+# npmjs.com → package edgecrab-cli → Trusted publishers → GitHub Actions:
+#   Owner: raphaelmansuy  Repo: edgecrab  Workflow: release-npm-cli.yml  Env: npm
 
 on:
   workflow_run:
@@ -22,6 +25,7 @@ on:
         default: ''
 
 permissions:
+  id-token: write   # OIDC trusted publishing to npm
   contents: write
 
 concurrency:
@@ -96,8 +100,6 @@ jobs:
             --clobber
 
       - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd sdks/npm-cli
           OUTPUT=$(npm publish --access public 2>&1) && echo "$OUTPUT" || {

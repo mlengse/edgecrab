@@ -1,5 +1,11 @@
 name: Release — Node.js (npm)
 
+# Publishes sdks/node (edgecrab-sdk) to npm via OIDC trusted publishing — no
+# long-lived NPM_TOKEN. The "npm" environment must have a trusted publisher on
+# npmjs.com for this workflow file (environment: npm). Requires npm CLI ≥ 11.5.1
+# npmjs.com → package edgecrab-sdk → Trusted publishers → GitHub Actions:
+#   Owner: raphaelmansuy  Repo: edgecrab  Workflow: release-node.yml  Env: npm
+
 on:
   push:
     tags: ['v[0-9]+.[0-9]+.[0-9]+']
@@ -11,6 +17,7 @@ on:
         default: ''
 
 permissions:
+  id-token: write   # OIDC trusted publishing to npm
   contents: write
 
 concurrency:
@@ -81,8 +88,6 @@ jobs:
             --repo "${{ github.repository }}" --clobber
 
       - name: Publish to npm
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           cd sdks/node
           OUTPUT=$(npm publish --access public 2>&1) && echo "$OUTPUT" || {
