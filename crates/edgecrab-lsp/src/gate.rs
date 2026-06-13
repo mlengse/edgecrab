@@ -6,9 +6,9 @@ use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use edgecrab_tools::lsp_gate::{LspEditContext, LspGate, ToolDiagnostic};
+use edgecrab_tools::path_utils::jail_read_path;
 use edgecrab_tools::registry::ToolContext;
 use edgecrab_tools::tools::backends::BackendKind;
-use edgecrab_tools::path_utils::jail_read_path;
 use lsp_types::request::DocumentDiagnosticRequest;
 use lsp_types::{
     Diagnostic, DiagnosticSeverity, DocumentDiagnosticParams, DocumentDiagnosticReport,
@@ -67,10 +67,7 @@ fn diagnostic_to_tool(diagnostic: &Diagnostic) -> Option<ToolDiagnostic> {
 }
 
 fn filter_tool_diagnostics(items: Vec<Diagnostic>) -> Vec<ToolDiagnostic> {
-    items
-        .iter()
-        .filter_map(diagnostic_to_tool)
-        .collect()
+    items.iter().filter_map(diagnostic_to_tool).collect()
 }
 
 async fn wait_for_push_diagnostics(

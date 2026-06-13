@@ -102,6 +102,18 @@ pub struct SkinConfig {
     /// Example: `{ "bash": "🖥", "read_file": "📄" }`
     #[serde(default)]
     pub tool_emojis: HashMap<String, String>,
+
+    // ── Activity shelf ────────────────────────────────────────────────
+    /// Accent color for shelf spinners and active tool names.
+    pub shelf_accent_color: Option<String>,
+    /// Dim color for shelf previews and phase lines.
+    pub shelf_dim_color: Option<String>,
+    /// Border color for the shelf top rule and tree glyphs.
+    pub shelf_border_color: Option<String>,
+    /// Color for long-run hints and onboarding tips.
+    pub shelf_hint_color: Option<String>,
+    /// Rotating charm strings for long-running tools (Hermes `LONG_RUN_CHARMS`).
+    pub long_run_hints: Option<Vec<String>>,
 }
 
 impl SkinConfig {
@@ -190,6 +202,13 @@ pub struct Theme {
     /// `tool_emoji_or_override()` checks this map before falling back to
     /// the built-in pattern-matched emoji.
     pub tool_emojis: HashMap<String, String>,
+
+    // ── Activity shelf ────────────────────────────────────────────────
+    pub shelf_accent: Style,
+    pub shelf_dim: Style,
+    pub shelf_border: Color,
+    pub shelf_hint: Style,
+    pub long_run_hints: Vec<String>,
 }
 
 impl Default for Theme {
@@ -541,6 +560,22 @@ impl Theme {
             .cloned()
             .unwrap_or_default(); // no wings by default — user opts in via skin.yaml
 
+        let shelf_accent_fg = skin.color_or(&skin.shelf_accent_color, Color::Rgb(205, 175, 50));
+        let shelf_dim_fg = skin.color_or(&skin.shelf_dim_color, Color::Rgb(120, 120, 130));
+        let shelf_border = skin.color_or(&skin.shelf_border_color, Color::Rgb(55, 55, 68));
+        let shelf_hint_fg = skin.color_or(&skin.shelf_hint_color, Color::Rgb(255, 200, 80));
+        let long_run_hints: Vec<String> = skin
+            .long_run_hints
+            .as_ref()
+            .filter(|v| !v.is_empty())
+            .cloned()
+            .unwrap_or_else(|| {
+                crate::turn_activity::DEFAULT_LONG_RUN_CHARMS
+                    .iter()
+                    .map(|s| (*s).to_string())
+                    .collect()
+            });
+
         Self {
             input_border: Style::default().fg(prompt_fg),
             input_text: Style::default().fg(Color::Rgb(255, 248, 220)),
@@ -581,6 +616,11 @@ impl Theme {
             kaomoji_error,
             spinner_wings,
             tool_emojis: skin.tool_emojis.clone(),
+            shelf_accent: Style::default().fg(shelf_accent_fg),
+            shelf_dim: Style::default().fg(shelf_dim_fg),
+            shelf_border,
+            shelf_hint: Style::default().fg(shelf_hint_fg),
+            long_run_hints,
         }
     }
 

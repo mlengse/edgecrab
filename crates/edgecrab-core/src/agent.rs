@@ -114,6 +114,11 @@ pub struct Agent {
     // Agent::steer_sender() which clones the Arc-less Sender.
     pub(crate) steer_tx: crate::steering::SteeringSender,
     pub(crate) steer_rx: std::sync::Mutex<Option<crate::steering::SteeringReceiver>>,
+    /// Stream sink active only while `execute_loop` is running (SteerPending events).
+    pub(crate) steer_event_tx:
+        std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<crate::StreamEvent>>>,
+    /// Count of steering events queued but not yet injected at a tool boundary.
+    pub(crate) steer_pending: std::sync::atomic::AtomicUsize,
 }
 
 /// Options for cloning an agent into a fresh isolated session.
@@ -179,6 +184,12 @@ pub struct AgentConfig {
     pub checkpoints_enabled: bool,
     /// Maximum checkpoints to retain per working directory.
     pub checkpoints_max_snapshots: u32,
+    pub checkpoints_max_total_size_mb: u32,
+    pub checkpoints_max_file_size_mb: u32,
+    pub computer_use_enabled: bool,
+    pub computer_use_keep_last_n_screenshots: u32,
+    pub computer_use_confirm_destructive: bool,
+    pub computer_use_cua_cmd: String,
     /// Active terminal backend and backend-specific configuration.
     pub terminal_backend: edgecrab_tools::tools::backends::BackendKind,
     pub terminal_docker: edgecrab_tools::tools::backends::DockerBackendConfig,
@@ -220,12 +231,18 @@ pub struct AgentConfig {
     pub result_spill_threshold: usize,
     /// Preview lines kept in the spill stub.
     pub result_spill_preview_lines: usize,
+    /// Per-turn aggregate tool-result char budget (`0` = disabled).
+    pub result_turn_budget_chars: usize,
     /// Maximum write payload KiB (None = use default 32 KiB).
     pub max_write_payload_kib: Option<u32>,
     /// Per-turn file-mutation footers (success log + failure advisory).
     pub file_mutation_verifier: bool,
     /// Cross-session Anthropic prompt prefix cache (stable/dynamic split + TTL).
     pub cache: crate::config::CacheConfig,
+    /// Pluggable web search backend chain.
+    pub web_search: crate::config::WebSearchConfig,
+    /// Hermes-aligned `web:` capability overrides (search_backend / extract_backend / backend).
+    pub web: crate::config::WebToolsConfig,
 }
 
 impl Default for AgentConfig {
@@ -260,7 +277,13 @@ impl Default for AgentConfig {
             origin_chat: None,
             browser: crate::config::BrowserConfig::default(),
             checkpoints_enabled: true,
-            checkpoints_max_snapshots: 50,
+            checkpoints_max_snapshots: 20,
+            checkpoints_max_total_size_mb: 200,
+            checkpoints_max_file_size_mb: 10,
+            computer_use_enabled: false,
+            computer_use_keep_last_n_screenshots: 1,
+            computer_use_confirm_destructive: true,
+            computer_use_cua_cmd: "cua-driver".into(),
             terminal_backend: edgecrab_tools::tools::backends::BackendKind::Local,
             terminal_docker: edgecrab_tools::tools::backends::DockerBackendConfig::default(),
             terminal_ssh: edgecrab_tools::tools::backends::SshBackendConfig::default(),
@@ -283,9 +306,12 @@ impl Default for AgentConfig {
             result_spill: true,
             result_spill_threshold: 16_384,
             result_spill_preview_lines: 80,
+            result_turn_budget_chars: 200_000,
             max_write_payload_kib: None,
             file_mutation_verifier: true,
             cache: crate::config::CacheConfig::default(),
+            web_search: crate::config::WebSearchConfig::default(),
+            web: crate::config::WebToolsConfig::default(),
         }
     }
 }
@@ -397,6 +423,13 @@ impl AgentConfig {
             browser_recording_max_age_hours: self.browser.recording_max_age_hours,
             checkpoints_enabled: self.checkpoints_enabled,
             checkpoints_max_snapshots: self.checkpoints_max_snapshots,
+            checkpoints_max_total_size_mb: self.checkpoints_max_total_size_mb,
+            checkpoints_max_file_size_mb: self.checkpoints_max_file_size_mb,
+            computer_use_enabled: self.computer_use_enabled,
+            computer_use_keep_last_n_screenshots: self.computer_use_keep_last_n_screenshots,
+            computer_use_confirm_destructive: self.computer_use_confirm_destructive,
+            computer_use_cua_cmd: self.computer_use_cua_cmd.clone(),
+            active_model: self.model.clone(),
             terminal_backend: self.terminal_backend.clone(),
             terminal_docker: self.terminal_docker.clone(),
             terminal_ssh: self.terminal_ssh.clone(),
@@ -425,10 +458,37 @@ impl AgentConfig {
             result_spill: self.result_spill,
             result_spill_threshold: self.result_spill_threshold,
             result_spill_preview_lines: self.result_spill_preview_lines,
+            result_turn_budget_chars: self.result_turn_budget_chars,
             max_write_payload_kib: self.max_write_payload_kib.map_or(
                 edgecrab_tools::edit_contract::DEFAULT_MAX_MUTATION_PAYLOAD_KIB,
                 |kib| kib as usize,
             ),
+            web_search: edgecrab_tools::config_ref::WebSearchConfigRef {
+                primary: self.web_search.primary.clone(),
+                fallbacks: self.web_search.fallbacks.clone(),
+                timeout_secs: self.web_search.timeout_secs,
+                backends: self
+                    .web_search
+                    .backends
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            edgecrab_tools::config_ref::WebSearchBackendConfigRef {
+                                api_key: v.api_key.clone(),
+                                endpoint: v.endpoint.clone(),
+                                rps: v.rps,
+                                timeout_secs: v.timeout_secs,
+                            },
+                        )
+                    })
+                    .collect(),
+            },
+            web: edgecrab_tools::config_ref::WebToolsConfigRef {
+                search_backend: self.web.search_backend.clone(),
+                extract_backend: self.web.extract_backend.clone(),
+                backend: self.web.backend.clone(),
+            },
             gateway_running,
             ..Default::default()
         }
@@ -472,6 +532,8 @@ pub struct SessionState {
     /// runtime. Once observed, repeating the same request wastes latency and
     /// spams users with avoidable 400s. Plain text streaming still remains on.
     pub native_tool_streaming_disabled: bool,
+    /// Provider/model pairs that rejected multimodal tool-result content (Hermes parity).
+    pub tool_result_image_downgrades: std::collections::HashSet<(String, String)>,
     /// Terminal harness outcome for the most recent completed run.
     pub last_run_outcome: Option<RunOutcome>,
     pub session_tool_call_count: u32,
@@ -482,6 +544,28 @@ pub struct SessionState {
     /// compacted.  Subsequent compressions do NOT modify the system prompt so
     /// that Anthropic's prompt cache breakpoints remain stable.
     pub first_compression_done: bool,
+}
+
+impl SessionState {
+    /// Invalidate prompt cache and inject the handoff brief user message.
+    pub(crate) fn apply_model_transfer_outcome(
+        &mut self,
+        outcome: &crate::model_transfer::ModelTransferOutcome,
+    ) {
+        self.cached_system_prompt = None;
+        self.cached_stable_prompt = None;
+        if outcome.compressed {
+            self.first_compression_done = true;
+        }
+        self.messages.push(Message::user(
+            &crate::model_transfer::format_model_transfer_user_message(
+                &outcome.from_model,
+                &outcome.to_model,
+                &outcome.brief,
+                outcome.compressed,
+            ),
+        ));
+    }
 }
 
 /// Lock-free iteration budget — prevents runaway tool loops.
@@ -598,6 +682,8 @@ impl Agent {
             context_engine,
             steer_tx,
             steer_rx: std::sync::Mutex::new(Some(steer_rx)),
+            steer_event_tx: std::sync::Mutex::new(None),
+            steer_pending: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 
@@ -726,7 +812,7 @@ impl Agent {
         });
 
         match self
-            .execute_loop(message, None, None, Some(&event_tx), None)
+            .execute_loop(message, None, None, Some(&event_tx), None, None)
             .await
         {
             Ok(result) => {
@@ -785,6 +871,7 @@ impl Agent {
             conversation_history,
             None,
             None,
+            None,
         )
         .await
     }
@@ -803,6 +890,7 @@ impl Agent {
             conversation_history,
             None,
             Some(cwd),
+            None,
         )
         .await
     }
@@ -853,6 +941,11 @@ impl Agent {
             .cancel();
     }
 
+    /// Shared background process table (terminal tools, `/tail` panel).
+    pub fn process_table(&self) -> Arc<ProcessTable> {
+        self.process_table.clone()
+    }
+
     /// Whether the cancellation token has been triggered.
     pub fn is_cancelled(&self) -> bool {
         self.cancel
@@ -875,6 +968,24 @@ impl Agent {
     /// ```
     pub fn steer_sender(&self) -> crate::steering::SteeringSender {
         self.steer_tx.clone()
+    }
+
+    /// Send a steering event and notify streaming clients of the pending count.
+    pub fn send_steering(
+        &self,
+        event: crate::steering::SteeringEvent,
+    ) -> Result<(), tokio::sync::mpsc::error::SendError<crate::steering::SteeringEvent>> {
+        use std::sync::atomic::Ordering;
+        let count = self.steer_pending.fetch_add(1, Ordering::Relaxed) + 1;
+        if let Some(tx) = self
+            .steer_event_tx
+            .lock()
+            .expect("steer_event_tx mutex not poisoned")
+            .clone()
+        {
+            let _ = tx.send(crate::StreamEvent::SteerPending { count });
+        }
+        self.steer_tx.send(event)
     }
 
     /// Reset session state for a new conversation.
@@ -945,6 +1056,123 @@ impl Agent {
             let mut prov = self.provider.write().await;
             *prov = provider;
         }
+    }
+
+    /// Instant model switch — Hermes `/model` parity (no brief, no auxiliary LLM).
+    pub async fn switch_model_fast(
+        &self,
+        target_spec: &str,
+    ) -> Result<crate::model_transfer::ModelSwitchOutcome, crate::model_transfer::ModelTransferError>
+    {
+        use crate::model_catalog::ModelCatalog;
+        use crate::model_transfer::{
+            ModelSwitchOutcome, create_model_transfer_provider, resolve_model_transfer_target,
+        };
+
+        let target = resolve_model_transfer_target(target_spec)?;
+        let current_model = self.config.read().await.model.clone();
+        if ModelCatalog::equivalent_model_specs(&target.display, &current_model) {
+            return Err(crate::model_transfer::ModelTransferError::SameModel);
+        }
+        let provider = create_model_transfer_provider(&target)?;
+        self.swap_model(target.display.clone(), provider).await;
+
+        if let Some(db) = &self.state_db
+            && let Some(session_id) = self.session.read().await.session_id.as_deref()
+            && let Err(err) = db.update_session_model(session_id, &target.display)
+        {
+            tracing::warn!(error = %err, "fast model switch session DB update failed");
+        }
+
+        Ok(ModelSwitchOutcome {
+            from_model: current_model,
+            to_model: target.display,
+        })
+    }
+
+    /// Transfer the live session to another model with brief + window check.
+    ///
+    /// Used by `/transfer-model` in CLI and gateway. For instant hot-swap use
+    /// [`switch_model_fast`](Self::switch_model_fast) (`/model`).
+    pub async fn perform_model_transfer(
+        &self,
+        target_model: &str,
+        events: Option<tokio::sync::mpsc::UnboundedSender<StreamEvent>>,
+    ) -> Result<
+        crate::model_transfer::ModelTransferOutcome,
+        crate::model_transfer::ModelTransferError,
+    > {
+        let (compression_cfg, auxiliary_model, current_model, main_provider) = {
+            let cfg = self.config.read().await;
+            (
+                cfg.compression.clone(),
+                cfg.auxiliary.model.clone(),
+                cfg.model.clone(),
+                self.provider.read().await.clone(),
+            )
+        };
+
+        let (outcome, new_provider) = {
+            let mut session = self.session.write().await;
+            let system_prompt = session.cached_system_prompt.clone();
+            let mut ctx = crate::model_transfer::ModelTransferContext {
+                current_model: &current_model,
+                messages: &mut session.messages,
+                system_prompt: system_prompt.as_deref(),
+                compression_cfg: &compression_cfg,
+                main_provider,
+                auxiliary_model: auxiliary_model.as_deref(),
+            };
+            let (outcome, new_provider) =
+                crate::model_transfer::ModelTransferOrchestrator::execute(&mut ctx, target_model)
+                    .await?;
+
+            session.apply_model_transfer_outcome(&outcome);
+
+            (outcome, new_provider)
+        };
+
+        self.swap_model(outcome.to_model.clone(), new_provider)
+            .await;
+
+        if outcome.compressed
+            && let Some(session_id) = self.session.read().await.session_id.as_deref()
+        {
+            // FP17: compression discards prior read_file results — same reset as in-loop compression.
+            edgecrab_tools::read_tracker::reset_read_dedup(session_id);
+        }
+
+        if let Some(db) = &self.state_db
+            && let Some(session_id) = self.session.read().await.session_id.as_deref()
+        {
+            if let Err(err) = db.update_session_model(session_id, &outcome.to_model) {
+                tracing::warn!(error = %err, "handoff session model DB update failed");
+            }
+            let ts = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs_f64())
+                .unwrap_or(0.0);
+            if let Err(err) = db.record_model_transfer(
+                session_id,
+                &outcome.from_model,
+                &outcome.to_model,
+                &outcome.brief,
+                ts,
+            ) {
+                tracing::warn!(error = %err, "handoff DB record failed");
+            }
+        }
+
+        if let Some(tx) = events {
+            let _ = tx.send(StreamEvent::ModelTransferComplete {
+                from: outcome.from_model.clone(),
+                to: outcome.to_model.clone(),
+                brief: outcome.brief.clone(),
+                compressed: outcome.compressed,
+            });
+        }
+
+        Ok(outcome)
     }
 
     /// Get the current model name.
@@ -1206,6 +1434,11 @@ impl Agent {
         Ok(session_id)
     }
 
+    /// Ensure the session row exists in SQLite (for platform `/handoff`).
+    pub async fn ensure_persisted_session(&self) -> Result<String, AgentError> {
+        self.ensure_session_id().await
+    }
+
     /// Set or replace the persistent top-level goal for the current session.
     pub async fn goal_set(&self, text: &str) -> Result<String, AgentError> {
         let session_id = self.ensure_session_id().await?;
@@ -1333,9 +1566,7 @@ impl Agent {
     /// Remove a subgoal by 1-based index.
     pub async fn subgoal_remove(&self, index_1based: usize) -> Result<String, AgentError> {
         let session_id = self.ensure_session_id().await?;
-        let removed = self
-            .goal_store
-            .remove_subgoal(&session_id, index_1based)?;
+        let removed = self.goal_store.remove_subgoal(&session_id, index_1based)?;
         Ok(format!("Removed subgoal #{index_1based}: {removed}"))
     }
 
@@ -1569,6 +1800,8 @@ impl Agent {
             provider: Some(self.provider.read().await.clone()),
             tool_registry: Some(registry.clone()),
             delegate_depth: 0,
+            delegate_agent_id: None,
+            delegate_parent_id: None,
             sub_agent_runner: None,
             delegation_event_tx: None,
             clarify_tx: None,
@@ -1640,6 +1873,23 @@ impl Agent {
         config.moa = moa.sanitized();
     }
 
+    /// Refresh in-memory `web_search` from disk after `/web` chain edits.
+    ///
+    /// Tool dispatch already reads the on-disk chain via [`effective_web_search_config`];
+    /// this keeps the agent snapshot aligned for diagnostics and future turns.
+    pub async fn reload_web_search_from_disk(&self) {
+        let path = crate::config::edgecrab_home().join("config.yaml");
+        let loaded = if path.is_file() {
+            crate::config::AppConfig::load_from(&path)
+                .map(|cfg| cfg.web_search)
+                .unwrap_or_default()
+        } else {
+            crate::config::WebSearchConfig::default()
+        };
+        let mut config = self.config.write().await;
+        config.web_search = loaded;
+    }
+
     /// Current LSP configuration (post-write diagnostics gate + language servers).
     pub async fn lsp_config(&self) -> crate::config::LspConfig {
         self.config.read().await.lsp.clone()
@@ -1649,6 +1899,20 @@ impl Agent {
     pub async fn set_lsp_enabled(&self, enabled: bool) {
         let mut config = self.config.write().await;
         config.lsp.enabled = enabled;
+    }
+
+    /// Enable or disable computer_use for future tool calls in this session.
+    pub async fn set_computer_use_enabled(&self, enabled: bool) {
+        let mut config = self.config.write().await;
+        config.computer_use_enabled = enabled;
+        if enabled
+            && !config
+                .enabled_toolsets
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case("computer_use"))
+        {
+            config.enabled_toolsets.push("computer_use".to_string());
+        }
     }
 
     /// Update the enabled/disabled toolset filters for future turns.
@@ -1761,6 +2025,15 @@ pub enum StreamEvent {
     Token(String),
     /// A reasoning / think-mode chunk.
     Reasoning(String),
+    /// The model is streaming a tool call before arguments are complete.
+    ToolGenerating {
+        /// Stable tool call id from the LLM tool invocation (or stream placeholder).
+        tool_call_id: String,
+        /// Tool name being drafted (e.g. "terminal")
+        name: String,
+        /// Partial JSON arguments accumulated so far.
+        partial_args: String,
+    },
     /// A tool execution has started.
     ToolExec {
         /// Stable tool call id from the LLM tool invocation.
@@ -1799,6 +2072,12 @@ pub enum StreamEvent {
         task_index: usize,
         task_count: usize,
         goal: String,
+        /// Delegation depth from parent agent (1 = first-level delegate).
+        depth: u32,
+        /// Stable subagent id for tree grouping / replay.
+        agent_id: String,
+        /// Parent subagent id when nested; `None` for top-level spawns.
+        parent_id: Option<String>,
     },
     /// A delegated child agent surfaced intermediate reasoning text.
     SubAgentReasoning {
@@ -1893,6 +2172,19 @@ pub enum StreamEvent {
         /// Compression threshold in tokens (context_window × threshold_fraction).
         threshold_tokens: usize,
     },
+    /// Ephemeral human-facing activity notice (compression, background process watch, etc.).
+    ActivityNotice(String),
+    /// Throttled tail from a background process (survives after `run_process` ToolDone).
+    BackgroundProcessTail {
+        process_id: String,
+        command_preview: String,
+        tail: String,
+    },
+    /// Background process exited (updates the monitor line in the TUI).
+    BackgroundProcessFinished {
+        process_id: String,
+        exit_code: Option<i32>,
+    },
     /// A steering event is waiting in the channel (pending injection).
     ///
     /// Emitted when the TUI sends a steer but before the loop has reached
@@ -1910,6 +2202,13 @@ pub enum StreamEvent {
         /// The full combined steer message that was injected.
         message: String,
     },
+    /// Model handoff completed — brief shown before the next turn.
+    ModelTransferComplete {
+        from: String,
+        to: String,
+        brief: String,
+        compressed: bool,
+    },
 }
 
 impl std::fmt::Debug for StreamEvent {
@@ -1917,6 +2216,7 @@ impl std::fmt::Debug for StreamEvent {
         match self {
             Self::Token(t) => write!(f, "Token({t:?})"),
             Self::Reasoning(t) => write!(f, "Reasoning({t:?})"),
+            Self::ToolGenerating { name, .. } => write!(f, "ToolGenerating({name:?})"),
             Self::ToolExec { name, .. } => write!(f, "ToolExec({name:?})"),
             Self::ToolProgress { name, message, .. } => {
                 write!(f, "ToolProgress({name:?}, {message:?})")
@@ -1933,9 +2233,12 @@ impl std::fmt::Debug for StreamEvent {
                 task_index,
                 task_count,
                 goal,
+                depth,
+                agent_id,
+                parent_id,
             } => write!(
                 f,
-                "SubAgentStart({}/{}, {:?})",
+                "SubAgentStart({}/{}, d{depth}, id={agent_id}, parent={parent_id:?}, {:?})",
                 task_index + 1,
                 task_count,
                 goal
@@ -2005,10 +2308,35 @@ impl std::fmt::Debug for StreamEvent {
                 f,
                 "ContextPressure(est={estimated_tokens}, threshold={threshold_tokens})"
             ),
+            Self::ActivityNotice(text) => {
+                let preview = &text[..text.len().min(60)];
+                write!(f, "ActivityNotice({preview:?}…)")
+            }
+            Self::BackgroundProcessTail {
+                process_id, tail, ..
+            } => {
+                let preview = &tail[..tail.len().min(40)];
+                write!(f, "BackgroundProcessTail({process_id}, {preview:?}…)")
+            }
+            Self::BackgroundProcessFinished {
+                process_id,
+                exit_code,
+            } => write!(f, "BackgroundProcessFinished({process_id}, {exit_code:?})"),
             Self::SteerPending { count } => write!(f, "SteerPending({count})"),
             Self::SteerApplied { message } => {
                 let preview = &message[..message.len().min(60)];
                 write!(f, "SteerApplied({preview:?}…)")
+            }
+            Self::ModelTransferComplete {
+                from,
+                to,
+                compressed,
+                ..
+            } => {
+                write!(
+                    f,
+                    "ModelTransferComplete({from:?} → {to:?}, compressed={compressed})"
+                )
             }
             Self::Footer(text) => {
                 let preview = &text[..text.len().min(60)];
@@ -2107,6 +2435,12 @@ impl AgentBuilder {
                 browser: config.browser.clone(),
                 checkpoints_enabled: config.checkpoints.enabled,
                 checkpoints_max_snapshots: config.checkpoints.max_snapshots,
+                checkpoints_max_total_size_mb: config.checkpoints.max_total_size_mb,
+                checkpoints_max_file_size_mb: config.checkpoints.max_file_size_mb,
+                computer_use_enabled: config.computer_use.enabled,
+                computer_use_keep_last_n_screenshots: config.computer_use.keep_last_n_screenshots,
+                computer_use_confirm_destructive: config.computer_use.confirm_destructive,
+                computer_use_cua_cmd: config.computer_use.cua_driver_cmd.clone(),
                 terminal_backend: config.terminal.backend.clone(),
                 terminal_docker: config.terminal.docker.clone(),
                 terminal_ssh: config.terminal.ssh.clone(),
@@ -2128,9 +2462,12 @@ impl AgentBuilder {
                 result_spill: config.tools.result_spill,
                 result_spill_threshold: config.tools.result_spill_threshold,
                 result_spill_preview_lines: config.tools.result_spill_preview_lines,
+                result_turn_budget_chars: config.tools.result_turn_budget_chars,
                 max_write_payload_kib: config.tools.file.max_write_payload_kib,
                 file_mutation_verifier: config.display.file_mutation_verifier,
                 cache: config.cache.clone(),
+                web_search: config.web_search.clone(),
+                web: config.web.clone(),
                 ..Default::default()
             },
             provider: None,
@@ -3085,13 +3422,39 @@ def register(ctx):
         assert!(s.first_compression_done);
     }
 
+    #[test]
+    fn apply_model_transfer_outcome_clears_cache_and_injects_brief() {
+        let outcome = crate::model_transfer::ModelTransferOutcome {
+            from_model: "a/m1".into(),
+            to_model: "b/m2".into(),
+            brief: "Continue tests.".into(),
+            compressed: true,
+            from_context_window: 200_000,
+            target_context_window: 128_000,
+        };
+        let mut session = SessionState {
+            cached_system_prompt: Some("stable".into()),
+            cached_stable_prompt: Some("stable".into()),
+            messages: vec![Message::user("hello")],
+            ..SessionState::default()
+        };
+        session.apply_model_transfer_outcome(&outcome);
+        assert!(session.cached_system_prompt.is_none());
+        assert!(session.cached_stable_prompt.is_none());
+        assert!(session.first_compression_done);
+        assert_eq!(session.messages.len(), 2);
+        assert!(
+            session.messages[1]
+                .text_content()
+                .contains("Continue tests.")
+        );
+    }
+
     #[tokio::test]
     async fn goal_set_before_first_chat_avoids_foreign_key_error() {
         let dir = tempfile::TempDir::new().expect("tempdir");
         let db_path = dir.path().join("state.db");
-        let db = Arc::new(
-            edgecrab_state::SessionDb::open(&db_path).expect("open db"),
-        );
+        let db = Arc::new(edgecrab_state::SessionDb::open(&db_path).expect("open db"));
         let provider: Arc<dyn LLMProvider> = Arc::new(edgequake_llm::MockProvider::new());
         let agent = AgentBuilder::new("mock")
             .provider(provider)
@@ -3129,5 +3492,156 @@ def register(ctx):
             .expect("goal set");
         let after = agent.session.read().await.cached_system_prompt.clone();
         assert_eq!(before, after, "cached system prompt must remain unchanged");
+    }
+
+    #[tokio::test]
+    async fn perform_model_transfer_clears_cached_prompt_and_injects_brief() {
+        use crate::goals::{GoalStore, InMemoryGoalStore};
+        use crate::model_transfer::{
+            ModelTransferContext, ModelTransferOrchestrator, resolve_model_transfer_target,
+        };
+
+        let provider: Arc<dyn LLMProvider> = Arc::new(edgequake_llm::MockProvider::new());
+        let goal_store = Arc::new(InMemoryGoalStore::new());
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let db = Arc::new(
+            edgecrab_state::SessionDb::open(&tmp.path().join("sessions.db")).expect("open db"),
+        );
+        let agent = AgentBuilder::new("anthropic/claude-opus-4.6")
+            .provider(provider.clone())
+            .goal_store(goal_store.clone())
+            .state_db(db)
+            .build()
+            .expect("build");
+
+        agent
+            .goal_set("finish session handoff tests")
+            .await
+            .expect("goal");
+        agent.chat("implement session handoff").await.expect("chat");
+        let session_id = agent.session.read().await.session_id.clone().expect("sid");
+
+        {
+            let mut session = agent.session.write().await;
+            session.cached_system_prompt = Some("stable block".into());
+            session.cached_stable_prompt = Some("stable".into());
+        }
+
+        let target = resolve_model_transfer_target("anthropic/claude-haiku-4.5").expect("catalog");
+        let mut messages = agent.messages().await;
+        let cfg = agent.config.read().await.compression.clone();
+        let mut ctx = ModelTransferContext {
+            current_model: "anthropic/claude-opus-4.6",
+            messages: &mut messages,
+            system_prompt: Some("stable block"),
+            compression_cfg: &cfg,
+            main_provider: provider.clone(),
+            auxiliary_model: None,
+        };
+        let (outcome, new_provider) =
+            ModelTransferOrchestrator::execute_with_provider(&mut ctx, &target, provider)
+                .await
+                .expect("handoff");
+
+        {
+            let mut session = agent.session.write().await;
+            session.messages = messages;
+            session.apply_model_transfer_outcome(&outcome);
+        }
+        agent
+            .swap_model(outcome.to_model.clone(), new_provider)
+            .await;
+
+        let session = agent.session.read().await;
+        assert!(session.cached_system_prompt.is_none());
+        assert!(session.cached_stable_prompt.is_none());
+        assert!(
+            session.messages.last().is_some_and(|m| {
+                m.role == Role::User
+                    && m.text_content()
+                        .starts_with("Continuing from previous session")
+            }),
+            "handoff brief should be injected as user message"
+        );
+        assert_eq!(agent.model().await, "anthropic/claude-haiku-4.5");
+
+        let goal = goal_store.as_ref().active(&session_id).expect("goal load");
+        assert!(
+            goal.goal_text
+                .as_deref()
+                .is_some_and(|g| g.contains("handoff")),
+            "standing goal must survive model handoff"
+        );
+    }
+
+    #[tokio::test]
+    async fn perform_model_transfer_persists_audit_trail() {
+        use crate::model_transfer::{
+            ModelTransferContext, ModelTransferOrchestrator, resolve_model_transfer_target,
+        };
+
+        let provider: Arc<dyn LLMProvider> = Arc::new(edgequake_llm::MockProvider::new());
+        let tmp = tempfile::TempDir::new().expect("tempdir");
+        let db = Arc::new(
+            edgecrab_state::SessionDb::open(&tmp.path().join("sessions.db")).expect("open db"),
+        );
+        let agent = AgentBuilder::new("anthropic/claude-opus-4.6")
+            .provider(provider.clone())
+            .state_db(db.clone())
+            .build()
+            .expect("build");
+
+        agent
+            .chat("work on model transfer unification")
+            .await
+            .expect("chat");
+        let session_id = agent.session.read().await.session_id.clone().expect("sid");
+
+        // CI has no ANTHROPIC_API_KEY — use mock provider via orchestrator, then apply
+        // the same post-handoff persistence path as `perform_model_transfer`.
+        let target = resolve_model_transfer_target("anthropic/claude-haiku-4.5").expect("catalog");
+        let mut messages = agent.messages().await;
+        let cfg = agent.config.read().await.compression.clone();
+        let mut ctx = ModelTransferContext {
+            current_model: "anthropic/claude-opus-4.6",
+            messages: &mut messages,
+            system_prompt: None,
+            compression_cfg: &cfg,
+            main_provider: provider.clone(),
+            auxiliary_model: None,
+        };
+        let (outcome, new_provider) =
+            ModelTransferOrchestrator::execute_with_provider(&mut ctx, &target, provider)
+                .await
+                .expect("handoff");
+        {
+            let mut session = agent.session.write().await;
+            session.messages = messages;
+            session.apply_model_transfer_outcome(&outcome);
+        }
+        agent
+            .swap_model(outcome.to_model.clone(), new_provider)
+            .await;
+        db.update_session_model(&session_id, &outcome.to_model)
+            .expect("session model update");
+        db.record_model_transfer(
+            &session_id,
+            &outcome.from_model,
+            &outcome.to_model,
+            &outcome.brief,
+            0.0,
+        )
+        .expect("record transfer");
+
+        assert_eq!(outcome.to_model, "anthropic/claude-haiku-4.5");
+        assert_eq!(agent.model().await, "anthropic/claude-haiku-4.5");
+
+        let records = db
+            .list_model_transfers(&session_id)
+            .expect("list transfers");
+        assert_eq!(records.len(), 1);
+        assert_eq!(records[0].from_model, "anthropic/claude-opus-4.6");
+        assert_eq!(records[0].to_model, "anthropic/claude-haiku-4.5");
+        assert!(!records[0].brief.trim().is_empty());
     }
 }

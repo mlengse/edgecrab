@@ -214,9 +214,13 @@ impl ExecutionBackend for SshBackend {
         cwd: &str,
         timeout: Duration,
         cancel: CancellationToken,
+        options: super::ExecuteOptions,
     ) -> Result<ExecOutput, ToolError> {
         let state = self.ensure_state().await?;
-        state.exec(command, cwd, timeout, cancel).await
+        super::start_execute_progress(&options, "SSH", command);
+        let output = state.exec(command, cwd, timeout, cancel).await?;
+        super::finalize_execute_progress(&options, &output);
+        Ok(output)
     }
 
     async fn execute_oneshot(
@@ -304,6 +308,7 @@ mod tests {
                 "/tmp",
                 Duration::from_secs(10),
                 CancellationToken::new(),
+                crate::tools::backends::ExecuteOptions::default(),
             )
             .await
             .expect("execute");
@@ -325,6 +330,7 @@ mod tests {
                 "/tmp",
                 Duration::from_secs(10),
                 CancellationToken::new(),
+                crate::tools::backends::ExecuteOptions::default(),
             )
             .await
             .expect("execute");

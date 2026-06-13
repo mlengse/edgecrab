@@ -42,6 +42,8 @@ pub struct AppConfig {
     pub skip_context_files: bool,
     pub skip_memory: bool,
     pub gateway: GatewayConfig,
+    /// Local OpenAI-compatible subscription proxy (`edgecrab proxy`).
+    pub proxy: ProxyConfig,
     pub mcp_servers: HashMap<String, McpServerConfig>,
     pub memory: MemoryConfig,
     pub skills: SkillsConfig,
@@ -54,6 +56,7 @@ pub struct AppConfig {
     pub privacy: PrivacyConfig,
     pub browser: BrowserConfig,
     pub checkpoints: CheckpointsConfig,
+    pub computer_use: ComputerUseConfig,
     pub timezone: Option<String>,
     pub tts: TtsConfig,
     pub stt: SttConfig,
@@ -67,6 +70,9 @@ pub struct AppConfig {
     pub reasoning_effort: Option<String>,
     pub context: ContextConfig,
     pub cache: CacheConfig,
+    pub web_search: WebSearchConfig,
+    /// Hermes-aligned per-capability backend overrides (`web:` in config.yaml).
+    pub web: WebToolsConfig,
 }
 
 /// Cross-session Anthropic prompt prefix cache (stable/dynamic system split).
@@ -115,6 +121,45 @@ pub struct ContextConfig {
     pub engine: Option<String>,
 }
 
+/// Hermes-aligned `web:` section — per-capability backend overrides.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct WebToolsConfig {
+    pub search_backend: String,
+    pub extract_backend: String,
+    pub backend: String,
+}
+
+/// Pluggable web search backend chain (`web_search` in config.yaml).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct WebSearchConfig {
+    pub primary: String,
+    pub fallbacks: Vec<String>,
+    pub timeout_secs: u64,
+    pub backends: HashMap<String, WebSearchBackendConfig>,
+}
+
+impl Default for WebSearchConfig {
+    fn default() -> Self {
+        Self {
+            primary: "searxng".into(),
+            fallbacks: vec!["brave".into(), "ddgs".into()],
+            timeout_secs: 8,
+            backends: HashMap::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct WebSearchBackendConfig {
+    pub api_key: Option<String>,
+    pub endpoint: Option<String>,
+    pub rps: Option<f64>,
+    pub timeout_secs: Option<u64>,
+}
+
 #[derive(Debug, Clone, Default, Deserialize, Serialize)]
 #[serde(default)]
 pub struct AgentConfig {
@@ -151,6 +196,7 @@ impl AppConfig {
 
         config.apply_env_overrides();
         config.moa = config.moa.sanitized();
+        edgecrab_tools::ensure_web_search_config_coherence_at(&path);
         Ok(config)
     }
 
@@ -160,6 +206,7 @@ impl AppConfig {
         let mut config: Self = Self::parse_compat_yaml(&content, path)?;
         config.apply_env_overrides();
         config.moa = config.moa.sanitized();
+        edgecrab_tools::ensure_web_search_config_coherence_at(path);
         Ok(config)
     }
 
@@ -179,6 +226,35 @@ impl AppConfig {
         let mut config = Self::load()?;
         config.lsp.enabled = enabled;
         config.save()
+    }
+
+    /// Enable or disable `computer_use` and sync the toolset in config.yaml.
+    pub fn persist_computer_use_enabled(enabled: bool) -> Result<(), AgentError> {
+        let mut config = Self::load()?;
+        config.computer_use.enabled = enabled;
+        if enabled {
+            Self::ensure_toolset_enabled(&mut config.tools.enabled_toolsets, "computer_use");
+        } else {
+            Self::ensure_toolset_disabled(&mut config.tools.enabled_toolsets, "computer_use");
+        }
+        config.save()
+    }
+
+    fn ensure_toolset_disabled(toolsets: &mut Option<Vec<String>>, name: &str) {
+        if let Some(list) = toolsets {
+            list.retain(|entry| !entry.eq_ignore_ascii_case(name));
+            if list.is_empty() {
+                *toolsets = None;
+            }
+        }
+    }
+
+    fn ensure_toolset_enabled(toolsets: &mut Option<Vec<String>>, name: &str) {
+        match toolsets {
+            Some(list) if list.iter().any(|entry| entry.eq_ignore_ascii_case(name)) => {}
+            Some(list) => list.push(name.to_string()),
+            None => *toolsets = Some(vec![name.to_string()]),
+        }
     }
 
     /// Human-readable summary for `/lsp status`.
@@ -288,6 +364,11 @@ impl AppConfig {
             && let Ok(n) = val.parse()
         {
             self.tools.result_spill_preview_lines = n;
+        }
+        if let Ok(val) = std::env::var("EDGECRAB_TOOL_RESULT_TURN_BUDGET")
+            && let Ok(n) = val.parse()
+        {
+            self.tools.result_turn_budget_chars = n;
         }
         if let Ok(val) = std::env::var("EDGECRAB_MAX_WRITE_PAYLOAD_KIB")
             && let Ok(n) = val.parse()
@@ -403,6 +484,9 @@ impl AppConfig {
         if let Ok(val) = std::env::var("SIGNAL_ACCOUNT") {
             self.gateway.signal.account = Some(val);
         }
+        if let Ok(val) = std::env::var("SIGNAL_HOME_CHANNEL") {
+            self.gateway.signal.home_channel = Some(val);
+        }
         if let Ok(val) = std::env::var("WHATSAPP_ENABLED")
             && parse_bool_env(&val)
             && !self.gateway.platform_disabled("whatsapp")
@@ -415,6 +499,9 @@ impl AppConfig {
         }
         if let Ok(val) = std::env::var("WHATSAPP_ALLOWED_USERS") {
             self.gateway.whatsapp.allowed_users = parse_csv_env(&val);
+        }
+        if let Ok(val) = std::env::var("WHATSAPP_HOME_CHANNEL") {
+            self.gateway.whatsapp.home_channel = Some(val);
         }
         if let Ok(val) = std::env::var("WHATSAPP_BRIDGE_PORT")
             && let Ok(port) = val.parse()
@@ -798,6 +885,14 @@ pub struct ToolsConfig {
     pub result_spill_threshold: usize,
     /// Number of preview lines kept in the stub (default: 80).
     pub result_spill_preview_lines: usize,
+    /// Max aggregate chars for all tool results in one assistant turn (default: 200_000).
+    /// `0` disables per-turn budget enforcement (Hermes `enforce_turn_budget`).
+    #[serde(default = "default_result_turn_budget_chars")]
+    pub result_turn_budget_chars: usize,
+}
+
+fn default_result_turn_budget_chars() -> usize {
+    200_000
 }
 
 impl Default for ToolsConfig {
@@ -815,6 +910,7 @@ impl Default for ToolsConfig {
             result_spill: true,
             result_spill_threshold: 16_384,
             result_spill_preview_lines: 80,
+            result_turn_budget_chars: default_result_turn_budget_chars(),
         }
     }
 }
@@ -1244,6 +1340,7 @@ pub struct SignalGatewayConfig {
     /// Phone number registered with signal-cli.
     pub account: Option<String>,
     pub allowed_users: Vec<String>,
+    pub home_channel: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -1259,6 +1356,109 @@ pub struct WhatsAppGatewayConfig {
     pub allowed_users: Vec<String>,
     pub reply_prefix: Option<String>,
     pub install_dependencies: bool,
+    pub home_channel: Option<String>,
+}
+
+/// Configuration for `edgecrab proxy` — local OpenAI-compatible inference bridge.
+///
+/// Distinct from the gateway API server: the proxy forwards raw LLM traffic
+/// (no agent ReAct loop). See `edgecrab-proxy` crate.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ProxyConfig {
+    /// Bind address (default loopback).
+    pub bind: String,
+    /// TCP port (default 11434 — Ollama convention).
+    pub port: u16,
+    /// Path to the local bearer token clients must present.
+    pub token_path: Option<PathBuf>,
+    /// Model alias → `provider/model` spec for [`ModelCatalog`](crate::model_catalog::ModelCatalog).
+    pub model_aliases: HashMap<String, String>,
+    /// Mode A upstreams keyed by name; use model spec `forward:<key>` or alias → `forward:<key>`.
+    pub forward_upstreams: HashMap<String, ForwardUpstreamConfig>,
+    /// When set, `GET /v1/models` forwards to this upstream (Hermes single-adapter style).
+    #[serde(default)]
+    pub default_forward_upstream: Option<String>,
+    /// Comma-separated origins allowed when set (empty = no CORS).
+    pub cors_allow_origins: Vec<String>,
+    /// Max chat request body bytes.
+    pub max_body_bytes: usize,
+}
+
+/// How a forward upstream resolves credentials (extensible for 024 OAuth).
+#[derive(Debug, Clone, Copy, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ForwardAdapterKind {
+    /// `bearer` / `bearer_env` inline credentials.
+    #[default]
+    Static,
+    /// Read `agent_key` from Hermes-format `auth.json` (`providers.<name>`).
+    HermesAuth,
+    /// Nous Portal OAuth with refresh + invoke JWT selection (Hermes `NousPortalAdapter`).
+    NousPortal,
+    /// xAI Grok OAuth via Hermes `auth.json` / credential pool (Hermes `XAIGrokAdapter`).
+    XaiOauth,
+}
+
+/// Static or env-backed upstream for Hermes-style credential forwarding (Mode A).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ForwardUpstreamConfig {
+    pub base_url: String,
+    #[serde(default)]
+    pub adapter: ForwardAdapterKind,
+    /// Provider id inside `auth.json` (defaults to upstream map key, e.g. `nous`).
+    #[serde(default)]
+    pub auth_provider: Option<String>,
+    /// Override auth store path (default: `~/.edgecrab/auth.json` then `~/.hermes/auth.json`).
+    #[serde(default)]
+    pub auth_path: Option<PathBuf>,
+    /// Env var holding the upstream bearer (e.g. `NOUS_API_KEY`).
+    #[serde(default)]
+    pub bearer_env: Option<String>,
+    /// Inline bearer for tests only — prefer `bearer_env` in production configs.
+    #[serde(default)]
+    pub bearer: Option<String>,
+    /// Shown when upstream is not authenticated (Hermes `auth_hint`).
+    #[serde(default)]
+    pub auth_hint: Option<String>,
+}
+
+impl Default for ForwardUpstreamConfig {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            adapter: ForwardAdapterKind::Static,
+            auth_provider: None,
+            auth_path: None,
+            bearer_env: None,
+            bearer: None,
+            auth_hint: None,
+        }
+    }
+}
+
+impl Default for ProxyConfig {
+    fn default() -> Self {
+        Self {
+            bind: "127.0.0.1".into(),
+            port: 11_434,
+            token_path: None,
+            model_aliases: HashMap::new(),
+            forward_upstreams: HashMap::new(),
+            default_forward_upstream: None,
+            cors_allow_origins: Vec::new(),
+            max_body_bytes: 4 * 1024 * 1024,
+        }
+    }
+}
+
+impl ProxyConfig {
+    /// Resolved token file path (`token_path` or `~/.edgecrab/proxy-token`).
+    pub fn resolved_token_path(&self) -> PathBuf {
+        self.token_path
+            .clone()
+            .unwrap_or_else(|| edgecrab_home().join("proxy-token"))
+    }
 }
 
 impl Default for WhatsAppGatewayConfig {
@@ -1274,6 +1474,7 @@ impl Default for WhatsAppGatewayConfig {
             allowed_users: Vec::new(),
             reply_prefix: Some("\u{2695} *EdgeCrab Agent*\n------------\n".into()),
             install_dependencies: true,
+            home_channel: None,
         }
     }
 }
@@ -1430,6 +1631,14 @@ impl Default for SkillsConfig {
     }
 }
 
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+#[serde(default)]
+pub struct WebsiteBlocklistConfig {
+    pub enabled: bool,
+    pub domains: Vec<String>,
+    pub shared_files: Vec<String>,
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct SecurityConfig {
@@ -1438,6 +1647,7 @@ pub struct SecurityConfig {
     pub path_restrictions: Vec<PathBuf>,
     pub injection_scanning: bool,
     pub url_safety: bool,
+    pub website_blocklist: WebsiteBlocklistConfig,
     /// Set by EDGECRAB_MANAGED=1 — blocks config writes.
     #[serde(skip)]
     pub managed_mode: bool,
@@ -1451,6 +1661,7 @@ impl Default for SecurityConfig {
             path_restrictions: Vec::new(),
             injection_scanning: true,
             url_safety: true,
+            website_blocklist: WebsiteBlocklistConfig::default(),
             managed_mode: false,
         }
     }
@@ -1563,6 +1774,34 @@ pub struct DisplayConfig {
     pub skin: String,
     /// Append per-turn file-mutation footers (success log + failure advisory).
     pub file_mutation_verifier: bool,
+    /// Live activity shelf between transcript and status bar (TUI).
+    pub activity_shelf: bool,
+    /// Shelf accordion disclosure (`/details`) — Hermes `details_mode` parity.
+    pub shelf_details: ShelfDetailsConfig,
+    /// Busy status-bar indicator style (`/indicator`): kaomoji, emoji, unicode, ascii.
+    pub status_indicator: String,
+}
+
+/// Persisted shelf section disclosure (`display.shelf_details` in config.yaml).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ShelfDetailsConfig {
+    /// Global default: `hidden`, `collapsed`, or `expanded`.
+    pub mode: String,
+    /// When true, global mode applies to all sections (Hermes command override).
+    pub command_override: bool,
+    /// Per-section overrides (keys: `thinking`, `tools`, `subagents`, `activity`).
+    pub sections: HashMap<String, String>,
+}
+
+impl Default for ShelfDetailsConfig {
+    fn default() -> Self {
+        Self {
+            mode: "collapsed".into(),
+            command_override: false,
+            sections: HashMap::new(),
+        }
+    }
 }
 
 impl Default for DisplayConfig {
@@ -1579,6 +1818,9 @@ impl Default for DisplayConfig {
             update_check_interval_hours: 24,
             skin: "default".into(),
             file_mutation_verifier: true,
+            activity_shelf: true,
+            shelf_details: ShelfDetailsConfig::default(),
+            status_indicator: "kaomoji".into(),
         }
     }
 }
@@ -1890,27 +2132,67 @@ impl Default for BrowserConfig {
 /// Checkpoint and rollback configuration.
 ///
 /// Checkpoints are automatically created before destructive operations
-/// (write_file, patch, destructive terminal commands) and stored as
-/// shadow git commits under `~/.edgecrab/checkpoints/`.
+/// (write_file, patch, destructive terminal commands) and stored in a
+/// single shared shadow git store under `~/.edgecrab/checkpoints/store/`.
 ///
-/// Mirrors hermes-agent's `checkpoints:` config block.
+/// Mirrors hermes-agent's `checkpoints:` config block (v2).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(default)]
 pub struct CheckpointsConfig {
     /// Master switch — set to false to disable all checkpoint operations.
-    /// Default: true.
     pub enabled: bool,
-    /// Maximum number of checkpoints to retain per working directory.
-    /// Older checkpoints are pruned when this limit is reached.
-    /// Default: 50.
+    /// Maximum checkpoints retained per working directory (FIFO eviction).
     pub max_snapshots: u32,
+    /// Hard ceiling on total checkpoint store size in MB (0 = disabled).
+    pub max_total_size_mb: u32,
+    /// Skip staging any single file larger than this (MB). 0 = disabled.
+    pub max_file_size_mb: u32,
+    /// Auto-prune orphan/stale projects at startup.
+    pub auto_prune: bool,
+    /// Drop projects whose last_touch is older than this many days.
+    pub retention_days: u32,
+    /// Delete projects whose workdir no longer exists.
+    pub delete_orphans: bool,
+    /// Minimum hours between automatic prune sweeps.
+    pub min_interval_hours: u32,
 }
 
 impl Default for CheckpointsConfig {
     fn default() -> Self {
         Self {
             enabled: true,
-            max_snapshots: 50,
+            max_snapshots: 20,
+            max_total_size_mb: 200,
+            max_file_size_mb: 10,
+            auto_prune: true,
+            retention_days: 7,
+            delete_orphans: true,
+            min_interval_hours: 24,
+        }
+    }
+}
+
+/// macOS desktop control via cua-driver (`computer_use` tool).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ComputerUseConfig {
+    /// Master switch — disabled by default (high-risk capability).
+    pub enabled: bool,
+    /// Keep only the last N screenshot captures in conversation history.
+    pub keep_last_n_screenshots: u32,
+    /// Require approval for destructive actions unless yolo is on.
+    pub confirm_destructive: bool,
+    /// cua-driver binary name or path.
+    pub cua_driver_cmd: String,
+}
+
+impl Default for ComputerUseConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            keep_last_n_screenshots: 1,
+            confirm_destructive: true,
+            cua_driver_cmd: "cua-driver".into(),
         }
     }
 }
@@ -2350,6 +2632,14 @@ model:
     }
 
     #[test]
+    fn ensure_toolset_enabled_appends_computer_use() {
+        let mut toolsets = Some(vec!["core".into()]);
+        AppConfig::ensure_toolset_enabled(&mut toolsets, "computer_use");
+        let list = toolsets.expect("toolsets");
+        assert!(list.iter().any(|name| name == "computer_use"));
+    }
+
+    #[test]
     fn persist_lsp_enabled_round_trip_via_save_to() {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("config.yaml");
@@ -2662,6 +2952,7 @@ tools:
         let cfg = SecurityConfig::default();
         assert!(cfg.injection_scanning);
         assert!(cfg.url_safety);
+        assert!(!cfg.website_blocklist.enabled);
         assert!(!cfg.managed_mode);
     }
 

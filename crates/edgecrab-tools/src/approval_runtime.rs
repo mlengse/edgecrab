@@ -4,7 +4,7 @@
 //! scan, approval request, session cache, and persistence behavior. Keeping
 //! the flow here avoids divergent security semantics across shell tools.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::sync::{Mutex, OnceLock, RwLock};
 
@@ -96,6 +96,33 @@ pub fn set_yolo_for_session(session_key: impl Into<String>, enabled: bool) {
     }
 }
 
+// ─── computer_use per-action session approval (Hermes `_always_allow`) ───
+
+fn computer_use_action_cache() -> &'static RwLock<HashMap<String, HashSet<String>>> {
+    static CACHE: OnceLock<RwLock<HashMap<String, HashSet<String>>>> = OnceLock::new();
+    CACHE.get_or_init(|| RwLock::new(HashMap::new()))
+}
+
+/// True when this destructive `computer_use` action was approved for the session.
+pub fn computer_use_action_approved(session_key: &str, action: &str) -> bool {
+    computer_use_action_cache()
+        .read()
+        .ok()
+        .and_then(|cache| cache.get(session_key).map(|set| set.contains(action)))
+        .unwrap_or(false)
+}
+
+/// Remember approval for one action type until session ends (Hermes `approve_session`).
+pub fn approve_computer_use_action_for_session(session_key: impl Into<String>, action: &str) {
+    let session_key = session_key.into();
+    if let Ok(mut cache) = computer_use_action_cache().write() {
+        cache
+            .entry(session_key)
+            .or_default()
+            .insert(action.to_string());
+    }
+}
+
 pub(crate) fn command_approval_reasons(ctx: &ToolContext, command: &str) -> Option<Vec<String>> {
     if yolo_enabled_for_session(&session_key(ctx)) {
         return None;
@@ -175,5 +202,19 @@ pub(crate) async fn request_command_approval(
         ApprovalResponse::Deny => Err(ToolError::PermissionDenied(
             "Command denied by user approval policy.".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod computer_use_approval_tests {
+    use super::*;
+
+    #[test]
+    fn session_approval_caches_per_action() {
+        let session = "test-session-computer-use";
+        assert!(!computer_use_action_approved(session, "key"));
+        approve_computer_use_action_for_session(session, "key");
+        assert!(computer_use_action_approved(session, "key"));
+        assert!(!computer_use_action_approved(session, "click"));
     }
 }

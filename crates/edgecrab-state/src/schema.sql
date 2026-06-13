@@ -32,6 +32,9 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_source TEXT,
     pricing_version TEXT,
     title TEXT,
+    handoff_state TEXT,
+    handoff_platform TEXT,
+    handoff_error TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -106,3 +109,14 @@ CREATE TABLE IF NOT EXISTS session_subgoals (
 );
 
 CREATE INDEX IF NOT EXISTS idx_session_subgoals_session ON session_subgoals(session_id, position);
+
+CREATE TABLE IF NOT EXISTS model_transfers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+    from_model TEXT NOT NULL,
+    to_model TEXT NOT NULL,
+    brief TEXT NOT NULL,
+    ts REAL NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_model_transfers_session ON model_transfers(session_id, ts);

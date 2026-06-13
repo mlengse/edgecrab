@@ -1,5 +1,13 @@
 # Methodology — First Principles Gap Analysis
 
+> **Refresh status (this pass):** the analysis was re-verified against the
+> current EdgeCrab codebase and Hermes **v0.15.0/v0.15.1**. Eight folders
+> are now ✅ DONE, three ◐ PARTIAL, and three new Tier-D gaps (031–033)
+> were added from v0.15. See [README.md §0](README.md#0-implementation-status-snapshot-code-is-law-this-refresh).
+>
+> **Status legend:** ✅ DONE (verified in code, usually `proof/`) ·
+> ◐ PARTIAL (primitive exists, gap remains) · ○ OPEN (not started).
+
 ## 1. Scoring Rubric
 
 Every feature is scored across three axes on a 1–5 scale:
@@ -54,6 +62,9 @@ Every `004-implementation-plan.md` must satisfy:
 - **DRY:** if Hermes does the same thing in 3 places (e.g. injection scanning
   in context files, memory writes, *and* tool errors), the Rust port has
   exactly one `injection_scan(text: &str)` function reused everywhere.
+  *(This is no longer hypothetical: the refresh found **four** drifting
+  threat-pattern sources in EdgeCrab — see
+  [031-promptware-brainworm-defense/](031-promptware-brainworm-defense/).)*
 
 ## 4. "Code Is Law" Verification
 
@@ -67,7 +78,9 @@ checkout. Where a `003-edgecrab-current-state.md` says something is missing,
 a code search returned zero matches (or only stubs).
 
 Line numbers are deliberately omitted — they drift weekly. Cited paths
-remain stable.
+remain stable. *(Exception: a few `003-edgecrab-current-state.md` docs in
+the v0.15 refresh cite anchor lines for precise grounding; treat those as
+indicative, not exact.)*
 
 ## 5. Brutal Honesty Clause
 

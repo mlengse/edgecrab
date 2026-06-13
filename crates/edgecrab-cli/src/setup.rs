@@ -6,6 +6,7 @@
 //! edgecrab setup                 ← full wizard (reconfigure menu if existing)
 //! edgecrab setup model           ← reconfigure model & provider only
 //! edgecrab setup tools           ← reconfigure toolsets
+//! edgecrab setup web             ← web search/extract backend picker
 //! edgecrab setup gateway         ← configure messaging platforms
 //! edgecrab setup agent           ← agent settings (iterations, etc.)
 //! edgecrab setup --force         ← overwrite config from scratch
@@ -70,6 +71,7 @@ const LOCAL_PROVIDERS: &[(&str, &str)] = &[
 const SETUP_SECTIONS: &[(&str, &str)] = &[
     ("model", "Model & Provider"),
     ("tools", "Toolsets"),
+    ("web", "Web Search & Extract"),
     ("gateway", "Messaging Platforms"),
     ("agent", "Agent Settings"),
 ];
@@ -391,21 +393,23 @@ fn run_reconfigure_menu(home: &Path, config_path: &Path) -> anyhow::Result<()> {
     let menu = [
         "Reconfigure model & provider",
         "Reconfigure toolsets",
+        "Configure web search / extract backend",
         "Configure messaging platforms (gateway)",
         "Configure agent settings",
         "Full setup (reconfigure everything)",
         "Exit",
     ];
 
-    let choice = prompt_select("What would you like to configure?", &menu, 5)
+    let choice = prompt_select("What would you like to configure?", &menu, 6)
         .map_err(anyhow::Error::from)?;
 
     match choice {
         0 => run_section("model", home, config_path)?,
         1 => run_section("tools", home, config_path)?,
-        2 => run_section("gateway", home, config_path)?,
-        3 => run_section("agent", home, config_path)?,
-        4 => {
+        2 => run_section("web", home, config_path)?,
+        3 => run_section("gateway", home, config_path)?,
+        4 => run_section("agent", home, config_path)?,
+        5 => {
             println!();
             run_fresh_setup(home, config_path)?;
         }
@@ -432,7 +436,19 @@ fn run_section(section: &str, home: &Path, config_path: &Path) -> anyhow::Result
 
     match section {
         "model" => setup_model_section(&mut current)?,
-        "tools" => setup_tools_section(&mut current)?,
+        "tools" => {
+            let run_web_wizard = setup_tools_section(&mut current)?;
+            save_current_config(home, config_path, &current)?;
+            if run_web_wizard {
+                crate::web_setup::run(config_path)?;
+            }
+            return Ok(());
+        }
+        "web" => {
+            save_current_config(home, config_path, &current)?;
+            crate::web_setup::run(config_path)?;
+            return Ok(());
+        }
         "gateway" => setup_gateway_section(&mut current, config_path)?,
         "agent" => setup_agent_section(&mut current)?,
         _ => anyhow::bail!("Unknown section: {section}"),
@@ -619,8 +635,9 @@ fn configure_vision_backend(config: &mut CurrentConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Setup the toolsets section.
-fn setup_tools_section(config: &mut CurrentConfig) -> anyhow::Result<()> {
+/// Setup the toolsets section. Returns true when the web setup wizard should run next.
+fn setup_tools_section(config: &mut CurrentConfig) -> anyhow::Result<bool> {
+    let had_web = config.toolsets.iter().any(|t| t == "web");
     let available = [
         "core", "web", "terminal", "memory", "skills", "browser", "voice",
     ];
@@ -641,7 +658,19 @@ fn setup_tools_section(config: &mut CurrentConfig) -> anyhow::Result<()> {
         config.toolsets = enabled;
     }
 
-    Ok(())
+    let has_web = config.toolsets.iter().any(|t| t == "web");
+    if !has_web {
+        return Ok(false);
+    }
+    let run_wizard = if !had_web {
+        prompt_yes_no(
+            "Web toolset enabled — configure search/extract backends now?",
+            true,
+        )?
+    } else {
+        prompt_yes_no("Configure web search & extract backends now?", false)?
+    };
+    Ok(run_wizard)
 }
 
 /// Setup the gateway / messaging platforms section.

@@ -289,30 +289,8 @@ fn is_numeric_id(value: &str) -> bool {
 }
 
 fn resolve_home_channel(platform: Platform) -> Option<String> {
-    let key = match platform {
-        Platform::Telegram => "TELEGRAM_HOME_CHANNEL",
-        Platform::Discord => "DISCORD_HOME_CHANNEL",
-        Platform::Slack => "SLACK_HOME_CHANNEL",
-        Platform::Whatsapp => "WHATSAPP_HOME_CHANNEL",
-        Platform::Feishu => "FEISHU_HOME_CHANNEL",
-        Platform::Wecom => "WECOM_HOME_CHANNEL",
-        Platform::Signal => "SIGNAL_HOME_CHANNEL",
-        Platform::Email => "EMAIL_HOME_CHANNEL",
-        Platform::Matrix => "MATRIX_HOME_CHANNEL",
-        Platform::Mattermost => "MATTERMOST_HOME_CHANNEL",
-        Platform::DingTalk => "DINGTALK_HOME_CHANNEL",
-        Platform::Sms => "SMS_HOME_CHANNEL",
-        Platform::Webhook => "WEBHOOK_HOME_CHANNEL",
-        Platform::HomeAssistant => "HOMEASSISTANT_HOME_CHANNEL",
-        Platform::BlueBubbles => "BLUEBUBBLES_HOME_CHANNEL",
-        Platform::Weixin => "WEIXIN_HOME_CHANNEL",
-        Platform::Api => "API_HOME_CHANNEL",
-        Platform::Cli | Platform::Cron | Platform::Acp => return None,
-    };
-    std::env::var(key)
-        .ok()
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
+    let config = edgecrab_core::AppConfig::load().unwrap_or_default();
+    edgecrab_core::resolve_gateway_home_channel(&config.gateway, platform)
 }
 
 #[cfg(test)]

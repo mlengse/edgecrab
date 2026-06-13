@@ -682,6 +682,9 @@ aren't maintained become liabilities.";
 ///    `vision_analyze` is now exposed as an RPC stub in the sandbox, so
 ///    `from edgecrab_tools import vision_analyze` works correctly. The rule
 ///    here is the same: do NOT also call browser_vision afterwards.
+///
+/// Computer-use guidance: compact stable prompt (`edgecrab_tools::COMPUTER_USE_GUIDANCE_COMPACT`);
+/// full reference in bundled skill `skills/apple/macos-computer-use/SKILL.md`.
 const VISION_GUIDANCE: &str = "\
 ## Image Analysis — Tool Selection Rules
 
@@ -1252,6 +1255,10 @@ impl PromptBuilder {
         // the system prompt is the authoritative source of tool-selection rules.
         if self.has_tool("vision_analyze") {
             stable.push(Cow::Borrowed(VISION_GUIDANCE));
+        }
+
+        if self.has_tool("computer_use") {
+            stable.push(Cow::Borrowed(edgecrab_tools::COMPUTER_USE_GUIDANCE_COMPACT));
         }
 
         // 13. LSP semantic-navigation guidance — only when the LSP surface is present.
@@ -4170,6 +4177,9 @@ timestamp (offset {ts_pos}) so it can be Anthropic-cache-eligible"
         );
 
         assert_eq!(h0, h1, "session_id must not affect stable hash");
-        assert_eq!(h2, h3, "cwd must not affect stable hash when context files skipped");
+        assert_eq!(
+            h2, h3,
+            "cwd must not affect stable hash when context files skipped"
+        );
     }
 }

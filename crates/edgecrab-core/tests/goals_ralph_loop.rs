@@ -6,15 +6,16 @@ use async_trait::async_trait;
 use edgecrab_core::{
     AgentBuilder, GoalContinuationDecision, GoalJudgeConfig, GoalStatus, GoalStore, GoalsConfig,
     InMemoryGoalStore, drain_goal_continuations_from_queue, evaluate_goal_after_turn,
-    goal_judge::parse_judge_response, is_goal_continuation_text, prompt_queue_has_real_user_message,
+    goal_judge::parse_judge_response, is_goal_continuation_text,
+    prompt_queue_has_real_user_message,
 };
 use edgecrab_tools::registry::ToolRegistry;
 use edgecrab_types::Platform;
+use edgequake_llm::Result as LlmResult;
+use edgequake_llm::traits::StreamChunk;
 use edgequake_llm::{
     ChatMessage, CompletionOptions, LLMProvider, LLMResponse, ToolChoice, ToolDefinition,
 };
-use edgequake_llm::traits::StreamChunk;
-use edgequake_llm::Result as LlmResult;
 use futures::StreamExt;
 
 struct VerdictProvider {
@@ -118,7 +119,10 @@ async fn evaluate_after_turn_done() {
     assert_eq!(decision.verdict, "done");
     assert!(!decision.should_continue);
     assert!(decision.continuation_prompt.is_none());
-    assert_eq!(store.active("eval-done").expect("active").status, GoalStatus::Done);
+    assert_eq!(
+        store.active("eval-done").expect("active").status,
+        GoalStatus::Done
+    );
     assert_eq!(store.active("eval-done").expect("active").turns_used, 1);
 }
 
@@ -137,7 +141,10 @@ async fn evaluate_after_turn_continue_under_budget() {
     assert!(decision.should_continue);
     assert!(decision.continuation_prompt.is_some());
     assert!(decision.continuation_prompt.unwrap().contains("test goal"));
-    assert_eq!(store.active("eval-cont").expect("active").status, GoalStatus::Active);
+    assert_eq!(
+        store.active("eval-cont").expect("active").status,
+        GoalStatus::Active
+    );
 }
 
 #[tokio::test]
@@ -242,7 +249,10 @@ async fn auto_pause_after_three_parse_failures() {
         .expect("eval");
         assert!(d.should_continue, "turn {turn} should continue");
         assert_eq!(
-            store.active("parse-fail").expect("s").consecutive_parse_failures,
+            store
+                .active("parse-fail")
+                .expect("s")
+                .consecutive_parse_failures,
             turn
         );
     }
@@ -261,7 +271,10 @@ async fn auto_pause_after_three_parse_failures() {
     .await
     .expect("eval");
     assert!(!d3.should_continue);
-    assert_eq!(store.active("parse-fail").expect("s").status, GoalStatus::Paused);
+    assert_eq!(
+        store.active("parse-fail").expect("s").status,
+        GoalStatus::Paused
+    );
     assert!(d3.message.contains("goal_judge"));
 }
 
@@ -318,8 +331,13 @@ fn queue_peek_matches_hermes_slash_aware_preemption() {
     .expect("continuation");
     assert!(is_goal_continuation_text(&cont));
 
-    assert!(!prompt_queue_has_real_user_message(&["/subgoal add tests".into()]));
-    assert!(prompt_queue_has_real_user_message(&["/subgoal add tests".into(), "fix bug".into()]));
+    assert!(!prompt_queue_has_real_user_message(&[
+        "/subgoal add tests".into()
+    ]));
+    assert!(prompt_queue_has_real_user_message(&[
+        "/subgoal add tests".into(),
+        "fix bug".into()
+    ]));
 
     let mut queue = vec![cont, "user follow-up".into()];
     assert_eq!(drain_goal_continuations_from_queue(&mut queue), 1);
@@ -362,10 +380,7 @@ async fn goal_resume_with_kickoff_returns_continuation() {
 
     agent.goal_set("Build API").await.expect("set");
     agent.goal_pause().await.expect("pause");
-    let (msg, cont) = agent
-        .goal_resume_with_kickoff()
-        .await
-        .expect("resume");
+    let (msg, cont) = agent.goal_resume_with_kickoff().await.expect("resume");
     assert!(msg.contains("resumed"));
     let prompt = cont.expect("continuation prompt");
     assert!(is_goal_continuation_text(&prompt));

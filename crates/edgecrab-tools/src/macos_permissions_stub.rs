@@ -21,3 +21,7 @@ pub struct MacosPermissionPreflight {
 pub fn preflight_command_permissions(_command: &str) -> MacosPermissionPreflight {
     MacosPermissionPreflight::default()
 }
+
+pub fn accessibility_consent_status() -> Option<MacosConsentState> {
+    None
+}

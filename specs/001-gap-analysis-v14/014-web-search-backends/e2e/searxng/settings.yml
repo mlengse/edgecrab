@@ -1,0 +1,27 @@
+# Minimal SearXNG config for EdgeCrab web_search E2E (JSON API enabled, limiter off).
+#
+# Default engines (google/ddg/brave) are rate-limited from Docker — mwmbl is stable
+# and needs explicit enable (disabled: true in upstream defaults).
+use_default_settings:
+  engines:
+    keep_only:
+      - mwmbl
+
+server:
+  secret_key: "edgecrab-e2e-only-not-for-production-use"
+  limiter: false
+  image_proxy: false
+
+search:
+  formats:
+    - html
+    - json
+
+engines:
+  - name: mwmbl
+    disabled: false
+    categories:
+      - general
+
+ui:
+  static_use_hash: false

@@ -32,7 +32,7 @@ use serde::{Deserialize, Serialize};
 use edgecrab_types::{AgentError, Message, Role};
 
 /// Schema version — incremented on breaking schema changes.
-const SCHEMA_VERSION: u32 = 8;
+const SCHEMA_VERSION: u32 = 10;
 
 // Write-contention constants
 const WRITE_MAX_RETRIES: u32 = 15;
@@ -205,6 +205,36 @@ pub struct StoredGoalState {
     pub consecutive_parse_failures: u32,
 }
 
+/// One recorded model transfer for a session (`/transfer-model`).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelTransferRecord {
+    pub session_id: String,
+    pub from_model: String,
+    pub to_model: String,
+    pub brief: String,
+    pub ts: f64,
+}
+
+/// @deprecated alias — use [`ModelTransferRecord`].
+pub type HandoffRecord = ModelTransferRecord;
+
+/// Cross-platform session handoff state (`/handoff <platform>`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SessionHandoffStatus {
+    /// `pending` | `running` | `completed` | `failed`
+    pub state: String,
+    pub platform: Option<String>,
+    pub error: Option<String>,
+}
+
+/// Minimal session row for the gateway handoff watcher.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingSessionHandoff {
+    pub session_id: String,
+    pub platform: String,
+    pub title: Option<String>,
+}
+
 // ── SessionDb ─────────────────────────────────────────────────────────
 
 pub struct SessionDb {
@@ -274,6 +304,12 @@ impl SessionDb {
                 if v < 8 {
                     Self::migrate_to_v8(conn)?;
                 }
+                if v < 9 {
+                    Self::migrate_to_v9(conn)?;
+                }
+                if v < 10 {
+                    Self::migrate_to_v10(conn)?;
+                }
                 conn.execute(
                     "UPDATE schema_version SET version = ?1",
                     params![SCHEMA_VERSION],
@@ -317,6 +353,105 @@ impl SessionDb {
              ALTER TABLE session_goals ADD COLUMN consecutive_parse_failures INTEGER NOT NULL DEFAULT 0;",
         )
         .map_err(|e| AgentError::Database(format!("migrate v8: {e}")))?;
+        Ok(())
+    }
+
+    fn migrate_to_v9(conn: &Connection) -> Result<(), AgentError> {
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS model_transfers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                from_model TEXT NOT NULL,
+                to_model TEXT NOT NULL,
+                brief TEXT NOT NULL,
+                ts REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_model_transfers_session ON model_transfers(session_id, ts);",
+        )
+        .map_err(|e| AgentError::Database(format!("migrate v9: {e}")))?;
+        Ok(())
+    }
+
+    fn migrate_to_v10(conn: &Connection) -> Result<(), AgentError> {
+        Self::reconcile_model_transfers_table(conn)?;
+        Self::ensure_sessions_column(conn, "handoff_state", "TEXT")?;
+        Self::ensure_sessions_column(conn, "handoff_platform", "TEXT")?;
+        Self::ensure_sessions_column(conn, "handoff_error", "TEXT")?;
+        Ok(())
+    }
+
+    fn table_exists(conn: &Connection, name: &str) -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?1",
+            params![name],
+            |row| row.get::<_, i64>(0).map(|count| count > 0),
+        )
+        .unwrap_or(false)
+    }
+
+    fn column_exists(conn: &Connection, table: &str, column: &str) -> bool {
+        conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name=?2",
+            params![table, column],
+            |row| row.get::<_, i64>(0).map(|count| count > 0),
+        )
+        .unwrap_or(false)
+    }
+
+    fn ensure_sessions_column(
+        conn: &Connection,
+        column: &str,
+        sql_type: &str,
+    ) -> Result<(), AgentError> {
+        if Self::column_exists(conn, "sessions", column) {
+            return Ok(());
+        }
+        let sql = format!("ALTER TABLE sessions ADD COLUMN {column} {sql_type}");
+        conn.execute(&sql, [])
+            .map_err(|e| AgentError::Database(format!("migrate v10 add {column}: {e}")))?;
+        Ok(())
+    }
+
+    /// Idempotent v10 table reconciliation.
+    ///
+    /// `schema.sql` may create an empty `model_transfers` before migrations run on
+    /// legacy DBs that still have `handoffs` — merge then drop instead of RENAME.
+    fn reconcile_model_transfers_table(conn: &Connection) -> Result<(), AgentError> {
+        let handoffs = Self::table_exists(conn, "handoffs");
+        let model_transfers = Self::table_exists(conn, "model_transfers");
+
+        match (handoffs, model_transfers) {
+            (true, false) => {
+                conn.execute_batch("ALTER TABLE handoffs RENAME TO model_transfers;")
+                    .map_err(|e| AgentError::Database(format!("migrate v10 rename: {e}")))?;
+            }
+            (true, true) => {
+                conn.execute_batch(
+                    "INSERT INTO model_transfers (session_id, from_model, to_model, brief, ts)
+                     SELECT session_id, from_model, to_model, brief, ts FROM handoffs;
+                     DROP TABLE handoffs;",
+                )
+                .map_err(|e| AgentError::Database(format!("migrate v10 merge handoffs: {e}")))?;
+            }
+            (false, false) => {
+                conn.execute_batch(
+                    "CREATE TABLE IF NOT EXISTS model_transfers (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
+                        from_model TEXT NOT NULL,
+                        to_model TEXT NOT NULL,
+                        brief TEXT NOT NULL,
+                        ts REAL NOT NULL
+                    );
+                    CREATE INDEX IF NOT EXISTS idx_model_transfers_session
+                        ON model_transfers(session_id, ts);",
+                )
+                .map_err(|e| {
+                    AgentError::Database(format!("migrate v10 create model_transfers: {e}"))
+                })?;
+            }
+            (false, true) => {}
+        }
         Ok(())
     }
 
@@ -510,7 +645,10 @@ impl SessionDb {
                 "DELETE FROM session_subgoals WHERE session_id = ?1",
                 params![id],
             )?;
-            conn.execute("DELETE FROM session_goals WHERE session_id = ?1", params![id])?;
+            conn.execute(
+                "DELETE FROM session_goals WHERE session_id = ?1",
+                params![id],
+            )?;
             conn.execute("DELETE FROM messages WHERE session_id = ?1", params![id])?;
             conn.execute("DELETE FROM sessions WHERE id = ?1", params![id])?;
             Ok(())
@@ -540,6 +678,218 @@ impl SessionDb {
             conn.execute(
                 "UPDATE sessions SET title = ?1 WHERE id = ?2",
                 params![cleaned, id],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Update the model recorded for a session (after `/transfer-model` or `/model`).
+    pub fn update_session_model(&self, id: &str, model: &str) -> Result<(), AgentError> {
+        self.execute_write(|conn| {
+            conn.execute(
+                "UPDATE sessions SET model = ?1 WHERE id = ?2",
+                params![model, id],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// Persist a model transfer event for `/insights`.
+    pub fn record_model_transfer(
+        &self,
+        session_id: &str,
+        from_model: &str,
+        to_model: &str,
+        brief: &str,
+        ts: f64,
+    ) -> Result<(), AgentError> {
+        self.execute_write(|conn| {
+            conn.execute(
+                "INSERT INTO model_transfers (session_id, from_model, to_model, brief, ts)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                params![session_id, from_model, to_model, brief, ts],
+            )?;
+            Ok(())
+        })
+    }
+
+    /// @deprecated — use [`record_model_transfer`].
+    pub fn record_handoff(
+        &self,
+        session_id: &str,
+        from_model: &str,
+        to_model: &str,
+        brief: &str,
+        ts: f64,
+    ) -> Result<(), AgentError> {
+        self.record_model_transfer(session_id, from_model, to_model, brief, ts)
+    }
+
+    /// List model transfers for a session, oldest first.
+    pub fn list_model_transfers(
+        &self,
+        session_id: &str,
+    ) -> Result<Vec<ModelTransferRecord>, AgentError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AgentError::Database(format!("lock poisoned: {e}")))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT session_id, from_model, to_model, brief, ts
+                 FROM model_transfers WHERE session_id = ?1 ORDER BY ts ASC, id ASC",
+            )
+            .map_err(|e| AgentError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map(params![session_id], |row| {
+                Ok(ModelTransferRecord {
+                    session_id: row.get(0)?,
+                    from_model: row.get(1)?,
+                    to_model: row.get(2)?,
+                    brief: row.get(3)?,
+                    ts: row.get(4)?,
+                })
+            })
+            .map_err(|e| AgentError::Database(e.to_string()))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| AgentError::Database(e.to_string()))?);
+        }
+        Ok(out)
+    }
+
+    /// @deprecated — use [`list_model_transfers`].
+    pub fn list_handoffs(&self, session_id: &str) -> Result<Vec<ModelTransferRecord>, AgentError> {
+        self.list_model_transfers(session_id)
+    }
+
+    // ── Cross-platform session handoff (CLI → gateway) ───────────────────
+
+    pub fn request_session_handoff(
+        &self,
+        session_id: &str,
+        platform: &str,
+    ) -> Result<bool, AgentError> {
+        self.execute_write_with_result(|conn| {
+            let updated = conn.execute(
+                "UPDATE sessions SET handoff_state = 'pending', handoff_platform = ?1, handoff_error = NULL
+                 WHERE id = ?2 AND (handoff_state IS NULL OR handoff_state IN ('completed', 'failed'))",
+                params![platform, session_id],
+            )?;
+            Ok(updated > 0)
+        })
+    }
+
+    pub fn get_session_handoff_status(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<SessionHandoffStatus>, AgentError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AgentError::Database(format!("lock poisoned: {e}")))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT handoff_state, handoff_platform, handoff_error FROM sessions WHERE id = ?1",
+            )
+            .map_err(|e| AgentError::Database(e.to_string()))?;
+        let mut rows = stmt
+            .query(params![session_id])
+            .map_err(|e| AgentError::Database(e.to_string()))?;
+        let row = match rows.next() {
+            Ok(Some(row)) => row,
+            Ok(None) => return Ok(None),
+            Err(e) => return Err(AgentError::Database(e.to_string())),
+        };
+        let state: Option<String> = row
+            .get(0)
+            .map_err(|e| AgentError::Database(e.to_string()))?;
+        let Some(state) = state else {
+            return Ok(None);
+        };
+        Ok(Some(SessionHandoffStatus {
+            state,
+            platform: row
+                .get(1)
+                .map_err(|e| AgentError::Database(e.to_string()))?,
+            error: row
+                .get(2)
+                .map_err(|e| AgentError::Database(e.to_string()))?,
+        }))
+    }
+
+    pub fn list_pending_session_handoffs(&self) -> Result<Vec<PendingSessionHandoff>, AgentError> {
+        let conn = self
+            .conn
+            .lock()
+            .map_err(|e| AgentError::Database(format!("lock poisoned: {e}")))?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT id, handoff_platform, title FROM sessions
+                 WHERE handoff_state = 'pending' ORDER BY started_at ASC",
+            )
+            .map_err(|e| AgentError::Database(e.to_string()))?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok(PendingSessionHandoff {
+                    session_id: row.get(0)?,
+                    platform: row.get::<_, Option<String>>(1)?.unwrap_or_default(),
+                    title: row.get(2)?,
+                })
+            })
+            .map_err(|e| AgentError::Database(e.to_string()))?;
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.map_err(|e| AgentError::Database(e.to_string()))?);
+        }
+        Ok(out)
+    }
+
+    pub fn claim_session_handoff(&self, session_id: &str) -> Result<bool, AgentError> {
+        self.execute_write_with_result(|conn| {
+            let updated = conn.execute(
+                "UPDATE sessions SET handoff_state = 'running' WHERE id = ?1 AND handoff_state = 'pending'",
+                params![session_id],
+            )?;
+            Ok(updated > 0)
+        })
+    }
+
+    pub fn complete_session_handoff(&self, session_id: &str) -> Result<(), AgentError> {
+        self.execute_write(|conn| {
+            conn.execute(
+                "UPDATE sessions SET handoff_state = 'completed', handoff_error = NULL WHERE id = ?1",
+                params![session_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn fail_session_handoff(&self, session_id: &str, error: &str) -> Result<(), AgentError> {
+        let truncated = if error.chars().count() > 500 {
+            error.chars().take(500).collect::<String>()
+        } else {
+            error.to_string()
+        };
+        self.execute_write(|conn| {
+            conn.execute(
+                "UPDATE sessions SET handoff_state = 'failed', handoff_error = ?1 WHERE id = ?2",
+                params![truncated, session_id],
+            )?;
+            Ok(())
+        })
+    }
+
+    pub fn rebind_session_routing(
+        &self,
+        session_id: &str,
+        source: &str,
+        user_id: &str,
+    ) -> Result<(), AgentError> {
+        self.execute_write(|conn| {
+            conn.execute(
+                "UPDATE sessions SET source = ?1, user_id = ?2 WHERE id = ?3",
+                params![source, user_id, session_id],
             )?;
             Ok(())
         })
@@ -1644,25 +1994,25 @@ impl SessionDb {
             .lock()
             .map_err(|_| AgentError::Database("database lock poisoned".into()))?;
         let goal_row: Option<GoalRow> = conn
-                .query_row(
-                    "SELECT goal_text, status, turns_used, max_turns, paused_reason,
+            .query_row(
+                "SELECT goal_text, status, turns_used, max_turns, paused_reason,
                         last_verdict, last_reason, consecutive_parse_failures
                  FROM session_goals WHERE session_id = ?1",
-                    params![session_id],
-                    |row| {
-                        Ok((
-                            row.get(0)?,
-                            row.get(1)?,
-                            row.get(2)?,
-                            row.get(3)?,
-                            row.get(4)?,
-                            row.get(5)?,
-                            row.get(6)?,
-                            row.get(7)?,
-                        ))
-                    },
-                )
-                .ok();
+                params![session_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .ok();
         let Some((
             goal_text,
             status,
@@ -1706,7 +2056,12 @@ impl SessionDb {
         })
     }
 
-    pub fn goals_set(&self, session_id: &str, text: &str, max_turns: u32) -> Result<(), AgentError> {
+    pub fn goals_set(
+        &self,
+        session_id: &str,
+        text: &str,
+        max_turns: u32,
+    ) -> Result<(), AgentError> {
         let trimmed = text.trim();
         if trimmed.is_empty() {
             return Err(AgentError::Config("goal text must not be empty".into()));
@@ -2153,13 +2508,17 @@ mod tests {
                 .as_deref(),
             Some("Goal A")
         );
-        assert_eq!(db.goals_active("goal-a").expect("active a").subgoals.len(), 1);
+        assert_eq!(
+            db.goals_active("goal-a").expect("active a").subgoals.len(),
+            1
+        );
         db.goals_clear("goal-a").expect("clear");
-        assert!(db
-            .goals_active("goal-a")
-            .expect("active a")
-            .goal_text
-            .is_none());
+        assert!(
+            db.goals_active("goal-a")
+                .expect("active a")
+                .goal_text
+                .is_none()
+        );
         assert_eq!(
             db.goals_active("goal-b")
                 .expect("active b")
@@ -2193,8 +2552,7 @@ mod tests {
             .goals_set("orphan-session", "No parent row", 20)
             .expect_err("FK should fail without sessions row");
         assert!(
-            err.to_string().contains("FOREIGN KEY")
-                || err.to_string().contains("constraint"),
+            err.to_string().contains("FOREIGN KEY") || err.to_string().contains("constraint"),
             "unexpected error: {err}"
         );
     }
@@ -2376,5 +2734,115 @@ mod tests {
         assert_eq!(report.overview.total_messages, 0);
         assert!(report.models.is_empty());
         assert!(report.platforms.is_empty());
+    }
+
+    #[test]
+    fn session_handoff_state_machine() {
+        let db = test_db();
+        let session = sample_session("handoff-cli-session");
+        db.save_session(&session).expect("save session");
+
+        assert!(
+            db.request_session_handoff(&session.id, "telegram")
+                .expect("request")
+        );
+        let status = db
+            .get_session_handoff_status(&session.id)
+            .expect("status")
+            .expect("some");
+        assert_eq!(status.state, "pending");
+        assert_eq!(status.platform.as_deref(), Some("telegram"));
+
+        assert!(db.claim_session_handoff(&session.id).expect("claim"));
+        db.complete_session_handoff(&session.id).expect("complete");
+        let done = db
+            .get_session_handoff_status(&session.id)
+            .expect("status")
+            .expect("some");
+        assert_eq!(done.state, "completed");
+    }
+
+    #[test]
+    fn migrate_v10_merges_handoffs_when_model_transfers_preexists() {
+        let conn = Connection::open_in_memory().expect("in-memory");
+        conn.execute_batch(
+            "PRAGMA foreign_keys=ON;
+             CREATE TABLE sessions (
+                 id TEXT PRIMARY KEY,
+                 source TEXT NOT NULL,
+                 started_at REAL NOT NULL
+             );
+             CREATE TABLE handoffs (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 session_id TEXT NOT NULL,
+                 from_model TEXT NOT NULL,
+                 to_model TEXT NOT NULL,
+                 brief TEXT NOT NULL,
+                 ts REAL NOT NULL
+             );
+             INSERT INTO sessions (id, source, started_at)
+             VALUES ('sess-1', 'cli', 1.0);
+             INSERT INTO handoffs (session_id, from_model, to_model, brief, ts)
+             VALUES ('sess-1', 'a/m1', 'b/m2', 'legacy brief', 42.0);
+             CREATE TABLE model_transfers (
+                 id INTEGER PRIMARY KEY AUTOINCREMENT,
+                 session_id TEXT NOT NULL,
+                 from_model TEXT NOT NULL,
+                 to_model TEXT NOT NULL,
+                 brief TEXT NOT NULL,
+                 ts REAL NOT NULL
+             );",
+        )
+        .expect("seed legacy");
+
+        SessionDb::reconcile_model_transfers_table(&conn).expect("reconcile");
+
+        let brief: String = conn
+            .query_row(
+                "SELECT brief FROM model_transfers WHERE session_id = 'sess-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("row");
+        assert_eq!(brief, "legacy brief");
+        let handoffs_still_exists: bool = conn
+            .query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='handoffs'",
+                [],
+                |row| row.get::<_, i64>(0).map(|count| count > 0),
+            )
+            .unwrap_or(false);
+        assert!(!handoffs_still_exists);
+    }
+
+    #[test]
+    fn record_and_list_model_transfers() {
+        let db = test_db();
+        let session = sample_session("handoff-session");
+        db.save_session(&session).expect("save session");
+        db.record_handoff(
+            &session.id,
+            "anthropic/claude-opus-4.6",
+            "copilot/gpt-5-mini",
+            "Implement session handoff feature.",
+            1_700_000_000.0,
+        )
+        .expect("record handoff");
+        let rows = db.list_handoffs(&session.id).expect("list handoffs");
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].from_model, "anthropic/claude-opus-4.6");
+        assert_eq!(rows[0].to_model, "copilot/gpt-5-mini");
+        assert!(rows[0].brief.contains("session handoff"));
+    }
+
+    #[test]
+    fn update_session_model_persists() {
+        let db = test_db();
+        let session = sample_session("model-update");
+        db.save_session(&session).expect("save");
+        db.update_session_model(&session.id, "copilot/gpt-5-mini")
+            .expect("update model");
+        let loaded = db.get_session(&session.id).expect("get").expect("row");
+        assert_eq!(loaded.model.as_deref(), Some("copilot/gpt-5-mini"));
     }
 }

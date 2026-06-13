@@ -8,10 +8,10 @@ use std::sync::{Arc, Mutex};
 use edgecrab_types::AgentError;
 
 pub use loop_manager::{
-    GoalContinuationDecision, GoalStatusChip, compact_status_chip, drain_goal_continuations_from_queue,
-    evaluate_goal_after_turn, goal_flash_from_decision, is_goal_continuation_text,
-    looks_like_slash_command, next_continuation_prompt, prompt_queue_has_real_user_message,
-    render_subgoals_list, status_line,
+    GoalContinuationDecision, GoalStatusChip, compact_status_chip,
+    drain_goal_continuations_from_queue, evaluate_goal_after_turn, goal_flash_from_decision,
+    is_goal_continuation_text, looks_like_slash_command, next_continuation_prompt,
+    prompt_queue_has_real_user_message, render_subgoals_list, status_line,
 };
 pub use sqlite::SqliteGoalStore;
 
@@ -350,12 +350,10 @@ mod tests {
     #[test]
     fn set_goal_and_show() {
         let s = store();
-        s.set_goal("sess", "Refactor payment service", 20).expect("set");
+        s.set_goal("sess", "Refactor payment service", 20)
+            .expect("set");
         let state = s.active("sess").expect("active");
-        assert_eq!(
-            state.goal_text.as_deref(),
-            Some("Refactor payment service")
-        );
+        assert_eq!(state.goal_text.as_deref(), Some("Refactor payment service"));
         assert_eq!(state.status, GoalStatus::Active);
         let block = render_goal_block(&state);
         assert!(block.contains("Active goal: Refactor payment service"));

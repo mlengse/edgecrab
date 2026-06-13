@@ -32,7 +32,12 @@ pub struct ToolDiagnostic {
 #[async_trait]
 pub trait LspGate: Send + Sync {
     /// Snapshot diagnostics before a write (Hermes `snapshot_baseline`).
-    async fn snapshot_baseline(&self, ctx: &crate::registry::ToolContext, path: &Path, timeout: Duration);
+    async fn snapshot_baseline(
+        &self,
+        ctx: &crate::registry::ToolContext,
+        path: &Path,
+        timeout: Duration,
+    );
 
     /// Pull diagnostics introduced since the last baseline (delta + optional line shift).
     async fn pull_diagnostics(
@@ -228,16 +233,24 @@ mod tests {
         }));
 
         let mut value = json!({"ok": true, "path": "src/foo.rs"});
-        attach_post_write_diagnostics(&ctx, dir.path().join("src/foo.rs").as_path(), &mut value, None, None)
-            .await;
+        attach_post_write_diagnostics(
+            &ctx,
+            dir.path().join("src/foo.rs").as_path(),
+            &mut value,
+            None,
+            None,
+        )
+        .await;
 
         let diags = value["diagnostics"].as_array().expect("diagnostics array");
         assert_eq!(diags.len(), 1);
         assert_eq!(diags[0]["severity"], "error");
-        assert!(value["lsp_diagnostics"]
-            .as_str()
-            .unwrap()
-            .contains("<diagnostics"));
+        assert!(
+            value["lsp_diagnostics"]
+                .as_str()
+                .unwrap()
+                .contains("<diagnostics")
+        );
     }
 
     #[tokio::test]
@@ -255,7 +268,14 @@ mod tests {
         }));
 
         let mut value = json!({"ok": true});
-        attach_post_write_diagnostics(&ctx, dir.path().join("x.rs").as_path(), &mut value, None, None).await;
+        attach_post_write_diagnostics(
+            &ctx,
+            dir.path().join("x.rs").as_path(),
+            &mut value,
+            None,
+            None,
+        )
+        .await;
         assert!(value.get("diagnostics").is_none());
     }
 
@@ -263,7 +283,9 @@ mod tests {
     async fn write_hook_skips_attach_when_lsp_disabled() {
         let dir = TempDir::new().expect("tmpdir");
         let path = dir.path().join("main.rs");
-        tokio::fs::write(&path, "fn main() {}\n").await.expect("write");
+        tokio::fs::write(&path, "fn main() {}\n")
+            .await
+            .expect("write");
         let mut ctx = ToolContext::test_context();
         ctx.cwd = dir.path().to_path_buf();
         ctx.config.lsp_enabled = false;
@@ -278,7 +300,8 @@ mod tests {
 
         let hook = LspWriteHook::capture_before(&ctx, &path).await;
         let mut value = json!({"ok": true});
-        hook.attach_after(&ctx, &path, &mut value, "fn main() {}\n").await;
+        hook.attach_after(&ctx, &path, &mut value, "fn main() {}\n")
+            .await;
         assert!(value.get("diagnostics").is_none());
     }
 

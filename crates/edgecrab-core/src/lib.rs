@@ -4,6 +4,7 @@
 //! model routing, @context reference expansion.
 
 #![deny(clippy::unwrap_used)]
+#![cfg_attr(test, allow(clippy::unwrap_used))]
 
 use edgecrab_lsp as _;
 
@@ -15,16 +16,24 @@ pub mod config;
 pub mod context_engine;
 pub mod context_references;
 pub mod conversation;
+pub mod copilot_model_policy;
+pub mod gateway_home;
 pub mod goal_judge;
 pub mod goals;
 pub mod model_catalog;
+pub mod model_cost_guard;
 pub mod model_discovery;
 pub mod model_router;
+pub mod model_transfer;
+pub mod multimodal_tool_content;
+pub mod oauth;
 pub mod pricing;
 pub mod prompt_builder;
+pub mod session_handoff;
 pub mod shadow_judge;
 pub mod steering;
 pub mod sub_agent_runner;
+pub mod subagent_registry;
 pub mod tool_result_spill;
 
 pub use agent::{
@@ -34,7 +43,8 @@ pub use agent::{
 pub use completion_assessor::{CompletionContext, CompletionPolicy, DefaultCompletionPolicy};
 pub use compression::{PRUNED_TOOL_PLACEHOLDER, SUMMARY_PREFIX};
 pub use config::{
-    AppConfig, CliOverrides, GoalJudgeConfig, GoalsConfig, SmartRoutingYaml, ToolProgressMode,
+    AppConfig, CliOverrides, ForwardAdapterKind, ForwardUpstreamConfig, GoalJudgeConfig,
+    GoalsConfig, ProxyConfig, ShelfDetailsConfig, SmartRoutingYaml, ToolProgressMode,
     edgecrab_home, ensure_edgecrab_home, gateway_image_cache_dir, gateway_media_dir,
 };
 pub use context_engine::{
@@ -42,16 +52,22 @@ pub use context_engine::{
     load_context_engine,
 };
 pub use context_references::{ContextRef, ExpansionResult, expand_context_refs};
+pub use gateway_home::{
+    HANDOFF_PLATFORM_HINT, handoff_platform_from_name, resolve_gateway_home_channel,
+};
 pub use goals::{
-    GoalContinuationDecision, GoalState, GoalStatus, GoalStatusChip, GoalStore,
-    InMemoryGoalStore, SqliteGoalStore, SubGoal, compact_status_chip,
-    drain_goal_continuations_from_queue, evaluate_goal_after_turn, goal_flash_from_decision,
-    goal_store_for_db, is_goal_continuation_text, looks_like_slash_command,
-    next_continuation_prompt, prompt_queue_has_real_user_message, render_goal_block,
-    render_subgoals_list, status_line,
+    GoalContinuationDecision, GoalState, GoalStatus, GoalStatusChip, GoalStore, InMemoryGoalStore,
+    SqliteGoalStore, SubGoal, compact_status_chip, drain_goal_continuations_from_queue,
+    evaluate_goal_after_turn, goal_flash_from_decision, goal_store_for_db,
+    is_goal_continuation_text, looks_like_slash_command, next_continuation_prompt,
+    prompt_queue_has_real_user_message, render_goal_block, render_subgoals_list, status_line,
 };
 pub use model_catalog::{
-    CatalogData, ModelCatalog, ModelEntry, ModelTier, PricingPair, ProviderEntry,
+    CatalogData, ModelCatalog, ModelEntry, ModelTier, PricingPair, ProviderEntry, ResolvedModelSpec,
+};
+pub use model_cost_guard::{
+    ExpensiveModelWarning, INPUT_COST_WARNING_THRESHOLD, OUTPUT_COST_WARNING_THRESHOLD,
+    expensive_model_warning, is_expensive_pricing,
 };
 pub use model_discovery::{
     DiscoveryAvailability, DiscoverySource, ProviderModels, discover_multiple,
@@ -61,8 +77,23 @@ pub use model_discovery::{
 pub use model_router::{
     SmartRoutingConfig, TurnRoute, classify_message, fallback_route, resolve_turn_route,
 };
+pub use model_transfer::{
+    MODEL_TRANSFER_BUSY_MESSAGE, MODEL_TRANSFER_USAGE, ModelChangeOutcome, ModelSwitchOutcome,
+    ModelTransferBrief, ModelTransferContext, ModelTransferError, ModelTransferOrchestrator,
+    ModelTransferOutcome, ModelTransferTarget, context_window_for_model,
+    create_model_transfer_provider, format_model_change_confirmation, format_model_change_error,
+    format_model_change_result, format_model_switch_confirmation,
+    format_model_transfer_confirmation, format_model_transfer_insights_section,
+    format_model_transfer_result, format_model_transfer_user_message,
+    generate_model_transfer_brief, maybe_compress_for_model_transfer,
+    resolve_model_transfer_target, session_requires_model_transfer,
+};
 pub use pricing::{
     CanonicalUsage, CostResult, CostSource, CostStatus, PricingEntry, estimate_cost, get_pricing,
+};
+pub use session_handoff::{
+    SESSION_HANDOFF_BUSY_MESSAGE, SESSION_HANDOFF_USAGE, SessionHandoffState, SessionHandoffStatus,
+    format_session_handoff_cli_success, format_session_handoff_synthetic_message,
 };
 pub use steering::{
     SteeringEvent, SteeringKind, SteeringReceiver, SteeringSender, drain_pending_steers,
@@ -100,3 +131,4 @@ pub use prompt_builder::{
     load_preloaded_skills, load_skill_summary,
 };
 pub use sub_agent_runner::CoreSubAgentRunner;
+pub use subagent_registry::{interrupt_subagent, register_subagent, unregister_subagent};

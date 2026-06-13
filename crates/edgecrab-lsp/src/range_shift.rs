@@ -26,7 +26,13 @@ pub fn build_line_shift(pre_text: &str, post_text: &str) -> LineShift {
                 old_index,
                 new_index,
                 len,
-            } => (similar::DiffTag::Equal, old_index, old_index + len, new_index, new_index + len),
+            } => (
+                similar::DiffTag::Equal,
+                old_index,
+                old_index + len,
+                new_index,
+                new_index + len,
+            ),
             similar::DiffOp::Delete {
                 old_index,
                 old_len,
@@ -130,14 +136,8 @@ mod tests {
     fn diag(line: u32, message: &str) -> Diagnostic {
         Diagnostic {
             range: Range {
-                start: Position {
-                    line,
-                    character: 0,
-                },
-                end: Position {
-                    line,
-                    character: 1,
-                },
+                start: Position { line, character: 0 },
+                end: Position { line, character: 1 },
             },
             severity: Some(DiagnosticSeverity::ERROR),
             code: Some(NumberOrString::String("E1".into())),

@@ -305,6 +305,8 @@ impl ToolHandler for TerminalTool {
         // 2^attempt seconds between attempts (2 s, 4 s, 8 s).
         const MAX_RETRIES: u32 = 3;
         let mut attempt = 0u32;
+        let (progress_reporter, exec_options) =
+            crate::tool_progress_tail::ToolProgressTail::reporter_and_options(ctx);
         let exec_output = if args.pty {
             crate::local_pty::execute_foreground(
                 "terminal",
@@ -312,13 +314,20 @@ impl ToolHandler for TerminalTool {
                 &cwd,
                 timeout,
                 ctx.cancel.clone(),
+                progress_reporter.clone(),
             )
             .await?
         } else {
             let backend = get_or_create_backend(ctx).await?;
             loop {
                 let result = backend
-                    .execute(&final_command, &cwd, timeout, ctx.cancel.clone())
+                    .execute(
+                        &final_command,
+                        &cwd,
+                        timeout,
+                        ctx.cancel.clone(),
+                        exec_options.clone(),
+                    )
                     .await;
 
                 // Check for retryable errors before consuming the value.
@@ -345,6 +354,10 @@ impl ToolHandler for TerminalTool {
                 }
             }
         };
+
+        if let Some(reporter) = progress_reporter.as_ref() {
+            reporter.flush();
+        }
 
         crate::command_interaction::rewrite_terminal_exec_result(
             &args.command,
@@ -547,6 +560,7 @@ mod tests {
             _cwd: &str,
             _timeout: Duration,
             _cancel: CancellationToken,
+            _options: crate::tool_progress_tail::ExecuteOptions,
         ) -> Result<crate::tools::backends::ExecOutput, ToolError> {
             Ok(crate::tools::backends::ExecOutput {
                 stdout: String::new(),

@@ -53,6 +53,10 @@ pub enum CommandResult {
     Noop,
     /// Switch the active model (app handles provider creation + agent swap)
     ModelSwitch(String),
+    /// Transfer session to another model with brief + window check (`/transfer-model`)
+    TransferModel(String),
+    /// CLI → gateway session handoff (`/handoff <platform>`)
+    SessionHandoff(String),
     /// Activate the interactive model selector overlay
     ModelSelector,
     /// Activate the interactive cheap-model selector overlay.
@@ -113,6 +117,10 @@ pub enum CommandResult {
     PromptCommand(String),
     /// Open or query the configuration surface
     ShowConfig(String),
+    /// Web search/extract wizard or status (`/web`, `/web setup`, `/web status`)
+    WebCommand(String),
+    /// OpenAI-compat proxy setup TUI or reports (`/proxy`, `/proxy doctor`, …)
+    ProxyCommand(String),
     /// Show message history summary
     ShowHistory,
     /// Cycle tool progress display
@@ -149,6 +157,16 @@ pub enum CommandResult {
     SubgoalDone,
     /// Run a prompt in the background
     BackgroundPrompt(String),
+    /// Open background process output overlay (`/tail <process_id>`).
+    ShowProcessTail(String),
+    /// Open delegate spawn-tree dashboard (`/agents`).
+    ShowAgentsOverlay,
+    /// Replay a completed spawn turn in `/agents` (`/replay [N|last|list|load <path>]`).
+    ShowAgentsReplay(String),
+    /// Per-section shelf disclosure (`/details`).
+    ShelfDetails(String),
+    /// Status-bar busy indicator style (`/indicator`).
+    StatusIndicator(String),
     /// Ask an ephemeral side question using the current session context.
     SideQuestion(String),
     /// Fork the current session into a new branch and switch to it.
@@ -227,6 +245,8 @@ pub enum CommandResult {
     /// macOS permission diagnostics and bootstrap workflow.
     #[cfg(target_os = "macos")]
     MacosPermissions(String),
+    /// macOS computer_use status / permissions probe.
+    ShowComputer(String),
     /// Restore a file checkpoint (list if no name given, restore <name> otherwise).
     /// Wires to the `checkpoint` tool via the agent.
     RollbackCheckpoint(String),
@@ -518,15 +538,43 @@ impl CommandRegistry {
             name: "model",
             aliases: &[],
             description:
-                "Show model selector or switch model (e.g. /model openrouter/openai/gpt-5.4)",
+                "Show model selector or transfer model (e.g. /model openrouter/openai/gpt-5.4)",
             // WHY return ModelSwitch: The handler can't access the agent directly
-            // (fn pointer, not closure). The App event loop performs the actual
-            // provider creation + agent.swap_model() call.
+            // (fn pointer, not closure). The App event loop runs an instant hot-swap
+            // via `Agent::switch_model_fast` (Hermes `/model` parity).
             handler: |args| {
                 if args.is_empty() {
                     CommandResult::ModelSelector
                 } else {
                     CommandResult::ModelSwitch(args.to_string())
+                }
+            },
+        });
+
+        self.register(Command {
+            name: "transfer-model",
+            aliases: &["transfer_model"],
+            description: "Alias for /model <provider/model> — same model-transfer pipeline",
+            handler: |args| {
+                let trimmed = args.trim();
+                if trimmed.is_empty() {
+                    CommandResult::Output(edgecrab_core::MODEL_TRANSFER_USAGE.into())
+                } else {
+                    CommandResult::TransferModel(trimmed.to_string())
+                }
+            },
+        });
+
+        self.register(Command {
+            name: "handoff",
+            aliases: &[],
+            description: "Hand CLI session to a gateway platform home channel",
+            handler: |args| {
+                let trimmed = args.trim();
+                if trimmed.is_empty() {
+                    CommandResult::Output(edgecrab_core::SESSION_HANDOFF_USAGE.into())
+                } else {
+                    CommandResult::SessionHandoff(trimmed.to_string())
                 }
             },
         });
@@ -791,6 +839,22 @@ impl CommandRegistry {
         });
 
         self.register(Command {
+            name: "details",
+            aliases: &["detail", "shelf"],
+            description:
+                "Activity shelf disclosure — open interactive panel or set section visibility",
+            handler: |args| CommandResult::ShelfDetails(args.trim().to_string()),
+        });
+
+        self.register(Command {
+            name: "indicator",
+            aliases: &["face", "spinner"],
+            description:
+                "Status-bar busy indicator: /indicator [kaomoji|emoji|unicode|ascii|status]",
+            handler: |args| CommandResult::StatusIndicator(args.trim().to_string()),
+        });
+
+        self.register(Command {
             name: "personality",
             aliases: &["persona"],
             description: "Show or switch personality: /personality [name|clear]",
@@ -945,6 +1009,20 @@ impl CommandRegistry {
         });
 
         self.register(Command {
+            name: "web",
+            aliases: &[],
+            description: "Web hub — dashboard, setup, chain, diagnostics (/web help)",
+            handler: |args| CommandResult::WebCommand(args.trim().to_string()),
+        });
+
+        self.register(Command {
+            name: "proxy",
+            aliases: &["openai-proxy", "grok-proxy"],
+            description: "OpenAI-compat proxy — Grok/xAI setup TUI (/proxy help)",
+            handler: |args| CommandResult::ProxyCommand(args.trim().to_string()),
+        });
+
+        self.register(Command {
             name: "dump",
             aliases: &["debug-dump", "debug"],
             description: "Show compact setup summary for support (copy-paste friendly)",
@@ -980,9 +1058,16 @@ impl CommandRegistry {
         });
 
         self.register(Command {
+            name: "providers",
+            aliases: &["provider-auth"],
+            description: "List subscription OAuth and API-key auth status",
+            handler: |_| CommandResult::AuthCommand(crate::cli_args::AuthCommand::List),
+        });
+
+        self.register(Command {
             name: "login",
             aliases: &[],
-            description: "Run one auth login/import flow",
+            description: "Run auth login (e.g. /login grok = in-TUI SuperGrok OAuth)",
             handler: |args| match crate::auth_cmd::login_target_from_slash_args(args) {
                 Ok(target) => CommandResult::LoginTarget(target),
                 Err(err) => CommandResult::Output(err),
@@ -1191,6 +1276,27 @@ impl CommandRegistry {
         });
 
         self.register(Command {
+            name: "tail",
+            aliases: &[],
+            description: "View background process output (/tail [process_id])",
+            handler: |args| CommandResult::ShowProcessTail(args.trim().to_string()),
+        });
+
+        self.register(Command {
+            name: "agents",
+            aliases: &["delegate", "subagents"],
+            description: "Monitor active delegate sub-agents (/agents)",
+            handler: |_| CommandResult::ShowAgentsOverlay,
+        });
+
+        self.register(Command {
+            name: "replay",
+            aliases: &[],
+            description: "Replay spawn tree (/replay [N|last|list|load <path>])",
+            handler: |args| CommandResult::ShowAgentsReplay(args.trim().to_string()),
+        });
+
+        self.register(Command {
             name: "branch",
             aliases: &["fork"],
             description: "Branch the current session and switch to the new copy",
@@ -1201,9 +1307,16 @@ impl CommandRegistry {
         });
 
         self.register(Command {
+            name: "computer",
+            aliases: &["cu", "desktop", "cua"],
+            description: "Computer use: status, setup, enable/on, disable/off (macOS + cua-driver)",
+            handler: |args| CommandResult::ShowComputer(args.trim().to_string()),
+        });
+
+        self.register(Command {
             name: "rollback",
             aliases: &["checkpoint"],
-            description: "Restore a file checkpoint from the current session",
+            description: "List, diff, pin, or restore filesystem checkpoints",
             handler: |args| {
                 let a = args.trim().to_string();
                 CommandResult::RollbackCheckpoint(a)
@@ -1562,6 +1675,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn dispatch_replay_command() {
+        let reg = CommandRegistry::new();
+        assert!(matches!(
+            reg.dispatch("/replay list"),
+            Some(CommandResult::ShowAgentsReplay(_))
+        ));
+        assert!(matches!(
+            reg.dispatch("/replay 2"),
+            Some(CommandResult::ShowAgentsReplay(_))
+        ));
+    }
+
+    #[test]
+    fn dispatch_agents_overlay() {
+        let reg = CommandRegistry::new();
+        assert!(matches!(
+            reg.dispatch("/agents"),
+            Some(CommandResult::ShowAgentsOverlay)
+        ));
+        assert!(matches!(
+            reg.dispatch("/delegate"),
+            Some(CommandResult::ShowAgentsOverlay)
+        ));
+        assert!(matches!(
+            reg.dispatch("/subagents"),
+            Some(CommandResult::ShowAgentsOverlay)
+        ));
+    }
+
+    #[test]
     fn dispatch_help() {
         let reg = CommandRegistry::new();
         let result = reg.dispatch("/help");
@@ -1643,6 +1786,32 @@ mod tests {
         match reg.dispatch("/model openai/gpt-4o") {
             Some(CommandResult::ModelSwitch(m)) => assert_eq!(m, "openai/gpt-4o"),
             _ => panic!("expected model switch"),
+        }
+    }
+
+    #[test]
+    fn dispatch_transfer_model_commands() {
+        let reg = CommandRegistry::new();
+        match reg.dispatch("/transfer-model") {
+            Some(CommandResult::Output(msg)) => assert!(msg.contains("Usage: /transfer-model")),
+            other => panic!("expected usage output, got {other:?}"),
+        }
+        match reg.dispatch("/transfer-model copilot/gpt-5-mini") {
+            Some(CommandResult::TransferModel(target)) => assert_eq!(target, "copilot/gpt-5-mini"),
+            other => panic!("expected TransferModel, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_session_handoff_commands() {
+        let reg = CommandRegistry::new();
+        match reg.dispatch("/handoff") {
+            Some(CommandResult::Output(msg)) => assert!(msg.contains("Usage: /handoff")),
+            other => panic!("expected usage output, got {other:?}"),
+        }
+        match reg.dispatch("/handoff telegram") {
+            Some(CommandResult::SessionHandoff(platform)) => assert_eq!(platform, "telegram"),
+            other => panic!("expected SessionHandoff, got {other:?}"),
         }
     }
 
@@ -2063,6 +2232,19 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_indicator_command() {
+        let reg = CommandRegistry::new();
+        assert!(matches!(
+            reg.dispatch("/indicator"),
+            Some(CommandResult::StatusIndicator(args)) if args.is_empty()
+        ));
+        assert!(matches!(
+            reg.dispatch("/indicator emoji"),
+            Some(CommandResult::StatusIndicator(args)) if args == "emoji"
+        ));
+    }
+
+    #[test]
     fn dispatch_worktree_commands() {
         let reg = CommandRegistry::new();
         assert!(matches!(
@@ -2449,6 +2631,14 @@ mod tests {
             Some(CommandResult::LoginTarget(target)) => assert_eq!(target, "copilot"),
             _ => panic!("expected LoginTarget"),
         }
+        match reg.dispatch("/login grok") {
+            Some(CommandResult::LoginTarget(target)) => assert_eq!(target, "grok"),
+            _ => panic!("expected LoginTarget for /login grok"),
+        }
+        match reg.dispatch("/providers") {
+            Some(CommandResult::AuthCommand(crate::cli_args::AuthCommand::List)) => {}
+            _ => panic!("expected /providers -> AuthCommand::List"),
+        }
         match reg.dispatch("/logout provider/openai") {
             Some(CommandResult::LogoutTarget(target)) => {
                 assert_eq!(target.as_deref(), Some("provider/openai"))
@@ -2470,6 +2660,23 @@ mod tests {
                 assert!(options.purge_data);
             }
             _ => panic!("expected UninstallCommand"),
+        }
+    }
+
+    #[test]
+    fn dispatch_proxy_command() {
+        let reg = CommandRegistry::new();
+        match reg.dispatch("/proxy") {
+            Some(CommandResult::ProxyCommand(args)) => assert!(args.is_empty()),
+            _ => panic!("expected ProxyCommand for bare /proxy"),
+        }
+        match reg.dispatch("/proxy doctor") {
+            Some(CommandResult::ProxyCommand(args)) => assert_eq!(args, "doctor"),
+            _ => panic!("expected ProxyCommand::doctor"),
+        }
+        match reg.dispatch("/grok-proxy enable grok") {
+            Some(CommandResult::ProxyCommand(args)) => assert_eq!(args, "enable grok"),
+            _ => panic!("expected ProxyCommand via grok-proxy alias"),
         }
     }
 

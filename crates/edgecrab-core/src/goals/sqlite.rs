@@ -71,10 +71,7 @@ impl GoalStore for SqliteGoalStore {
     }
 
     fn complete_subgoal(&self, session_id: &str) -> Result<Option<SubGoal>, AgentError> {
-        Ok(self
-            .db
-            .goals_complete_subgoal(session_id)?
-            .map(map_subgoal))
+        Ok(self.db.goals_complete_subgoal(session_id)?.map(map_subgoal))
     }
 
     fn clear_subgoals(&self, session_id: &str) -> Result<u32, AgentError> {

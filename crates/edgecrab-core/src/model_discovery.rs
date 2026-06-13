@@ -14,8 +14,7 @@ use async_trait::async_trait;
 use edgecrab_tools::build_copilot_provider;
 use edgequake_llm::providers::gemini::GeminiModelsResponse;
 use edgequake_llm::{
-    CopilotModel, CopilotModelsResponse, GeminiProvider, LMStudioProvider, OllamaProvider,
-    OpenRouterProvider,
+    CopilotModelsResponse, GeminiProvider, LMStudioProvider, OllamaProvider, OpenRouterProvider,
 };
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};
@@ -163,17 +162,7 @@ fn adapters() -> Vec<&'static dyn ModelDiscoveryAdapter> {
 }
 
 pub fn normalize_discovery_provider(provider: &str) -> String {
-    let provider = provider.trim().to_ascii_lowercase();
-    let canonical = match provider.as_str() {
-        "gemini" => "google".to_string(),
-        "copilot" | "vscode-copilot" | "vscode" => "copilot".to_string(),
-        "lm-studio" | "lm_studio" => "lmstudio".to_string(),
-        "open-router" => "openrouter".to_string(),
-        "grok" => "xai".to_string(),
-        "nvidia-nim" | "nim" => "nvidia".to_string(),
-        "aws-bedrock" | "aws_bedrock" | "aws bedrock" => "bedrock".to_string(),
-        other => other.to_string(),
-    };
+    let canonical = ModelCatalog::catalog_provider_id(provider);
 
     for adapter in adapters() {
         if adapter.canonical_name() == canonical || adapter.aliases().contains(&canonical.as_str())
@@ -473,21 +462,9 @@ fn extract_copilot_models(response: CopilotModelsResponse) -> Vec<String> {
     response
         .data
         .into_iter()
-        .filter(copilot_model_is_selectable)
+        .filter(crate::copilot_model_policy::copilot_model_is_agent_selectable)
         .map(|model| model.id)
         .collect()
-}
-
-fn copilot_model_is_selectable(model: &CopilotModel) -> bool {
-    let picker_enabled = model.model_picker_enabled.unwrap_or(true);
-    let is_chat = model
-        .capabilities
-        .as_ref()
-        .and_then(|capabilities| capabilities.model_type.as_deref())
-        .map(|model_type| model_type == "chat")
-        .unwrap_or(true);
-
-    picker_enabled && is_chat
 }
 
 async fn fetch_openai_compatible_models(

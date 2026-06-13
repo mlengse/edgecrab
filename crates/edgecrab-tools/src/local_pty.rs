@@ -73,6 +73,7 @@ pub(crate) async fn execute_foreground(
     cwd: &str,
     timeout: Duration,
     cancel: CancellationToken,
+    progress: Option<std::sync::Arc<crate::tool_progress_tail::ToolProgressTail>>,
 ) -> Result<crate::tools::backends::ExecOutput, ToolError> {
     let pty_system = native_pty_system();
     let pair = pty_system
@@ -109,7 +110,11 @@ pub(crate) async fn execute_foreground(
     let mut combined = String::new();
     let exit_code = loop {
         while let Ok(chunk) = output_rx.try_recv() {
-            combined.push_str(&String::from_utf8_lossy(&chunk));
+            let text = String::from_utf8_lossy(&chunk);
+            if let Some(ref reporter) = progress {
+                reporter.note_chunk(&text);
+            }
+            combined.push_str(&text);
         }
 
         if cancel.is_cancelled() {
@@ -117,7 +122,11 @@ pub(crate) async fn execute_foreground(
             let _ = tokio::task::spawn_blocking(move || child.wait()).await;
             tokio::time::sleep(Duration::from_millis(25)).await;
             while let Ok(chunk) = output_rx.try_recv() {
-                combined.push_str(&String::from_utf8_lossy(&chunk));
+                let text = String::from_utf8_lossy(&chunk);
+                if let Some(ref reporter) = progress {
+                    reporter.note_chunk(&text);
+                }
+                combined.push_str(&text);
             }
             break 130;
         }
@@ -127,7 +136,11 @@ pub(crate) async fn execute_foreground(
             let _ = tokio::task::spawn_blocking(move || child.wait()).await;
             tokio::time::sleep(Duration::from_millis(25)).await;
             while let Ok(chunk) = output_rx.try_recv() {
-                combined.push_str(&String::from_utf8_lossy(&chunk));
+                let text = String::from_utf8_lossy(&chunk);
+                if let Some(ref reporter) = progress {
+                    reporter.note_chunk(&text);
+                }
+                combined.push_str(&text);
             }
             break 124;
         }
@@ -136,7 +149,11 @@ pub(crate) async fn execute_foreground(
             Ok(Some(status)) => {
                 tokio::time::sleep(Duration::from_millis(25)).await;
                 while let Ok(chunk) = output_rx.try_recv() {
-                    combined.push_str(&String::from_utf8_lossy(&chunk));
+                    let text = String::from_utf8_lossy(&chunk);
+                    if let Some(ref reporter) = progress {
+                        reporter.note_chunk(&text);
+                    }
+                    combined.push_str(&text);
                 }
                 break status.exit_code() as i32;
             }
@@ -146,6 +163,10 @@ pub(crate) async fn execute_foreground(
             Err(err) => return Err(map_pty_error(tool_name, "wait on", err)),
         }
     };
+
+    if let Some(ref reporter) = progress {
+        reporter.flush();
+    }
 
     Ok(crate::tools::backends::ExecOutput {
         stdout: combined,

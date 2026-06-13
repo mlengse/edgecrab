@@ -112,6 +112,12 @@ pub enum DelegationEvent {
         task_index: usize,
         task_count: usize,
         goal: String,
+        /// Delegation depth (1 = direct child of root agent).
+        depth: u32,
+        /// Stable id for tree grouping (`sa-{task_index}` at root batch).
+        agent_id: String,
+        /// Parent subagent id when nested; `None` for top-level spawns.
+        parent_id: Option<String>,
     },
     Thinking {
         task_index: usize,
@@ -147,6 +153,12 @@ pub struct SubAgentRunRequest {
     pub progress_tx: Option<tokio::sync::mpsc::UnboundedSender<DelegationEvent>>,
     pub task_index: usize,
     pub task_count: usize,
+    /// Stable id emitted on `TaskStarted` (tree grouping / replay).
+    pub agent_id: String,
+    /// Parent subagent id when nested.
+    pub parent_id: Option<String>,
+    /// Delegation depth (1 = direct child of root agent).
+    pub depth: u32,
 }
 
 /// Trait for running sub-agent tasks with full tool execution.
@@ -264,6 +276,10 @@ pub struct ToolContext {
     /// Current delegation depth (0 = root, 1 = child, 2+ = blocked).
     /// WHY: Prevents infinite recursion in delegate_task chains.
     pub delegate_depth: u32,
+    /// When this agent is a delegated child, its stable subagent id for tree replay.
+    pub delegate_agent_id: Option<String>,
+    /// Parent subagent id when this context runs inside a delegate (nested spawns).
+    pub delegate_parent_id: Option<String>,
     /// Sub-agent runner for full execute_loop delegation.
     /// WHY Option + trait object: Breaks circular dependency between
     /// edgecrab-tools (defines trait) and edgecrab-core (implements it).
@@ -389,6 +405,7 @@ impl ToolContext {
     /// Create a minimal context for testing
     #[cfg(test)]
     pub fn test_context() -> Self {
+        crate::delegation_state::set_spawn_paused(false);
         Self {
             task_id: "test-task".into(),
             cwd: std::env::temp_dir(),
@@ -402,6 +419,8 @@ impl ToolContext {
             provider: None,
             tool_registry: None,
             delegate_depth: 0,
+            delegate_agent_id: None,
+            delegate_parent_id: None,
             sub_agent_runner: None,
             delegation_event_tx: None,
             clarify_tx: None,
@@ -421,25 +440,8 @@ impl ToolContext {
         }
     }
 
-    pub fn emit_progress(&self, message: impl Into<String>) {
-        let Some(tx) = &self.tool_progress_tx else {
-            return;
-        };
-        let Some(tool_call_id) = &self.current_tool_call_id else {
-            return;
-        };
-        let Some(tool_name) = &self.current_tool_name else {
-            return;
-        };
-        let message = message.into();
-        if message.trim().is_empty() {
-            return;
-        }
-        let _ = tx.send(ToolProgressUpdate {
-            tool_call_id: tool_call_id.clone(),
-            tool_name: tool_name.clone(),
-            message,
-        });
+    pub fn emit_progress(&self, message: impl AsRef<str>) {
+        crate::tool_progress_tail::emit_tool_progress(self, message.as_ref());
     }
 }
 

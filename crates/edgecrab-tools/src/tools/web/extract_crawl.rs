@@ -51,7 +51,12 @@ use std::sync::OnceLock;
 use edgecrab_types::{ToolError, ToolSchema};
 use reqwest::Url;
 
+use crate::artifact_spill::apply_web_extract_content_spill;
 use crate::registry::{ToolContext, ToolHandler};
+use crate::tool_progress_tail::{
+    format_backend_attempt_milestone, format_crawl_page_milestone, format_fetch_milestone,
+    format_results_milestone,
+};
 use crate::tools::browser::{browser_is_available, render_page_text};
 use crate::tools::pdf_to_markdown::{extract_pdf_markdown_from_bytes, looks_like_pdf};
 
@@ -71,9 +76,6 @@ static BODY_RE: OnceLock<Regex> = OnceLock::new();
 static NOISE_BLOCK_RE: OnceLock<Regex> = OnceLock::new();
 static BLOCK_BREAK_RE: OnceLock<Regex> = OnceLock::new();
 /// Compiled regexes for DuckDuckGo HTML result parsing.
-static DDG_RESULT_RE: OnceLock<Regex> = OnceLock::new();
-static DDG_SNIPPET_RE: OnceLock<Regex> = OnceLock::new();
-
 fn html_tag_re() -> &'static Regex {
     HTML_TAG_RE.get_or_init(|| Regex::new(r"<[^>]+>").expect("valid regex"))
 }
@@ -281,30 +283,41 @@ struct FetchedPage {
     links: Vec<String>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum ContentBackend {
     Native,
     Firecrawl,
     Tavily,
+    Exa,
+    Parallel,
     Browser,
+    /// Plugin-registered extract provider (Hermes `register_web_search_provider`).
+    Registry(String),
+}
+
+fn has_configured_web_backend(name: &str) -> bool {
+    use crate::tools::web::search::backend_settings::{
+        backend_is_configured, lookup_backend_config,
+    };
+    use crate::tools::web::search::config::load_web_search_config_from_disk;
+    let disk = load_web_search_config_from_disk();
+    backend_is_configured(name, &lookup_backend_config(&disk.backends, name))
 }
 
 fn has_firecrawl_api_key() -> bool {
-    std::env::var("FIRECRAWL_API_KEY")
-        .map(|k| !k.is_empty())
-        .unwrap_or(false)
+    has_configured_web_backend("firecrawl")
 }
 
 fn has_tavily_api_key() -> bool {
-    std::env::var("TAVILY_API_KEY")
-        .map(|k| !k.is_empty())
-        .unwrap_or(false)
+    has_configured_web_backend("tavily")
 }
 
-fn has_brave_api_key() -> bool {
-    std::env::var("BRAVE_API_KEY")
-        .map(|k| !k.is_empty())
-        .unwrap_or(false)
+fn has_exa_api_key() -> bool {
+    has_configured_web_backend("exa")
+}
+
+fn has_parallel_api_key() -> bool {
+    has_configured_web_backend("parallel")
 }
 
 fn backend_override(keys: &[&str]) -> Option<String> {
@@ -316,106 +329,12 @@ fn backend_override(keys: &[&str]) -> Option<String> {
     })
 }
 
-fn resolve_search_backend(preferred: Option<&str>) -> Result<SearchBackend, ToolError> {
-    let choice = preferred
-        .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| !value.is_empty())
-        .or_else(|| backend_override(&["EDGECRAB_WEB_SEARCH_BACKEND", "EDGECRAB_WEB_BACKEND"]));
-
-    match choice.as_deref().unwrap_or("auto") {
-        "auto" => {
-            if has_firecrawl_api_key() {
-                Ok(SearchBackend::Firecrawl)
-            } else if has_tavily_api_key() {
-                Ok(SearchBackend::Tavily)
-            } else if has_brave_api_key() {
-                Ok(SearchBackend::Brave)
-            } else {
-                Ok(SearchBackend::DuckDuckGo)
-            }
-        }
-        "firecrawl" => {
-            if has_firecrawl_api_key() {
-                Ok(SearchBackend::Firecrawl)
-            } else {
-                Err(ToolError::ExecutionFailed {
-                    tool: "web_search".into(),
-                    message: "Search backend 'firecrawl' requires FIRECRAWL_API_KEY.".into(),
-                })
-            }
-        }
-        "tavily" => {
-            if has_tavily_api_key() {
-                Ok(SearchBackend::Tavily)
-            } else {
-                Err(ToolError::ExecutionFailed {
-                    tool: "web_search".into(),
-                    message: "Search backend 'tavily' requires TAVILY_API_KEY.".into(),
-                })
-            }
-        }
-        "brave" => {
-            if has_brave_api_key() {
-                Ok(SearchBackend::Brave)
-            } else {
-                Err(ToolError::ExecutionFailed {
-                    tool: "web_search".into(),
-                    message: "Search backend 'brave' requires BRAVE_API_KEY.".into(),
-                })
-            }
-        }
-        "duckduckgo" | "ddg" => Ok(SearchBackend::DuckDuckGo),
-        other => Err(ToolError::InvalidArgs {
-            tool: "web_search".into(),
-            message: format!(
-                "Unsupported search backend '{other}'. Use auto, firecrawl, tavily, brave, or duckduckgo."
-            ),
-        }),
-    }
-}
-
-fn search_backend_name(backend: &SearchBackend) -> &'static str {
-    match backend {
-        SearchBackend::Firecrawl => "firecrawl",
-        SearchBackend::Tavily => "tavily",
-        SearchBackend::Brave => "brave",
-        SearchBackend::DuckDuckGo => "duckduckgo",
-    }
-}
-
 /// Returns an ordered chain of search backends to try in "auto" mode.
 ///
 /// Priority: Firecrawl (highest quality) → Brave → Tavily → DuckDuckGo
 /// (guaranteed no-key fallback).
 /// Explicit overrides produce a single-element chain: the caller asked for a
 /// specific backend and we honour that intent without silent fallback.
-fn resolve_search_backend_chain(preferred: Option<&str>) -> Result<Vec<SearchBackend>, ToolError> {
-    let choice = preferred
-        .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| !value.is_empty())
-        .or_else(|| backend_override(&["EDGECRAB_WEB_SEARCH_BACKEND", "EDGECRAB_WEB_BACKEND"]));
-
-    match choice.as_deref().unwrap_or("auto") {
-        "auto" => {
-            let mut chain: Vec<SearchBackend> = Vec::with_capacity(4);
-            if has_firecrawl_api_key() {
-                chain.push(SearchBackend::Firecrawl);
-            }
-            if has_brave_api_key() {
-                chain.push(SearchBackend::Brave);
-            }
-            if has_tavily_api_key() {
-                chain.push(SearchBackend::Tavily);
-            }
-            // DuckDuckGo always available — guaranteed terminal fallback.
-            chain.push(SearchBackend::DuckDuckGo);
-            Ok(chain)
-        }
-        // Explicit override — single element, no silent fallback.
-        other => resolve_search_backend(Some(other)).map(|b| vec![b]),
-    }
-}
-
 fn resolve_content_backend(
     preferred: Option<&str>,
     tool: &str,
@@ -465,6 +384,26 @@ fn resolve_content_backend(
                 })
             }
         }
+        "exa" => {
+            if has_exa_api_key() {
+                Ok(ContentBackend::Exa)
+            } else {
+                Err(ToolError::ExecutionFailed {
+                    tool: tool.into(),
+                    message: "Backend 'exa' requires EXA_API_KEY.".into(),
+                })
+            }
+        }
+        "parallel" => {
+            if has_parallel_api_key() {
+                Ok(ContentBackend::Parallel)
+            } else {
+                Err(ToolError::ExecutionFailed {
+                    tool: tool.into(),
+                    message: "Backend 'parallel' requires PARALLEL_API_KEY.".into(),
+                })
+            }
+        }
         "browser" | "rendered" => {
             if browser_is_available() {
                 Ok(ContentBackend::Browser)
@@ -475,21 +414,32 @@ fn resolve_content_backend(
                 })
             }
         }
-        other => Err(ToolError::InvalidArgs {
-            tool: tool.into(),
-            message: format!(
-                "Unsupported backend '{other}'. Use auto, native, firecrawl, tavily, or browser."
-            ),
-        }),
+        other => {
+            if crate::tools::web::search::get_web_search_backend(other)
+                .is_some_and(|b| b.supports_extract())
+            {
+                Ok(ContentBackend::Registry(other.to_string()))
+            } else {
+                Err(ToolError::InvalidArgs {
+                    tool: tool.into(),
+                    message: format!(
+                        "Unsupported backend '{other}'. Use auto, native, firecrawl, tavily, exa, parallel, or browser."
+                    ),
+                })
+            }
+        }
     }
 }
 
-fn content_backend_name(backend: ContentBackend) -> &'static str {
+fn content_backend_name(backend: &ContentBackend) -> String {
     match backend {
-        ContentBackend::Native => "native",
-        ContentBackend::Firecrawl => "firecrawl",
-        ContentBackend::Tavily => "tavily",
-        ContentBackend::Browser => "browser",
+        ContentBackend::Native => "native".into(),
+        ContentBackend::Firecrawl => "firecrawl".into(),
+        ContentBackend::Tavily => "tavily".into(),
+        ContentBackend::Exa => "exa".into(),
+        ContentBackend::Parallel => "parallel".into(),
+        ContentBackend::Browser => "browser".into(),
+        ContentBackend::Registry(name) => name.clone(),
     }
 }
 
@@ -581,33 +531,59 @@ fn resolve_extract_backend_chain(
     preferred: Option<&str>,
     tool: &str,
 ) -> Result<Vec<ContentBackend>, ToolError> {
-    let choice = preferred
+    let from_tool = preferred
         .map(|value| value.trim().to_ascii_lowercase())
-        .filter(|value| !value.is_empty())
-        .or_else(|| {
-            backend_override(&[
-                if tool == "web_crawl" {
-                    "EDGECRAB_WEB_CRAWL_BACKEND"
-                } else {
-                    "EDGECRAB_WEB_EXTRACT_BACKEND"
-                },
-                "EDGECRAB_WEB_BACKEND",
-            ])
-        });
+        .filter(|value| !value.is_empty());
+
+    let from_env = backend_override(&[
+        if tool == "web_crawl" {
+            "EDGECRAB_WEB_CRAWL_BACKEND"
+        } else {
+            "EDGECRAB_WEB_EXTRACT_BACKEND"
+        },
+        "EDGECRAB_WEB_BACKEND",
+    ]);
+
+    let from_config = crate::tools::web::search::web_config::resolve_config_extract_backend();
+
+    let choice = from_tool.clone().or(from_env.clone()).or(from_config);
+
+    if let Some(ref name) = choice {
+        if name == "auto" {
+            // fall through to auto chain below
+        } else if crate::tools::web::search::provider_capabilities::is_search_only(name) {
+            // Hermes: config search-only names fall through; explicit tool/env → typed error.
+            let explicit = from_tool.is_some() || from_env.is_some();
+            if explicit {
+                return Err(ToolError::ExecutionFailed {
+                    tool: tool.into(),
+                    message:
+                        crate::tools::web::search::provider_capabilities::search_only_error_message(
+                            name, tool,
+                        ),
+                });
+            }
+            // Config-only search-only choice → auto chain.
+            return resolve_extract_backend_chain(None, tool);
+        }
+    }
 
     match choice.as_deref().unwrap_or("auto") {
         "auto" => {
-            // Build a priority chain: paid APIs first (better quality), then
-            // the always-available native Chrome-emulating client as the
-            // guaranteed last resort.
-            let mut chain = Vec::with_capacity(3);
-            if has_firecrawl_api_key() {
-                chain.push(ContentBackend::Firecrawl);
+            use crate::tools::web::search::content_extract::EXTRACT_AUTO_CHAIN;
+            let mut chain = Vec::with_capacity(EXTRACT_AUTO_CHAIN.len() + 1);
+            for name in EXTRACT_AUTO_CHAIN {
+                if has_configured_web_backend(name) {
+                    chain.push(match *name {
+                        "firecrawl" => ContentBackend::Firecrawl,
+                        "parallel" => ContentBackend::Parallel,
+                        "tavily" => ContentBackend::Tavily,
+                        "exa" => ContentBackend::Exa,
+                        _ => continue,
+                    });
+                }
             }
-            if has_tavily_api_key() {
-                chain.push(ContentBackend::Tavily);
-            }
-            chain.push(ContentBackend::Native); // always available
+            chain.push(ContentBackend::Native);
             Ok(chain)
         }
         // Explicit overrides: single-element chain — fallback not applied.
@@ -823,368 +799,41 @@ async fn fetch_browser_document(
     })
 }
 
-// ─── Backend detection ─────────────────────────────────────────
+// ─── Firecrawl / Tavily extract helpers (HTTP in content_extract) ───
 
-enum SearchBackend {
-    Firecrawl,
-    Tavily,
-    Brave,
-    DuckDuckGo,
-}
-
-// ─── web_search ────────────────────────────────────────────────
-
-pub struct WebSearchTool;
-
-#[derive(Deserialize)]
-struct SearchArgs {
-    query: String,
-    /// Maximum number of results to return (default: 5)
-    #[serde(default)]
-    max_results: Option<usize>,
-    #[serde(default)]
-    backend: Option<String>,
-}
-
-/// A single normalized search result.
-#[derive(Serialize)]
-struct SearchResult {
-    title: String,
-    url: String,
-    description: String,
-}
-
-/// Search via Tavily API (api_key from TAVILY_API_KEY env).
-///
-/// Tavily free tier: ~1000 searches/month. Get key at https://app.tavily.com
-async fn search_tavily(query: &str, max: usize) -> Result<Vec<SearchResult>, BackendError> {
-    let data = tavily_request(
-        "search",
-        json!({
-            "query": query,
-            "max_results": max,
-            "search_depth": "basic",
-            "include_answer": false,
-        }),
-        "web_search",
-    )
-    .await?;
-
-    let results = data["results"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|r| {
-                    let title = r["title"].as_str()?.to_string();
-                    let url = r["url"].as_str()?.to_string();
-                    let description = r["content"].as_str().unwrap_or("").to_string();
-                    Some(SearchResult {
-                        title,
-                        url,
-                        description,
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    Ok(results)
-}
-
-fn firecrawl_metadata_text(metadata: &serde_json::Value, key: &str) -> Option<String> {
-    match &metadata[key] {
-        serde_json::Value::String(value) => Some(value.clone()),
-        serde_json::Value::Array(values) => values.iter().find_map(|value| {
-            value
-                .as_str()
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty())
-        }),
-        _ => None,
-    }
-}
-
-/// Low-level Firecrawl HTTP helper.  Returns [`BackendError`] so that callers
-/// with a fallback chain can inspect `.is_transient()` without string-matching.
-/// Callers that do not need fallback semantics simply call
-/// `.map_err(BackendError::into_tool_error)?`.
-async fn firecrawl_request(
-    method: reqwest::Method,
-    path_or_url: &str,
-    payload: Option<serde_json::Value>,
+fn extract_http_to_backend(
+    err: crate::tools::web::search::content_extract::ExtractHttpError,
     tool: &str,
-) -> Result<serde_json::Value, BackendError> {
-    let api_key = std::env::var("FIRECRAWL_API_KEY")
-        .map_err(|_| BackendError::hard(tool, "Firecrawl backend requires FIRECRAWL_API_KEY."))?;
-    let client = build_client().map_err(|e| BackendError::hard(tool, e.to_string()))?;
-    let url = if path_or_url.starts_with("http://") || path_or_url.starts_with("https://") {
-        path_or_url.to_string()
-    } else {
-        format!(
-            "https://api.firecrawl.dev/v2/{}",
-            path_or_url.trim_start_matches('/')
-        )
-    };
-    let mut req = client
-        .request(method, &url)
-        .header("Authorization", format!("Bearer {api_key}"));
-
-    if let Some(body) = payload {
-        req = req.header("Content-Type", "application/json").json(&body);
+) -> BackendError {
+    match err.status {
+        Some(0) => BackendError::hard(tool, err.message),
+        Some(code) => BackendError::api(code, tool, err.message),
+        None => BackendError::network(tool, err.message),
     }
-
-    let resp = req
-        .send()
-        .await
-        .map_err(|e| BackendError::network(tool, format!("Firecrawl API error: {e}")))?;
-
-    if !resp.status().is_success() {
-        let code = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(BackendError::api(
-            code,
-            tool,
-            format!("Firecrawl API HTTP {code}: {text}"),
-        ));
-    }
-
-    resp.json()
-        .await
-        .map_err(|e| BackendError::hard(tool, format!("Firecrawl JSON parse error: {e}")))
 }
 
-fn normalize_firecrawl_search_results(data: &serde_json::Value, max: usize) -> Vec<SearchResult> {
-    let array = data["data"]["web"]
-        .as_array()
-        .or_else(|| data["data"].as_array());
-
-    array
-        .into_iter()
-        .flatten()
-        .filter_map(|value| {
-            let metadata = &value["metadata"];
-            let title = value["title"]
-                .as_str()
-                .map(|value| value.to_string())
-                .or_else(|| firecrawl_metadata_text(metadata, "title"))
-                .unwrap_or_default();
-            let url = value["url"]
-                .as_str()
-                .or_else(|| metadata["url"].as_str())
-                .or_else(|| metadata["sourceURL"].as_str())?
-                .to_string();
-            let description = value["description"]
-                .as_str()
-                .map(|value| value.to_string())
-                .or_else(|| firecrawl_metadata_text(metadata, "description"))
-                .unwrap_or_default();
-            Some(SearchResult {
-                title,
-                url,
-                description,
-            })
-        })
-        .take(max)
-        .collect()
-}
-
-async fn search_firecrawl(query: &str, max: usize) -> Result<Vec<SearchResult>, BackendError> {
-    let data = firecrawl_request(
-        reqwest::Method::POST,
-        "search",
-        Some(json!({
-            "query": query,
-            "limit": max,
-            "ignoreInvalidURLs": true,
-        })),
-        "web_search",
-    )
-    .await?;
-    Ok(normalize_firecrawl_search_results(&data, max))
-}
-
-/// Low-level Tavily HTTP helper.  Returns [`BackendError`] for the same
-/// reason as [`firecrawl_request`]: callers in the fallback chain can inspect
-/// `.is_transient()` without string-matching; other callers convert with
-/// `.map_err(BackendError::into_tool_error)?`.
-async fn tavily_request(
-    endpoint: &str,
-    payload: serde_json::Value,
-    tool: &str,
-) -> Result<serde_json::Value, BackendError> {
-    let api_key = std::env::var("TAVILY_API_KEY")
-        .map_err(|_| BackendError::hard(tool, "Tavily backend requires TAVILY_API_KEY."))?;
-    let client = build_client().map_err(|e| BackendError::hard(tool, e.to_string()))?;
-    let url = format!(
-        "https://api.tavily.com/{}",
-        endpoint.trim_start_matches('/')
+fn raw_page_to_document(
+    page: crate::tools::web::search::content_extract::RawExtractPage,
+    max_chars: usize,
+) -> ExtractedDocument {
+    let (content, truncated) = truncate_chars(
+        if page.content.is_empty() {
+            "(No readable text content found on this page.)".to_string()
+        } else {
+            page.content
+        },
+        max_chars,
     );
-    let body = match payload {
-        serde_json::Value::Object(mut map) => {
-            map.insert("api_key".into(), serde_json::Value::String(api_key));
-            serde_json::Value::Object(map)
-        }
-        _ => return Err(BackendError::hard(tool, "Invalid Tavily payload shape.")),
-    };
-
-    let resp = client
-        .post(&url)
-        .header("Content-Type", "application/json")
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| BackendError::network(tool, format!("Tavily API error: {e}")))?;
-
-    if !resp.status().is_success() {
-        let code = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(BackendError::api(
-            code,
-            tool,
-            format!("Tavily API HTTP {code}: {text}"),
-        ));
+    ExtractedDocument {
+        url: page.url,
+        title: page.title,
+        content,
+        extractor: page.extractor.into(),
+        content_type: page.content_type.unwrap_or_else(|| "text/html".into()),
+        content_format: page.content_format.unwrap_or_else(|| "text".into()),
+        truncated,
+        meta_description: page.meta_description,
     }
-
-    resp.json()
-        .await
-        .map_err(|e| BackendError::hard(tool, format!("Tavily JSON parse error: {e}")))
-}
-
-/// Search via Brave Search API (api_key from BRAVE_API_KEY env).
-///
-/// Brave free tier: 2000 searches/month. Get key at https://api.search.brave.com/app/keys
-async fn search_brave(query: &str, max: usize) -> Result<Vec<SearchResult>, BackendError> {
-    let api_key = std::env::var("BRAVE_API_KEY").unwrap_or_default();
-    let client = build_client().map_err(|e| BackendError::hard("web_search", e.to_string()))?;
-
-    let url = format!(
-        "https://api.search.brave.com/res/v1/web/search?q={}&count={}",
-        urlencoding_encode(query),
-        max.min(20)
-    );
-
-    let resp = client
-        .get(&url)
-        .header("X-Subscription-Token", api_key)
-        .header("Accept", "application/json")
-        .send()
-        .await
-        .map_err(|e| BackendError::network("web_search", format!("Brave Search API error: {e}")))?;
-
-    if !resp.status().is_success() {
-        let code = resp.status().as_u16();
-        let text = resp.text().await.unwrap_or_default();
-        return Err(BackendError::api(
-            code,
-            "web_search",
-            format!("Brave Search HTTP {code}: {text}"),
-        ));
-    }
-
-    let data: serde_json::Value = resp.json().await.map_err(|e| {
-        BackendError::hard("web_search", format!("Brave Search JSON parse error: {e}"))
-    })?;
-
-    let results = data["web"]["results"]
-        .as_array()
-        .map(|arr| {
-            arr.iter()
-                .filter_map(|r| {
-                    let title = r["title"].as_str()?.to_string();
-                    let url = r["url"].as_str()?.to_string();
-                    let description = r["description"].as_str().unwrap_or("").to_string();
-                    Some(SearchResult {
-                        title,
-                        url,
-                        description,
-                    })
-                })
-                .collect::<Vec<_>>()
-        })
-        .unwrap_or_default();
-
-    Ok(results)
-}
-
-/// Search via DuckDuckGo HTML endpoint using Chrome TLS/HTTP-2 fingerprint emulation.
-///
-/// Endpoint: https://html.duckduckgo.com/html/ (POST form, not the Instant Answer API)
-async fn search_duckduckgo(query: &str, max: usize) -> Result<Vec<SearchResult>, BackendError> {
-    validate_url("https://html.duckduckgo.com/", "web_search")
-        .map_err(|e| BackendError::hard("web_search", e.to_string()))?;
-
-    let client = build_chrome_client("web_search")
-        .map_err(|e| BackendError::hard("web_search", e.to_string()))?;
-
-    let form = [("q", query), ("b", ""), ("kl", "us-en")];
-    let resp = client
-        .post("https://html.duckduckgo.com/html/")
-        .form(&form)
-        .send()
-        .await
-        .map_err(|e| BackendError::network("web_search", format!("DDG HTTP error: {e}")))?;
-
-    if !resp.status().is_success() {
-        let code = resp.status().as_u16();
-        return Err(BackendError::api(
-            code,
-            "web_search",
-            format!("DDG returned HTTP {code}."),
-        ));
-    }
-
-    let html = resp
-        .text()
-        .await
-        .map_err(|e| BackendError::network("web_search", format!("DDG read error: {e}")))?;
-
-    // DDG bot-challenge: treat as transient so callers can log a warning
-    // rather than hard-failing the whole search.
-    if html.contains("anomaly-modal") || html.len() < 500 {
-        return Err(BackendError::api(
-            503,
-            "web_search",
-            "DDG returned a bot-challenge page.",
-        ));
-    }
-
-    parse_ddg_html_results(&html, max).map_err(|e| BackendError::hard("web_search", e.to_string()))
-}
-
-/// Parse web results from an `html.duckduckgo.com` HTML response.
-///
-/// Captures `<a class="result__a">` for title+URL and
-/// `<a class="result__snippet">` for description snippets.
-fn parse_ddg_html_results(html: &str, max: usize) -> Result<Vec<SearchResult>, ToolError> {
-    let result_re = DDG_RESULT_RE.get_or_init(|| {
-        Regex::new(r#"class="result__a"[^>]*href="([^"]+)"[^>]*>([^<]+)"#)
-            .expect("valid DDG result regex")
-    });
-    let snippet_re = DDG_SNIPPET_RE.get_or_init(|| {
-        Regex::new(r#"class="result__snippet"[^>]*>([\s\S]*?)</a>"#)
-            .expect("valid DDG snippet regex")
-    });
-
-    let pairs: Vec<(String, String)> = result_re
-        .captures_iter(html)
-        .map(|c| (c[1].to_string(), c[2].trim().to_string()))
-        .collect();
-
-    let snippets: Vec<String> = snippet_re
-        .captures_iter(html)
-        .map(|c| strip_html(&c[1]).trim().to_string())
-        .collect();
-
-    Ok(pairs
-        .into_iter()
-        .take(max)
-        .enumerate()
-        .map(|(i, (url, title))| SearchResult {
-            title,
-            url,
-            description: snippets.get(i).cloned().unwrap_or_default(),
-        })
-        .collect())
 }
 
 fn normalize_firecrawl_document(
@@ -1192,59 +841,9 @@ fn normalize_firecrawl_document(
     max_chars: usize,
     fallback_url: Option<&str>,
 ) -> Option<ExtractedDocument> {
-    let metadata = &value["metadata"];
-    let url = metadata["url"]
-        .as_str()
-        .or_else(|| metadata["sourceURL"].as_str())
-        .or_else(|| value["url"].as_str())
-        .or(fallback_url)
-        .unwrap_or_default()
-        .to_string();
-    if url.is_empty() {
-        return None;
-    }
-
-    let title = firecrawl_metadata_text(metadata, "title")
-        .or_else(|| value["title"].as_str().map(|value| value.to_string()))
-        .unwrap_or_default();
-    let content_format = if value["markdown"].is_string() {
-        "markdown"
-    } else if value["html"].is_string() || value["rawHtml"].is_string() {
-        "html"
-    } else {
-        "text"
-    };
-    let raw = value["markdown"]
-        .as_str()
-        .or_else(|| value["html"].as_str())
-        .or_else(|| value["rawHtml"].as_str())
-        .or_else(|| value["text"].as_str())
-        .unwrap_or_default()
-        .to_string();
-    let (content, truncated) = truncate_chars(
-        if raw.is_empty() {
-            "(No readable text content found on this page.)".to_string()
-        } else {
-            raw
-        },
-        max_chars,
-    );
-
-    Some(ExtractedDocument {
-        url,
-        title,
-        content,
-        extractor: "firecrawl".into(),
-        content_type: metadata["contentType"]
-            .as_str()
-            .unwrap_or("text/html")
-            .to_string(),
-        content_format: content_format.into(),
-        truncated,
-        meta_description: firecrawl_metadata_text(metadata, "description")
-            .or_else(|| value["description"].as_str().map(|value| value.to_string()))
-            .filter(|value| !value.is_empty()),
-    })
+    let fallback = fallback_url.unwrap_or_default();
+    crate::tools::web::search::content_extract::parse_firecrawl_document(value, fallback)
+        .map(|page| raw_page_to_document(page, max_chars))
 }
 
 fn normalize_tavily_document(
@@ -1252,102 +851,24 @@ fn normalize_tavily_document(
     max_chars: usize,
     fallback_url: Option<&str>,
 ) -> Option<ExtractedDocument> {
-    let url = value["url"]
-        .as_str()
-        .or(fallback_url)
-        .unwrap_or_default()
-        .to_string();
-    if url.is_empty() {
-        return None;
-    }
+    let fallback = fallback_url.unwrap_or_default();
+    crate::tools::web::search::content_extract::parse_tavily_document(value, fallback)
+        .map(|page| raw_page_to_document(page, max_chars))
+}
 
-    let title = value["title"].as_str().unwrap_or_default().to_string();
-    let raw = value["raw_content"]
-        .as_str()
-        .or_else(|| value["content"].as_str())
-        .unwrap_or_default()
-        .to_string();
-    let (content, truncated) = truncate_chars(
-        if raw.is_empty() {
-            "(No readable text content found on this page.)".to_string()
-        } else {
-            raw
-        },
-        max_chars,
-    );
-
-    Some(ExtractedDocument {
+async fn extract_via_registry(
+    backend_name: &str,
+    url: &str,
+    max_chars: usize,
+) -> Result<ExtractedDocument, BackendError> {
+    let page = crate::tools::web::search::extract_with_backend(
+        backend_name,
         url,
-        title,
-        content,
-        extractor: "tavily".into(),
-        content_type: value["content_type"]
-            .as_str()
-            .unwrap_or("text/html")
-            .to_string(),
-        content_format: "text".into(),
-        truncated,
-        meta_description: value["description"]
-            .as_str()
-            .map(|value| value.to_string())
-            .filter(|value| !value.is_empty()),
-    })
-}
-
-/// Extract a single URL via Firecrawl.  Returns [`BackendError`] so the
-/// fallback chain can call `.is_transient()` without string-matching.
-async fn extract_via_firecrawl(
-    url: &str,
-    max_chars: usize,
-) -> Result<ExtractedDocument, BackendError> {
-    let data = firecrawl_request(
-        reqwest::Method::POST,
-        "scrape",
-        Some(json!({
-            "url": url,
-            "formats": ["markdown"],
-            "onlyMainContent": true,
-        })),
-        "web_extract",
+        &crate::tools::web::search::ExtractOptions::default(),
     )
-    .await?;
-
-    normalize_firecrawl_document(&data["data"], max_chars, Some(url)).ok_or_else(|| {
-        BackendError::hard("web_extract", "Firecrawl extraction returned no document.")
-    })
-}
-
-/// Extract a single URL via Tavily.  Returns [`BackendError`] for the same
-/// reason as [`extract_via_firecrawl`].
-async fn extract_via_tavily(
-    url: &str,
-    max_chars: usize,
-) -> Result<ExtractedDocument, BackendError> {
-    let data = tavily_request(
-        "extract",
-        json!({
-            "urls": [url],
-            "include_images": false,
-        }),
-        "web_extract",
-    )
-    .await?;
-
-    if let Some(document) = data["results"]
-        .as_array()
-        .and_then(|results| results.first())
-        .and_then(|value| normalize_tavily_document(value, max_chars, Some(url)))
-    {
-        return Ok(document);
-    }
-
-    let failure = data["failed_results"]
-        .as_array()
-        .and_then(|results| results.first())
-        .and_then(|value| value["error"].as_str())
-        .unwrap_or("Tavily extraction returned no document.");
-
-    Err(BackendError::hard("web_extract", failure))
+    .await
+    .map_err(|e| extract_http_to_backend(e, "web_extract"))?;
+    Ok(raw_page_to_document(page, max_chars))
 }
 
 async fn collect_firecrawl_crawl_pages(
@@ -1355,6 +876,7 @@ async fn collect_firecrawl_crawl_pages(
     max_chars: usize,
     instructions: Option<&str>,
 ) -> Result<Vec<CrawledPage>, BackendError> {
+    const CRAWL_TIMEOUT_SECS: u64 = 30;
     let mut pages = Vec::new();
     let mut seen = HashSet::new();
 
@@ -1387,7 +909,12 @@ async fn collect_firecrawl_crawl_pages(
         let Some(next) = response["next"].as_str().filter(|next| !next.is_empty()) else {
             break;
         };
-        response = firecrawl_request(reqwest::Method::GET, next, None, "web_crawl").await?;
+        response = crate::tools::web::search::content_crawl::firecrawl_fetch_crawl_page(
+            next,
+            CRAWL_TIMEOUT_SECS,
+        )
+        .await
+        .map_err(|e| extract_http_to_backend(e, "web_crawl"))?;
     }
 
     Ok(pages)
@@ -1413,73 +940,31 @@ async fn crawl_via_firecrawl(
     max_chars: usize,
     same_path_only: bool,
 ) -> Result<Vec<CrawledPage>, BackendError> {
-    let mut payload = json!({
-        "url": start_url.as_str(),
-        "limit": max_pages,
-        "maxDiscoveryDepth": max_depth,
-        "allowExternalLinks": false,
-        "allowSubdomains": false,
-        "crawlEntireDomain": !same_path_only,
-        "scrapeOptions": {
-            "formats": ["markdown", "links"],
-            "onlyMainContent": true,
-        },
-    });
-    if let Some(instructions) = instructions {
-        payload["prompt"] = serde_json::Value::String(instructions.to_string());
-    }
-    if same_path_only && let Some(patterns) = firecrawl_same_path_patterns(start_url) {
-        payload["includePaths"] = serde_json::Value::Array(
-            patterns
-                .into_iter()
-                .map(serde_json::Value::String)
-                .collect(),
-        );
-    }
+    const CRAWL_TIMEOUT_SECS: u64 = 30;
+    use crate::tools::web::search::content_crawl::{
+        firecrawl_crawl_payload, firecrawl_start_crawl, firecrawl_wait_crawl,
+    };
 
-    let started =
-        firecrawl_request(reqwest::Method::POST, "crawl", Some(payload), "web_crawl").await?;
-    let job_id = started["id"].as_str().ok_or_else(|| {
-        BackendError::hard("web_crawl", "Firecrawl crawl did not return a job id.")
-    })?;
-
-    let mut attempts = 0usize;
-    loop {
-        let status = firecrawl_request(
-            reqwest::Method::GET,
-            &format!("crawl/{job_id}"),
-            None,
-            "web_crawl",
-        )
-        .await?;
-        match status["status"].as_str().unwrap_or("completed") {
-            "completed" => {
-                return collect_firecrawl_crawl_pages(status, max_chars, instructions).await;
-            }
-            "failed" => {
-                let failure = status["error"]
-                    .as_str()
-                    .or_else(|| {
-                        status["data"].as_array().and_then(|data| {
-                            data.iter()
-                                .find_map(|value| value["metadata"]["error"].as_str())
-                        })
-                    })
-                    .unwrap_or("Firecrawl crawl failed.");
-                return Err(BackendError::hard("web_crawl", failure.to_string()));
-            }
-            _ => {
-                attempts += 1;
-                if attempts >= 45 {
-                    return Err(BackendError::hard(
-                        "web_crawl",
-                        "Firecrawl crawl timed out waiting for completion.",
-                    ));
-                }
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            }
-        }
-    }
+    let include_paths = if same_path_only {
+        firecrawl_same_path_patterns(start_url)
+    } else {
+        None
+    };
+    let payload = firecrawl_crawl_payload(
+        start_url.as_str(),
+        max_pages,
+        max_depth,
+        same_path_only,
+        include_paths,
+        instructions,
+    );
+    let job_id = firecrawl_start_crawl(payload, CRAWL_TIMEOUT_SECS)
+        .await
+        .map_err(|e| extract_http_to_backend(e, "web_crawl"))?;
+    let status = firecrawl_wait_crawl(&job_id, CRAWL_TIMEOUT_SECS)
+        .await
+        .map_err(|e| extract_http_to_backend(e, "web_crawl"))?;
+    collect_firecrawl_crawl_pages(status, max_chars, instructions).await
 }
 
 async fn crawl_via_tavily(
@@ -1488,16 +973,13 @@ async fn crawl_via_tavily(
     max_pages: usize,
     max_chars: usize,
 ) -> Result<Vec<CrawledPage>, BackendError> {
-    let mut payload = json!({
-        "url": url,
-        "limit": max_pages,
-        "extract_depth": "advanced",
-    });
-    if let Some(instructions) = instructions {
-        payload["instructions"] = serde_json::Value::String(instructions.to_string());
-    }
+    const CRAWL_TIMEOUT_SECS: u64 = 30;
+    use crate::tools::web::search::content_crawl::{tavily_crawl, tavily_crawl_payload};
 
-    let data = tavily_request("crawl", payload, "web_crawl").await?;
+    let payload = tavily_crawl_payload(url, max_pages, instructions);
+    let data = tavily_crawl(payload, CRAWL_TIMEOUT_SECS)
+        .await
+        .map_err(|e| extract_http_to_backend(e, "web_crawl"))?;
     let mut pages = Vec::new();
 
     if let Some(results) = data["results"].as_array() {
@@ -1523,147 +1005,6 @@ async fn crawl_via_tavily(
 
     Ok(pages)
 }
-
-/// Try each backend in `chain` in order; advance on transient errors, hard-fail on permanent ones.
-///
-/// Returns the results AND a reference to the backend that produced them so the caller
-/// can report `fallback_from` accurately.
-async fn search_with_fallback<'a>(
-    query: &str,
-    max: usize,
-    chain: &'a [SearchBackend],
-) -> Result<(Vec<SearchResult>, &'a SearchBackend), ToolError> {
-    let mut last_err: Option<BackendError> = None;
-    for backend in chain {
-        let res = match backend {
-            SearchBackend::Firecrawl => search_firecrawl(query, max).await,
-            SearchBackend::Tavily => search_tavily(query, max).await,
-            SearchBackend::Brave => search_brave(query, max).await,
-            SearchBackend::DuckDuckGo => search_duckduckgo(query, max).await,
-        };
-        match res {
-            Ok(results) if !results.is_empty() => return Ok((results, backend)),
-            Ok(_) => {
-                // Backend succeeded but returned nothing — try next.
-                last_err = Some(BackendError::hard("web_search", "No results returned."));
-            }
-            Err(e) if e.is_transient() => {
-                tracing::warn!(
-                    backend = search_backend_name(backend),
-                    error = %e,
-                    "web_search: backend unavailable, trying next in chain",
-                );
-                last_err = Some(e);
-            }
-            Err(e) => return Err(e.into_tool_error()),
-        }
-    }
-    Err(last_err
-        .map(BackendError::into_tool_error)
-        .unwrap_or_else(|| ToolError::ExecutionFailed {
-            tool: "web_search".into(),
-            message: "No search backends are available.".into(),
-        }))
-}
-
-#[async_trait]
-impl ToolHandler for WebSearchTool {
-    fn name(&self) -> &'static str {
-        "web_search"
-    }
-
-    fn toolset(&self) -> &'static str {
-        "web"
-    }
-
-    fn emoji(&self) -> &'static str {
-        "🔍"
-    }
-
-    fn schema(&self) -> ToolSchema {
-        ToolSchema {
-            name: "web_search".into(),
-            description: "Search the web for information. Returns titles, URLs, and snippets.\n\
-                          Supports pluggable backends (auto, Firecrawl, Tavily, Brave, DuckDuckGo). \
-                          For best results: set FIRECRAWL_API_KEY (https://firecrawl.dev), \
-                          TAVILY_API_KEY (https://app.tavily.com, free tier) \
-                          or BRAVE_API_KEY (https://api.search.brave.com/app/keys, free tier). \
-                          Without an API key, falls back to DuckDuckGo HTML search \
-                          (Chrome TLS fingerprint via wreq; results may vary)."
-                .into(),
-            parameters: json!({
-                "type": "object",
-                "properties": {
-                    "query": {
-                        "type": "string",
-                        "description": "Search query"
-                    },
-                    "max_results": {
-                        "type": "integer",
-                        "description": "Maximum results to return (default: 5, max: 20)"
-                    },
-                    "backend": {
-                        "type": "string",
-                        "description": "Optional backend override: auto, firecrawl, tavily, brave, or duckduckgo"
-                    }
-                },
-                "required": ["query"]
-            }),
-            strict: None,
-        }
-    }
-
-    fn is_available(&self) -> bool {
-        true
-    }
-
-    async fn execute(
-        &self,
-        args: serde_json::Value,
-        _ctx: &ToolContext,
-    ) -> Result<String, ToolError> {
-        let args: SearchArgs =
-            serde_json::from_value(args).map_err(|e| ToolError::InvalidArgs {
-                tool: "web_search".into(),
-                message: e.to_string(),
-            })?;
-
-        let max = args.max_results.unwrap_or(5).min(20);
-        let chain = resolve_search_backend_chain(args.backend.as_deref())?;
-        let (results, used_backend) = search_with_fallback(&args.query, max, &chain).await?;
-
-        let used_name = search_backend_name(used_backend);
-        let primary_name = search_backend_name(&chain[0]);
-        let fallback_from: Option<&str> = if used_name != primary_name {
-            Some(primary_name)
-        } else {
-            None
-        };
-        let note: Option<String> = if matches!(used_backend, SearchBackend::DuckDuckGo) {
-            Some(
-                "DuckDuckGo HTML is the no-key fallback (Chrome TLS emulation). \
-                 For reliable broad search set TAVILY_API_KEY or BRAVE_API_KEY \
-                 in ~/.edgecrab/.env."
-                    .to_string(),
-            )
-        } else {
-            None
-        };
-
-        Ok(json!({
-            "success": true,
-            "query": args.query,
-            "backend": used_name,
-            "fallback_from": fallback_from,
-            "note": note,
-            "results": results,
-        })
-        .to_string())
-    }
-}
-
-inventory::submit!(&WebSearchTool as &dyn ToolHandler);
-
 // ─── web_extract ───────────────────────────────────────────────
 
 pub struct WebExtractTool;
@@ -1690,15 +1031,15 @@ struct ExtractBatchEntry {
     url: String,
     success: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
-    result: Option<ExtractedDocument>,
+    result: Option<serde_json::Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     /// Backend that was used (or attempted first) for this URL.
-    backend: &'static str,
+    backend: String,
     /// Set when fallback occurred: name of the originally requested backend
     /// that failed before this entry’s actual backend was tried.
     #[serde(skip_serializing_if = "Option::is_none")]
-    fallback_from: Option<&'static str>,
+    fallback_from: Option<String>,
 }
 
 fn requested_extract_urls(args: &ExtractArgs) -> Result<Vec<String>, ToolError> {
@@ -1754,12 +1095,21 @@ async fn extract_with_fallback(
 ) -> Result<(ExtractedDocument, ContentBackend), ToolError> {
     let mut last_err = BackendError::hard(tool, "No extraction backend is available.");
 
-    for &backend in chain {
-        match extract_document_for_url(url, backend, max_chars, render_js_fallback, ctx).await {
-            Ok(doc) => return Ok((doc, backend)),
+    for backend in chain {
+        ctx.emit_progress(format_backend_attempt_milestone(
+            &content_backend_name(backend),
+            "extracting",
+        ));
+        match extract_document_for_url(url, backend.clone(), max_chars, render_js_fallback, ctx)
+            .await
+        {
+            Ok(doc) => {
+                ctx.emit_progress(format_results_milestone(1, &content_backend_name(backend)));
+                return Ok((doc, backend.clone()));
+            }
             Err(e) if e.is_transient() => {
                 tracing::warn!(
-                    backend = content_backend_name(backend),
+                    backend = %content_backend_name(backend),
                     url = url.as_str(),
                     error = %e,
                     "Backend unavailable — trying next in chain"
@@ -1788,8 +1138,19 @@ async fn extract_document_for_url(
     match backend {
         // Paid API backends — propagate BackendError directly; is_transient()
         // reflects the actual HTTP status code from the API.
-        ContentBackend::Firecrawl => extract_via_firecrawl(requested_url.as_str(), max_chars).await,
-        ContentBackend::Tavily => extract_via_tavily(requested_url.as_str(), max_chars).await,
+        ContentBackend::Firecrawl => {
+            extract_via_registry("firecrawl", requested_url.as_str(), max_chars).await
+        }
+        ContentBackend::Tavily => {
+            extract_via_registry("tavily", requested_url.as_str(), max_chars).await
+        }
+        ContentBackend::Exa => extract_via_registry("exa", requested_url.as_str(), max_chars).await,
+        ContentBackend::Parallel => {
+            extract_via_registry("parallel", requested_url.as_str(), max_chars).await
+        }
+        ContentBackend::Registry(name) => {
+            extract_via_registry(&name, requested_url.as_str(), max_chars).await
+        }
 
         // Browser / Native: infrastructure errors are classified Hard because
         // they reflect target-URL content failures, not backend availability.
@@ -1913,7 +1274,7 @@ impl ToolHandler for WebExtractTool {
                     },
                     "backend": {
                         "type": "string",
-                        "description": "Optional backend override: auto, native, firecrawl, tavily, or browser"
+                        "description": "Optional backend override: auto, native, firecrawl, tavily, exa, parallel, or browser"
                     },
                     "render_js_fallback": {
                         "type": "boolean",
@@ -1953,6 +1314,7 @@ impl ToolHandler for WebExtractTool {
 
         if !batch_mode {
             let only_url = &requested_urls[0];
+            ctx.emit_progress(format_fetch_milestone(only_url));
             let parsed = parse_extract_url(only_url)?;
             let (document, used_backend) = extract_with_fallback(
                 &parsed,
@@ -1963,29 +1325,32 @@ impl ToolHandler for WebExtractTool {
                 "web_extract",
             )
             .await?;
-            let used_name = content_backend_name(used_backend);
-            let requested_name = content_backend_name(chain[0]);
-            let fallback_from: Option<&str> = if used_name != requested_name {
+            let used_name = content_backend_name(&used_backend);
+            let requested_name = content_backend_name(&chain[0]);
+            let fallback_from: Option<String> = if used_name != requested_name {
                 Some(requested_name)
             } else {
                 None
             };
 
+            let doc_value = serde_json::to_value(&document)
+                .map_err(|e| ToolError::Other(format!("serialize extract document: {e}")))?;
+            let doc_value = apply_web_extract_content_spill(doc_value, ctx, None);
+
             return Ok(json!({
                 "success": true,
                 "backend": used_name,
                 "fallback_from": fallback_from,
-                "result": document.clone(),
-                "results": [document],
+                "result": doc_value.clone(),
+                "results": [doc_value],
             })
             .to_string());
         }
 
         let mut results = Vec::with_capacity(requested_urls.len());
-        // The "primary" backend is the first in the chain (what the user asked
-        // for, or the highest-priority auto choice).  Each URL reports which
-        // backend was actually used so the agent always knows the fallback path.
-        let primary_backend_name = content_backend_name(chain[0]);
+        ctx.emit_progress(format!("fetching {} URL(s)…", requested_urls.len()));
+        // The "primary" backend is the first in the chain
+        let primary_backend_name = content_backend_name(&chain[0]);
         for requested in requested_urls {
             let entry = match parse_extract_url(&requested) {
                 Ok(parsed) => match extract_with_fallback(
@@ -1999,18 +1364,23 @@ impl ToolHandler for WebExtractTool {
                 .await
                 {
                     Ok((document, used_backend)) => {
-                        let used_name = content_backend_name(used_backend);
+                        let used_name = content_backend_name(&used_backend);
+                        let fallback_from = if used_name != primary_backend_name {
+                            Some(primary_backend_name.clone())
+                        } else {
+                            None
+                        };
+                        let doc_value = serde_json::to_value(&document).map_err(|e| {
+                            ToolError::Other(format!("serialize extract document: {e}"))
+                        })?;
+                        let doc_value = apply_web_extract_content_spill(doc_value, ctx, None);
                         ExtractBatchEntry {
                             url: requested,
                             success: true,
-                            result: Some(document),
+                            result: Some(doc_value),
                             error: None,
                             backend: used_name,
-                            fallback_from: if used_name != primary_backend_name {
-                                Some(primary_backend_name)
-                            } else {
-                                None
-                            },
+                            fallback_from,
                         }
                     }
                     Err(error) => ExtractBatchEntry {
@@ -2018,7 +1388,7 @@ impl ToolHandler for WebExtractTool {
                         success: false,
                         result: None,
                         error: Some(error.to_string()),
-                        backend: primary_backend_name,
+                        backend: primary_backend_name.clone(),
                         fallback_from: None,
                     },
                 },
@@ -2027,7 +1397,7 @@ impl ToolHandler for WebExtractTool {
                     success: false,
                     result: None,
                     error: Some(error.to_string()),
-                    backend: primary_backend_name,
+                    backend: primary_backend_name.clone(),
                     fallback_from: None,
                 },
             };
@@ -2035,7 +1405,7 @@ impl ToolHandler for WebExtractTool {
         }
 
         let success_count = results.iter().filter(|entry| entry.success).count();
-        let batch_backend_name = content_backend_name(chain[0]);
+        let batch_backend_name = content_backend_name(&chain[0]);
         Ok(json!({
             "success": success_count > 0,
             "backend": batch_backend_name,
@@ -2094,7 +1464,7 @@ impl ToolHandler for WebCrawlTool {
                     },
                     "backend": {
                         "type": "string",
-                        "description": "Optional backend override: auto, native, firecrawl, tavily, or browser"
+                        "description": "Optional backend override: auto, native, firecrawl, tavily, exa, parallel, or browser"
                     },
                     "render_js_fallback": {
                         "type": "boolean",
@@ -2132,17 +1502,22 @@ impl ToolHandler for WebCrawlTool {
         let render_js_fallback = args.render_js_fallback.unwrap_or(true);
 
         validate_url(&args.url, "web_crawl")?;
+        ctx.emit_progress(format_fetch_milestone(&args.url));
         let start_url = Url::parse(&args.url).map_err(|e| ToolError::InvalidArgs {
             tool: "web_crawl".into(),
             message: format!("Invalid URL: {e}"),
         })?;
 
         // ── Phase 1: try the paid-API crawl backends (Firecrawl / Tavily) ──
-        for &backend in &chain {
+        for backend in &chain {
             if !matches!(backend, ContentBackend::Firecrawl | ContentBackend::Tavily) {
                 // Reached Native / Browser — handled by BFS below.
                 break;
             }
+            ctx.emit_progress(format_backend_attempt_milestone(
+                &content_backend_name(backend),
+                "crawling",
+            ));
 
             let result = match backend {
                 ContentBackend::Firecrawl => {
@@ -2165,7 +1540,11 @@ impl ToolHandler for WebCrawlTool {
                     )
                     .await
                 }
-                ContentBackend::Native | ContentBackend::Browser => unreachable!(),
+                ContentBackend::Native
+                | ContentBackend::Browser
+                | ContentBackend::Exa
+                | ContentBackend::Parallel
+                | ContentBackend::Registry(_) => unreachable!(),
             };
 
             match result {
@@ -2179,8 +1558,8 @@ impl ToolHandler for WebCrawlTool {
                     });
                     pages.truncate(max_pages);
                     let used_name = content_backend_name(backend);
-                    let requested_name = content_backend_name(chain[0]);
-                    let fallback_from: Option<&str> = if used_name != requested_name {
+                    let requested_name = content_backend_name(&chain[0]);
+                    let fallback_from: Option<String> = if used_name != requested_name {
                         Some(requested_name)
                     } else {
                         None
@@ -2199,7 +1578,7 @@ impl ToolHandler for WebCrawlTool {
                 }
                 Err(e) if e.is_transient() => {
                     tracing::warn!(
-                        backend = content_backend_name(backend),
+                        backend = %content_backend_name(backend),
                         url = args.url,
                         error = %e,
                         "Crawl backend unavailable — trying next in chain"
@@ -2213,12 +1592,12 @@ impl ToolHandler for WebCrawlTool {
         // ── Phase 2: Native / Browser BFS crawl (guaranteed fallback) ──
         let bfs_backend = chain
             .iter()
-            .copied()
-            .find(|&b| matches!(b, ContentBackend::Native | ContentBackend::Browser))
+            .find(|b| matches!(b, ContentBackend::Native | ContentBackend::Browser))
+            .cloned()
             .unwrap_or(ContentBackend::Native);
-        let bfs_backend_name = content_backend_name(bfs_backend);
-        let requested_name = content_backend_name(chain[0]);
-        let fallback_from: Option<&str> = if bfs_backend_name != requested_name {
+        let bfs_backend_name = content_backend_name(&bfs_backend);
+        let requested_name = content_backend_name(&chain[0]);
+        let fallback_from: Option<String> = if bfs_backend_name != requested_name {
             Some(requested_name)
         } else {
             None
@@ -2226,7 +1605,12 @@ impl ToolHandler for WebCrawlTool {
 
         let client = match bfs_backend {
             ContentBackend::Native => Some(build_chrome_client("web_crawl")?),
-            ContentBackend::Browser | ContentBackend::Firecrawl | ContentBackend::Tavily => None,
+            ContentBackend::Browser
+            | ContentBackend::Firecrawl
+            | ContentBackend::Tavily
+            | ContentBackend::Exa
+            | ContentBackend::Parallel
+            | ContentBackend::Registry(_) => None,
         };
         let mut queue = VecDeque::from([(start_url.clone(), 0usize)]);
         let mut visited: HashSet<String> = HashSet::new();
@@ -2239,6 +1623,11 @@ impl ToolHandler for WebCrawlTool {
             }
 
             validate_url(&current_key, "web_crawl")?;
+            ctx.emit_progress(format_crawl_page_milestone(
+                pages.len() + 1,
+                max_pages,
+                &current_key,
+            ));
 
             let fetched = match bfs_backend {
                 ContentBackend::Browser => {
@@ -2296,9 +1685,11 @@ impl ToolHandler for WebCrawlTool {
                     )
                     .await?
                 }
-                ContentBackend::Firecrawl | ContentBackend::Tavily => {
-                    unreachable!("handled in phase 1")
-                }
+                ContentBackend::Firecrawl
+                | ContentBackend::Tavily
+                | ContentBackend::Exa
+                | ContentBackend::Parallel
+                | ContentBackend::Registry(_) => unreachable!("handled in phase 1 or skipped"),
             };
 
             pages.push(CrawledPage {
@@ -2369,6 +1760,7 @@ inventory::submit!(&WebCrawlTool as &dyn ToolHandler);
 // ─── Shared helpers ────────────────────────────────────────────
 
 /// Percent-encode a query string for URL embedding.
+#[cfg(test)]
 fn urlencoding_encode(s: &str) -> String {
     s.chars()
         .map(|c| match c {
@@ -2382,132 +1774,22 @@ fn urlencoding_encode(s: &str) -> String {
         .collect()
 }
 
-/// Validate a URL with the SSRF guard.
+/// Validate a URL with SSRF guard + optional website blocklist policy.
 fn validate_url(url: &str, tool: &str) -> Result<(), ToolError> {
-    match edgecrab_security::url_safety::is_safe_url(url) {
-        Ok(true) => Ok(()),
-        Ok(false) => Err(ToolError::PermissionDenied(format!(
-            "URL blocked by SSRF policy for tool '{tool}': {url}"
-        ))),
-        Err(e) => Err(ToolError::PermissionDenied(format!(
-            "URL validation error in '{tool}': {e}"
-        ))),
-    }
+    crate::tools::web::search::http::validate_url_for_tool(url, tool)
 }
 
 /// Build a browser-emulating HTTP client with Chrome TLS/HTTP-2 fingerprints (wreq).
 ///
-/// WHY Chrome fingerprint for arbitrary HTML:
-///   CDN bot-detection (Cloudflare, Akamai, DuckDuckGo) matches the JA3/JA4 TLS
-///   fingerprint of the connecting client. A plain `reqwest` client is trivially
-///   identified as non-browser and blocked. wreq with BoringSSL + GREASE passes
-///   these checks. Use this for any fetch from an untrusted/arbitrary URL.
-///
-/// WHY inline TLS config (not wreq-util):
-///   wreq-util is GPL-3.0 — incompatible with this project's Apache-2.0 licence.
-///   Chrome TLS settings (cipher list, sigalgs, curves) are hardcoded inline.
-///
-/// Automatically wires proxy from environment variables via
-/// [`edgecrab_security::proxy::resolve_proxy_url()`] (6-level cascade).
+/// Delegates to the shared DDGS [`crate::tools::web::search::http::build_chrome_client`] /
+/// [`crate::tools::web::search::backends::ddgs::fingerprint`] pool (Apache-2.0, no GPL wreq-util).
 fn build_chrome_client(tool: &str) -> Result<wreq::Client, ToolError> {
-    use wreq::{
-        EmulationProvider, SslCurve,
-        header::{ACCEPT, ACCEPT_LANGUAGE, HeaderMap, HeaderValue, USER_AGENT},
-        tls::{AlpnProtos, TlsConfig, TlsVersion},
-    };
-
-    let tls = TlsConfig::builder()
-        .min_tls_version(TlsVersion::TLS_1_2)
-        .max_tls_version(TlsVersion::TLS_1_3)
-        .cipher_list(concat!(
-            "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:",
-            "TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:",
-            "TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:",
-            "TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:",
-            "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:",
-            "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:",
-            "TLS_RSA_WITH_AES_128_GCM_SHA256:TLS_RSA_WITH_AES_256_GCM_SHA384:",
-            "TLS_RSA_WITH_AES_128_CBC_SHA:TLS_RSA_WITH_AES_256_CBC_SHA"
-        ))
-        .sigalgs_list(concat!(
-            "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:",
-            "ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:",
-            "rsa_pss_rsae_sha512:rsa_pkcs1_sha512"
-        ))
-        .curves(vec![
-            SslCurve::X25519,
-            SslCurve::SECP256R1,
-            SslCurve::SECP384R1,
-        ])
-        .alpn_protos(AlpnProtos::ALL)
-        .grease_enabled(true)
-        .permute_extensions(true)
-        .enable_ech_grease(true)
-        .pre_shared_key(true)
-        .enable_ocsp_stapling(true)
-        .build();
-
-    let mut headers = HeaderMap::new();
-    headers.insert(
-        USER_AGENT,
-        HeaderValue::from_static(
-            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
-             AppleWebKit/537.36 (KHTML, like Gecko) \
-             Chrome/136.0.0.0 Safari/537.36",
-        ),
-    );
-    headers.insert(
-        ACCEPT,
-        HeaderValue::from_static("text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"),
-    );
-    headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
-
-    let provider = EmulationProvider::builder()
-        .tls_config(tls)
-        .default_headers(headers)
-        .build();
-
-    let mut builder = wreq::Client::builder()
-        .emulation(provider)
-        .timeout(std::time::Duration::from_secs(15));
-
-    // Wire proxy from environment variables (6-level cascade)
-    if let Some(proxy_url) = edgecrab_security::proxy::resolve_proxy_url(None) {
-        match wreq::Proxy::all(&proxy_url) {
-            Ok(proxy) => {
-                tracing::debug!(url = %proxy_url, "Chrome-emulating client: using proxy");
-                builder = builder.proxy(proxy);
-            }
-            Err(e) => {
-                tracing::warn!(
-                    url = %proxy_url,
-                    error = %e,
-                    "Chrome-emulating client: invalid proxy URL, proceeding without proxy"
-                );
-            }
+    crate::tools::web::search::http::build_chrome_client(15).map_err(|e| {
+        ToolError::ExecutionFailed {
+            tool: tool.into(),
+            message: e.message,
         }
-    }
-
-    builder.build().map_err(|e| ToolError::ExecutionFailed {
-        tool: tool.into(),
-        message: format!("Failed to build Chrome-emulating client: {e}"),
     })
-}
-
-/// Build a plain reqwest client for trusted JSON API backends (Firecrawl, Tavily, Brave).
-///
-/// WHY reqwest (not wreq) here:
-///   These are first-party JSON APIs with Bearer token auth — no bot-detection.
-///   reqwest is lighter and avoids spawning a BoringSSL TLS stack unnecessarily.
-///
-/// WHY SSRF-safe: Even for API-backed calls, the redirect policy guards against
-///   open-redirect chains that could reach private/internal addresses.
-///
-/// WHY 15-second timeout: Balances responsiveness vs. slow websites.
-fn build_client() -> Result<reqwest::Client, ToolError> {
-    Ok(edgecrab_security::url_safety::build_ssrf_safe_client(
-        std::time::Duration::from_secs(15),
-    ))
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────
@@ -2647,23 +1929,6 @@ mod tests {
     }
 
     #[test]
-    fn firecrawl_search_normalization_preserves_shape() {
-        let value = json!({
-            "data": {
-                "web": [{
-                    "title": "EdgeCrab Docs",
-                    "url": "https://example.com/docs",
-                    "description": "Structured web tooling",
-                }]
-            }
-        });
-        let results = normalize_firecrawl_search_results(&value, 5);
-        assert_eq!(results.len(), 1);
-        assert_eq!(results[0].title, "EdgeCrab Docs");
-        assert_eq!(results[0].description, "Structured web tooling");
-    }
-
-    #[test]
     fn firecrawl_document_normalization_prefers_markdown_and_metadata() {
         let value = json!({
             "markdown": "# EdgeCrab",
@@ -2696,11 +1961,6 @@ mod tests {
         let encoded = urlencoding_encode("foo&bar=baz");
         assert!(!encoded.contains('&'));
         assert!(!encoded.contains('='));
-    }
-
-    #[test]
-    fn web_search_available() {
-        assert!(WebSearchTool.is_available());
     }
 
     #[test]
@@ -2831,45 +2091,29 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    #[tokio::test]
-    #[ignore = "requires internet — run with cargo test -- --include-ignored"]
-    async fn web_search_live_query() {
-        // Integration test: tries whichever backend is configured.
-        // Set TAVILY_API_KEY for richer results.
-        let ctx = ToolContext::test_context();
-        let result = WebSearchTool
-            .execute(
-                serde_json::json!({"query": "Rust programming language"}),
-                &ctx,
-            )
-            .await;
-        match result {
-            Ok(text) => {
-                assert!(!text.is_empty(), "search result should not be empty");
-            }
-            Err(e) => {
-                // Network errors are acceptable in CI — don't panic
-                eprintln!("web_search live test skipped: {e}");
-            }
-        }
-    }
+    #[test]
+    fn validate_url_blocks_website_policy_domain() {
+        edgecrab_security::website_policy::invalidate_cache();
+        let dir = tempfile::TempDir::new().expect("tempdir");
+        let config_path = dir.path().join("config.yaml");
+        std::fs::write(
+            &config_path,
+            r#"
+security:
+  website_blocklist:
+    enabled: true
+    domains: [blocked.example]
+"#,
+        )
+        .expect("write config");
+        unsafe { std::env::set_var("EDGECRAB_HOME", dir.path()) };
 
-    #[tokio::test]
-    #[ignore = "requires internet — run with cargo test -- --include-ignored"]
-    async fn web_search_ddg_known_entity() {
-        // DDG Instant Answer works for well-known entities like "Paris"
-        let ctx = ToolContext::test_context();
-        let result = WebSearchTool
-            .execute(serde_json::json!({"query": "Paris France"}), &ctx)
-            .await;
-        match result {
-            Ok(text) => {
-                println!("DDG result (partial): {}", crate::safe_truncate(&text, 300));
-            }
-            Err(e) => {
-                eprintln!("Skipped: {e}");
-            }
-        }
+        let err = validate_url("https://docs.blocked.example/page", "web_extract")
+            .expect_err("blocked domain");
+        assert!(err.to_string().contains("website policy"));
+
+        unsafe { std::env::remove_var("EDGECRAB_HOME") };
+        edgecrab_security::website_policy::invalidate_cache();
     }
 
     #[tokio::test]

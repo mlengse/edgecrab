@@ -14,15 +14,13 @@ const DEMO_GOAL: &str = "Refactor demo/persistent-goals/sample_task.md to async/
 
 fn demo_db() -> Arc<edgecrab_state::SessionDb> {
     let home = std::env::var("EDGECRAB_HOME").unwrap_or_else(|_| {
-        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../demo/.edgecrab-home");
+        let root =
+            std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../demo/.edgecrab-home");
         root.to_string_lossy().into_owned()
     });
     std::fs::create_dir_all(&home).expect("demo home dir");
     let path = std::path::Path::new(&home).join("state.db");
-    Arc::new(
-        edgecrab_state::SessionDb::open(&path).expect("open demo state.db"),
-    )
+    Arc::new(edgecrab_state::SessionDb::open(&path).expect("open demo state.db"))
 }
 
 fn copilot_available() -> bool {
@@ -112,7 +110,8 @@ async fn copilot_demo_flow() {
         .goal_set(DEMO_GOAL)
         .await
         .expect("goal before chat — FK fix");
-    agent.subgoal_push("summarize sample_task.md")
+    agent
+        .subgoal_push("summarize sample_task.md")
         .await
         .expect("subgoal");
 
@@ -121,7 +120,11 @@ async fn copilot_demo_flow() {
 
     let demo_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../demo/persistent-goals/sample_task.md");
-    assert!(demo_path.exists(), "demo file missing at {}", demo_path.display());
+    assert!(
+        demo_path.exists(),
+        "demo file missing at {}",
+        demo_path.display()
+    );
 
     let reply = agent
         .chat("What is the active persistent goal for this session? Reply with the goal text only.")
@@ -154,7 +157,10 @@ async fn copilot_demo_flow() {
     agent.subgoal_remove(1).await.expect("remove");
     agent.goal_clear().await.expect("goal clear");
 
-    agent.goal_set(DEMO_GOAL).await.expect("re-set for resume test");
+    agent
+        .goal_set(DEMO_GOAL)
+        .await
+        .expect("re-set for resume test");
     agent.goal_pause().await.expect("pause");
     let (resume_msg, kickoff) = agent
         .goal_resume_with_kickoff()
@@ -162,9 +168,7 @@ async fn copilot_demo_flow() {
         .expect("resume with kickoff");
     assert!(resume_msg.contains("resumed"));
     assert!(
-        kickoff
-            .as_deref()
-            .is_some_and(is_goal_continuation_text),
+        kickoff.as_deref().is_some_and(is_goal_continuation_text),
         "resume should yield continuation prompt"
     );
 }

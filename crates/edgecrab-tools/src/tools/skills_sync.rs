@@ -621,14 +621,18 @@ mod tests {
     }
 
     #[test]
-    fn embedded_bundle_is_not_empty() {
+    fn embedded_bundle_is_not_empty_in_release() {
+        if cfg!(debug_assertions) {
+            // Debug skips embed for compile speed; sync uses bundled_skills_dir().
+            return;
+        }
         assert!(
             !EMBEDDED_BUNDLED_SKILLS.is_empty(),
-            "embedded bundled skill catalog should never be empty"
+            "embedded bundled skill catalog should never be empty in release builds"
         );
         assert!(
             !embedded_optional_skills().is_empty(),
-            "embedded optional skill catalog should never be empty"
+            "embedded optional skill catalog should never be empty in release builds"
         );
     }
 

@@ -61,7 +61,7 @@
 use std::path::Path;
 use std::sync::Arc;
 
-use edgecrab_types::Message;
+use edgecrab_types::{Content, ContentPart, Message, Role};
 use edgequake_llm::LLMProvider;
 
 use crate::config::CompressionConfig;
@@ -78,6 +78,21 @@ use crate::tool_result_spill::{SpillConfig, SpillOutcome, SpillSequence};
 /// means summaries improve with each subsequent compaction.
 pub const SUMMARY_PREFIX: &str =
     "[CONTEXT COMPACTION] Earlier turns were summarised to reclaim context window space.\n\n";
+
+/// One-shot note for the model after the first context compression (FP33).
+///
+/// Appended to the cached system prompt during in-loop compression, or to the
+/// handoff user message when `/handoff` auto-compresses before a model swap.
+pub const FIRST_COMPRESSION_NOTE: &str = concat!(
+    "\n\n[Note: Earlier conversation turns have been compacted into a ",
+    "handoff summary to stay within the context window. The current ",
+    "session state already reflects that earlier work — build on it ",
+    "rather than re-doing completed steps.]"
+);
+
+/// Inline variant for handoff user messages (no leading newlines).
+pub const HANDOFF_COMPRESSION_NOTE: &str =
+    "[Note: Earlier turns were auto-compressed for the target model's context window.]";
 
 /// Replacement text for pruned tool output blocks.
 ///
@@ -185,9 +200,7 @@ impl Default for CompressionParams {
 impl CompressionParams {
     /// Resolve compression parameters for the active model/configuration.
     pub fn from_model_config(model: &str, cfg: &CompressionConfig) -> Self {
-        let context_window = model
-            .split_once('/')
-            .and_then(|(provider, name)| ModelCatalog::context_window(provider, name))
+        let context_window = ModelCatalog::context_window_for_spec(model)
             .map(|tokens| tokens as usize)
             .unwrap_or(DEFAULT_CONTEXT_WINDOW);
 
@@ -219,14 +232,41 @@ pub enum CompressionStatus {
 /// tokenizer dependency) and good enough for the compression
 /// threshold check. Exact counts come from the API response.
 pub fn estimate_tokens(messages: &[Message]) -> usize {
-    messages
-        .iter()
-        .map(|m| {
-            let text_len = m.text_content().len();
-            // ~4 chars per token + overhead per message
-            (text_len / 4) + 4
-        })
-        .sum()
+    messages.iter().map(estimate_message_tokens).sum()
+}
+
+/// Per-message token estimate including image blocks (flat ~1500/image).
+pub fn estimate_message_tokens(m: &Message) -> usize {
+    use edgecrab_types::{Content, ContentPart, MULTIMODAL_IMAGE_TOKEN_ESTIMATE, Role};
+
+    let text_len = m.text_content().len();
+    let mut tokens = (text_len / 4) + 4;
+
+    if let Some(Content::Parts(parts)) = &m.content {
+        tokens += parts
+            .iter()
+            .filter(|p| matches!(p, ContentPart::ImageUrl { .. }))
+            .count()
+            * MULTIMODAL_IMAGE_TOKEN_ESTIMATE;
+    }
+
+    if m.role == Role::Tool
+        && m.name.as_deref() == Some("computer_use")
+        && let Some(Content::Text(text)) = &m.content
+        && (edgecrab_types::multimodal_has_image(text)
+            || edgecrab_types::multimodal_disk_image_from_content(text).is_some())
+    {
+        tokens += MULTIMODAL_IMAGE_TOKEN_ESTIMATE;
+    }
+
+    tokens
+}
+
+/// Prune stale computer_use screenshots in place (call after each capture tool result).
+pub fn maybe_prune_computer_use_screenshots(messages: &mut Vec<Message>, keep_last_n: u32) {
+    if keep_last_n > 0 {
+        *messages = prune_computer_use_screenshots(messages, keep_last_n);
+    }
 }
 
 /// Check if compression is needed.
@@ -543,6 +583,110 @@ pub fn prune_tool_outputs(
         .collect()
 }
 
+/// Strip `computer_use` screenshot images from older tool results, keeping only
+/// the last `keep_last_n` captures with image parts.
+///
+/// WHY every turn (not only on compress): a 1280×800 PNG is ~1–1.5k image tokens;
+/// three stale screenshots can dominate the context window before the compressor
+/// fires. Hermes spec requires aggressive screenshot pruning regardless of
+/// compression state.
+pub fn prune_computer_use_screenshots(messages: &[Message], keep_last_n: u32) -> Vec<Message> {
+    if keep_last_n == 0 {
+        return messages
+            .iter()
+            .map(strip_computer_use_screenshot_images)
+            .collect();
+    }
+
+    let mut screenshot_indices = Vec::new();
+    for (i, m) in messages.iter().enumerate() {
+        if computer_use_message_has_screenshot(m) {
+            screenshot_indices.push(i);
+        }
+    }
+
+    let keep = keep_last_n as usize;
+    if screenshot_indices.len() <= keep {
+        return messages.to_vec();
+    }
+
+    let strip_count = screenshot_indices.len().saturating_sub(keep);
+    let strip_set: std::collections::HashSet<usize> = screenshot_indices
+        .iter()
+        .take(strip_count)
+        .copied()
+        .collect();
+
+    messages
+        .iter()
+        .enumerate()
+        .map(|(i, m)| {
+            if strip_set.contains(&i) {
+                strip_computer_use_screenshot_images(m)
+            } else {
+                m.clone()
+            }
+        })
+        .collect()
+}
+
+fn computer_use_message_has_screenshot(msg: &Message) -> bool {
+    if msg.role != Role::Tool || msg.name.as_deref() != Some("computer_use") {
+        return false;
+    }
+    match &msg.content {
+        Some(Content::Parts(parts)) => parts
+            .iter()
+            .any(|p| matches!(p, ContentPart::ImageUrl { .. })),
+        Some(Content::Text(text)) => edgecrab_types::capture_has_image_reference(text),
+        _ => false,
+    }
+}
+
+fn strip_computer_use_screenshot_images(msg: &Message) -> Message {
+    if !computer_use_message_has_screenshot(msg) {
+        return msg.clone();
+    }
+
+    let tool_call_id = msg.tool_call_id.as_deref().unwrap_or("unknown");
+    let name = msg.name.as_deref().unwrap_or("computer_use");
+
+    match &msg.content {
+        Some(Content::Parts(parts)) => {
+            let mut text_parts: Vec<String> = parts
+                .iter()
+                .filter_map(|p| match p {
+                    ContentPart::Text { text } => Some(text.clone()),
+                    _ => None,
+                })
+                .collect();
+            if !text_parts.iter().any(|t| t.contains("[screenshot pruned]")) {
+                text_parts.push("[screenshot pruned — retained text summary only]".into());
+            }
+            Message {
+                role: Role::Tool,
+                content: Some(Content::Text(text_parts.join("\n"))),
+                tool_call_id: Some(tool_call_id.to_string()),
+                name: Some(name.to_string()),
+                ..Default::default()
+            }
+        }
+        Some(Content::Text(text)) => {
+            if edgecrab_types::is_multimodal_tool_json(text) {
+                let summary = edgecrab_types::multimodal_text_summary(text).unwrap_or_default();
+                let body = if summary.is_empty() {
+                    "[screenshot pruned — retained text summary only]".into()
+                } else {
+                    format!("{summary}\n[screenshot pruned — retained text summary only]")
+                };
+                return Message::tool_result(tool_call_id, name, &body);
+            }
+            msg.clone()
+        }
+        _ => msg.clone(),
+    }
+}
+
 /// Extract the text of the most recent SUMMARY_PREFIX block, if any.
 ///
 /// WHY: Iterative update means the second compression pass feeds the
@@ -652,7 +796,12 @@ fn find_tail_cut_by_tokens(
     cut_idx.max(head_end + 1)
 }
 
-// ─── Orphan pair sanitization ─────────────────────────────────────────
+/// Ensure every assistant `tool_call` has a matching tool result before an API request.
+///
+/// Public wrapper used by the conversation loop (not only compression).
+pub fn ensure_api_safe_tool_pairs(messages: Vec<Message>) -> Vec<Message> {
+    sanitize_orphan_pairs(messages)
+}
 
 /// Fix orphaned tool_call / tool_result pairs after assembling the compressed list.
 ///
@@ -1296,6 +1445,79 @@ mod tests {
         let messages = vec![Message::tool_result("id1", "shell_exec", "ok")];
         let pruned = prune_tool_outputs(&messages, None);
         assert_eq!(pruned[0].text_content(), "ok");
+    }
+
+    #[test]
+    fn prune_computer_use_screenshots_keeps_last_three() {
+        use edgecrab_types::{Content, ContentPart, ImageUrl};
+
+        let make_capture = |id: &str, label: &str| Message {
+            role: Role::Tool,
+            content: Some(Content::Parts(vec![
+                ContentPart::Text {
+                    text: format!("capture {label}"),
+                },
+                ContentPart::ImageUrl {
+                    image_url: ImageUrl {
+                        url: format!("data:image/png;base64,{label}"),
+                        detail: None,
+                    },
+                },
+            ])),
+            tool_call_id: Some(id.into()),
+            name: Some("computer_use".into()),
+            ..Default::default()
+        };
+
+        let messages: Vec<Message> = (0..4)
+            .map(|i| make_capture(&format!("call_{i}"), &format!("img{i}")))
+            .collect();
+
+        let pruned = prune_computer_use_screenshots(&messages, 3);
+        assert_eq!(pruned.len(), 4);
+        // Oldest capture loses its image part.
+        assert!(!pruned[0].text_content().contains("data:image"));
+        assert!(pruned[0].text_content().contains("[screenshot pruned"));
+        // Newest three retain image parts.
+        for msg in &pruned[1..] {
+            match &msg.content {
+                Some(Content::Parts(parts)) => {
+                    assert!(
+                        parts
+                            .iter()
+                            .any(|p| matches!(p, ContentPart::ImageUrl { .. }))
+                    );
+                }
+                other => panic!("expected Parts, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn prune_computer_use_screenshots_zero_strips_all() {
+        use edgecrab_types::{Content, ContentPart, ImageUrl};
+
+        let msg = Message {
+            role: Role::Tool,
+            content: Some(Content::Parts(vec![
+                ContentPart::Text {
+                    text: "capture".into(),
+                },
+                ContentPart::ImageUrl {
+                    image_url: ImageUrl {
+                        url: "data:image/png;base64,abc".into(),
+                        detail: None,
+                    },
+                },
+            ])),
+            tool_call_id: Some("call_0".into()),
+            name: Some("computer_use".into()),
+            ..Default::default()
+        };
+
+        let pruned = prune_computer_use_screenshots(&[msg], 0);
+        assert!(matches!(pruned[0].content, Some(Content::Text(_))));
+        assert!(pruned[0].text_content().contains("[screenshot pruned"));
     }
 
     #[test]

@@ -565,6 +565,8 @@ fn make_ctx(dir: &Path) -> ToolContext {
         provider: None,
         tool_registry: None,
         delegate_depth: 0,
+        delegate_agent_id: None,
+        delegate_parent_id: None,
         sub_agent_runner: None,
         delegation_event_tx: None,
         clarify_tx: None,

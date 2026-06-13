@@ -7,8 +7,7 @@ use edgequake_llm::LLMProvider;
 
 use crate::config::{GoalJudgeConfig, GoalsConfig};
 use crate::goal_judge::{
-    DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES, run_goal_judge,
-    resolve_goal_judge_provider_and_model,
+    DEFAULT_MAX_CONSECUTIVE_PARSE_FAILURES, resolve_goal_judge_provider_and_model, run_goal_judge,
 };
 use crate::goals::{GoalState, GoalStatus, GoalStore};
 
@@ -83,18 +82,9 @@ pub fn compact_status_chip(state: &GoalState) -> Option<GoalStatusChip> {
     };
 
     let (label, status) = match state.status {
-        GoalStatus::Active => (
-            format!("⊙ {turns}{sub} · {short}"),
-            GoalStatus::Active,
-        ),
-        GoalStatus::Paused => (
-            format!("⏸ {turns}{sub} · {short}"),
-            GoalStatus::Paused,
-        ),
-        GoalStatus::Done => (
-            format!("✓ goal done · {short}"),
-            GoalStatus::Done,
-        ),
+        GoalStatus::Active => (format!("⊙ {turns}{sub} · {short}"), GoalStatus::Active),
+        GoalStatus::Paused => (format!("⏸ {turns}{sub} · {short}"), GoalStatus::Paused),
+        GoalStatus::Done => (format!("✓ goal done · {short}"), GoalStatus::Done),
         GoalStatus::Cleared => return None,
     };
     Some(GoalStatusChip { label, status })

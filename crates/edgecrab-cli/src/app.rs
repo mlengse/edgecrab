@@ -38,7 +38,7 @@ use std::time::{Duration, Instant};
 use chrono::TimeZone;
 use clap::Parser;
 use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton,
+    self, KeyCode, KeyEventKind, KeyModifiers, KeyboardEnhancementFlags, MouseButton,
     MouseEventKind, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::{
@@ -55,8 +55,19 @@ use tokio::sync::mpsc;
 use tui_textarea::{CursorMove, Scrolling, TextArea, WrapMode};
 use unicode_width::UnicodeWidthStr;
 
+use crate::activity_shelf::{ShelfRenderParams, estimate_shelf_lines, render_activity_shelf};
+use crate::agents_overlay::{
+    AgentsOverlay, AgentsOverlayAction, AgentsRenderParams, DelegateRow, build_delegate_rows,
+    build_delegate_rows_from_snapshot, handle_agents_overlay_key, render_agents_overlay,
+    sort_delegate_rows_by,
+};
+use crate::clarify_panel::format_abandoned_clarify;
 use crate::cli_args::CliArgs;
 use crate::commands::{CommandRegistry, CommandResult, ToolManagerMode, gateway_commands_page};
+use crate::details_panel::{self, DetailsPanel, DetailsPanelAction};
+use crate::display_state::{
+    DisplayState, ValueCaptureAction, VoicePresenceState, voice_presence_frame_count,
+};
 use crate::edit_diff::{LocalEditSnapshot, capture_local_edit_snapshot, render_edit_diff_lines};
 use crate::fuzzy_selector::{FuzzyItem, FuzzySelector};
 use crate::gateway_browser::{
@@ -64,27 +75,52 @@ use crate::gateway_browser::{
 };
 use crate::gateway_catalog::collect_platform_diagnostics;
 use crate::image_models as cli_image_models;
+use crate::live_progress::ShelfCoalescer;
 use crate::logging::{
     LogFileInfo, LogLevelSetting, default_tail_lines, effective_log_level, format_log_size,
     format_relative_time, list_log_files, persist_log_level, read_last_lines,
     reload_runtime_log_level, tail_preview,
 };
-use crate::markdown_render;
 use crate::mcp_support;
+use crate::model_catalog_ui::{
+    ModelEntry, build_model_selector_entries, build_models_inventory_report,
+    discovery_availability_detail, discovery_source_label, model_selector_status_hint,
+};
+use crate::model_picker::{
+    ModelPickerKeyAction, ModelPickerStage, ModelSwitchIntent, browse_disconnect_provider,
+    disconnect_help_suffix, execute_disconnect, handle_disconnect_keys, handle_picker_keys,
+    render_disconnect_confirm, render_expensive_confirm,
+};
+use crate::overlay_layout::{picker_help_line, picker_three_layout, picker_two_cols, popup_rect};
 use crate::plugin_toggle::{
     PluginCheckState, PluginScope, PluginToggleEntry, plugin_toggle_status_line,
 };
+use crate::process_tail_panel::ProcessTailPanel;
 use crate::profile::{ProfileManager, ProfileSummary};
 use crate::runtime::{
     build_agent, build_tool_registry_with_mcp_discovery, load_runtime, open_state_db,
 };
+use crate::shelf_details::ShelfDetailsState;
+use crate::spawn_history::{SpawnHistory, TurnCommitMetrics};
+use crate::status_bar::{
+    StatusBarDocumentChip, StatusBarEditorMode, StatusBarRenderParams, StatusBarUiProfile,
+    render_status_bar as render_status_bar_widget,
+};
+use crate::status_chrome::{TerminalGlyphProfile, compact_spinner_frame};
+use crate::status_summaries::{ActiveSubagentStatus, BackgroundTaskStatus};
+use crate::stream_bridge;
 use crate::theme::{SkinConfig, Theme, palette as P};
 use crate::tool_display::{
-    DisplayWidths, build_context_gauge, build_subagent_done_line_width,
-    build_subagent_running_line_width, build_tool_done_line_width, build_tool_running_line_width,
-    build_tool_running_line_width_elapsed, build_tool_verbose_lines_width, tool_action_verb,
-    tool_category, tool_icon, tool_signature, tool_status_preview, tool_status_preview_width,
+    DisplayWidths, build_subagent_done_line_width, build_subagent_running_line_width,
+    build_tool_done_line_width, build_tool_running_line_width,
+    build_tool_running_line_width_elapsed, build_tool_verbose_lines_width, extract_tool_preview,
+    tool_signature, tool_status_preview,
 };
+use crate::transcript::{
+    OutputLine, OutputRole, TranscriptRenderParams, TranscriptScrollMetrics,
+    render_transcript_compact, render_transcript_rich,
+};
+use crate::turn_activity::{ShelfPhase, TurnActivityState};
 use crate::vision_models::{
     available_vision_model_options_with_dynamic, canonical_provider, current_model_supports_vision,
     parse_selection_spec,
@@ -102,6 +138,26 @@ use edgecrab_tools::{AppConfigRef, ToolContext};
 #[cfg(test)]
 use edgequake_llm::ProviderFactory;
 use tokio_util::sync::CancellationToken;
+
+mod approval_overlay;
+mod browser_chrome;
+mod browser_selectors;
+mod diagnose_overlay;
+mod event_loop;
+mod frame_render;
+mod input_panel;
+mod key_dispatch;
+mod log_session_browsers;
+mod mode_selectors;
+mod model_selectors;
+mod queue_edit;
+mod replay_command;
+mod response_dispatch;
+mod secret_capture_overlay;
+mod setup_overlays;
+mod steering_overlay;
+mod stream_forward;
+mod value_capture_overlay;
 
 const KEYBOARD_PROTOCOL_WARMUP: Duration = Duration::from_millis(25);
 const LOG_FOLLOW_REFRESH_INTERVAL: Duration = Duration::from_millis(900);
@@ -147,84 +203,12 @@ enum TerminalUiProfile {
     BasicCompat,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum TerminalGlyphProfile {
-    Unicode,
-    Ascii,
-}
-
-fn compact_spinner_frame(frame_idx: usize, glyphs: TerminalGlyphProfile) -> &'static str {
-    match glyphs {
-        TerminalGlyphProfile::Unicode => SPINNER_FRAMES[frame_idx % SPINNER_FRAMES.len()],
-        TerminalGlyphProfile::Ascii => ASCII_SPINNER_FRAMES[frame_idx % ASCII_SPINNER_FRAMES.len()],
-    }
-}
-
-/// Estimate word count from a character count.
-///
-/// Uses a ~4.5-char-per-word average and buckets to the nearest 10 words to
-/// prevent the status bar from flickering on every token. Returns 0 when fewer
-/// than 20 chars have been written (avoids a misleading "~5 words" flash at
-/// session start).
-fn words_estimate(chars: u64) -> u64 {
-    if chars < 20 {
-        return 0;
-    }
-    let raw = (chars as f64 / 4.5) as u64;
-    // Bucket to nearest 10 words for display stability.
-    (raw / 10) * 10
-}
-
-/// Format a duration as an elapsed-time hint for the status bar.
-///
-/// Only returns a non-empty string once `threshold_secs` have elapsed, so the
-/// hint doesn't appear on short interactions. Used by both the `Streaming` and
-/// `ToolExec` status-bar arms, keeping their behaviour consistent (DRY).
-fn format_elapsed_hint(elapsed: std::time::Duration, threshold_secs: u64) -> String {
-    let secs = elapsed.as_secs();
-    if secs >= threshold_secs {
-        format!("  {}s", secs)
-    } else {
-        String::new()
-    }
-}
-
 /// Extract the most recent markdown heading from a streaming token.
 ///
 /// Looks for `\n# ` or `\n## ` patterns in the token text (and detects
 /// headings that start at the beginning of the first token with `# `).
 /// Updates `current_section` in-place when a heading is found. Heading text is
 /// truncated to 30 chars for status bar width safety.
-fn extract_streaming_section(token: &str, current_section: &mut Option<String>) {
-    // We scan the token for newline-prefixed heading markers.
-    // Handles both mid-stream cases ("\n## Title") and first-token start ("# Title").
-    let candidates: &[&str] = &["\n### ", "\n## ", "\n# ", "### ", "## ", "# "];
-    for marker in candidates {
-        if let Some(pos) = token.find(marker) {
-            let heading_start = pos + marker.len();
-            // Only treat as heading if at start of token or preceded by newline.
-            let valid_start =
-                pos == 0 || token.as_bytes().get(pos.saturating_sub(1)).copied() == Some(b'\n');
-            if !valid_start {
-                continue;
-            }
-            let rest = &token[heading_start..];
-            let heading: String = rest
-                .lines()
-                .next()
-                .unwrap_or("")
-                .trim()
-                .chars()
-                .take(30)
-                .collect();
-            if !heading.is_empty() {
-                *current_section = Some(heading);
-                return;
-            }
-        }
-    }
-}
-
 fn terminal_glyph_profile_for(
     ui_profile: TerminalUiProfile,
     remote_session: bool,
@@ -480,406 +464,6 @@ fn terminal_runtime_capabilities() -> TerminalRuntimeCapabilities {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct RecoveredAssistantTurn {
-    reasoning: Option<String>,
-    text: String,
-}
-
-fn recover_latest_assistant_turn(
-    messages: &[edgecrab_types::Message],
-) -> Option<RecoveredAssistantTurn> {
-    messages.iter().rev().find_map(|message| {
-        if message.role != edgecrab_types::Role::Assistant {
-            return None;
-        }
-
-        let text = message.text_content();
-        let reasoning = message
-            .reasoning
-            .clone()
-            .filter(|text| !text.trim().is_empty());
-        if text.trim().is_empty() && reasoning.is_none() {
-            return None;
-        }
-
-        Some(RecoveredAssistantTurn { reasoning, text })
-    })
-}
-
-async fn forward_stream_event_to_tui(
-    event: edgecrab_core::agent::StreamEvent,
-    tx: &mpsc::UnboundedSender<AgentResponse>,
-    hook_registry: &edgecrab_gateway::hooks::HookRegistry,
-    saw_token_event: &mut bool,
-    saw_reasoning_event: &mut bool,
-    saw_terminal_event: &mut bool,
-) -> bool {
-    use edgecrab_core::agent::StreamEvent;
-
-    match event {
-        StreamEvent::Token(text) => {
-            if text.is_empty() {
-                tracing::debug!("TUI→agent: dropping empty token delta");
-            } else {
-                *saw_token_event = true;
-                tracing::info!(len = text.len(), "TUI→agent: forwarding token");
-                let _ = tx.send(AgentResponse::Token(text));
-            }
-        }
-        StreamEvent::Reasoning(text) => {
-            *saw_reasoning_event = true;
-            tracing::info!(len = text.len(), "TUI→agent: forwarding reasoning");
-            let _ = tx.send(AgentResponse::Reasoning(text));
-        }
-        StreamEvent::ToolExec {
-            tool_call_id,
-            name,
-            args_json,
-        } => {
-            tracing::info!(tool = %name, "TUI→agent: forwarding tool exec");
-            let _ = tx.send(AgentResponse::ToolExec {
-                tool_call_id,
-                name,
-                args_json,
-            });
-        }
-        StreamEvent::ToolProgress {
-            tool_call_id,
-            name,
-            message,
-        } => {
-            tracing::info!(tool = %name, "TUI→agent: forwarding tool progress");
-            let _ = tx.send(AgentResponse::ToolProgress {
-                tool_call_id,
-                name,
-                message,
-            });
-        }
-        StreamEvent::ToolDone {
-            tool_call_id,
-            name,
-            args_json,
-            result_preview,
-            duration_ms,
-            is_error,
-        } => {
-            tracing::info!(tool = %name, is_error, "TUI→agent: forwarding tool done");
-            let _ = tx.send(AgentResponse::ToolDone {
-                tool_call_id,
-                name,
-                args_json,
-                result_preview,
-                duration_ms,
-                is_error,
-            });
-        }
-        StreamEvent::SubAgentStart {
-            task_index,
-            task_count,
-            goal,
-        } => {
-            tracing::info!(
-                task_index,
-                task_count,
-                "TUI→agent: forwarding subagent start"
-            );
-            let _ = tx.send(AgentResponse::SubAgentStart {
-                task_index,
-                task_count,
-                goal,
-            });
-        }
-        StreamEvent::SubAgentReasoning {
-            task_index,
-            task_count,
-            text,
-        } => {
-            tracing::info!(
-                task_index,
-                task_count,
-                len = text.len(),
-                "TUI→agent: forwarding subagent reasoning"
-            );
-            let _ = tx.send(AgentResponse::SubAgentReasoning {
-                task_index,
-                task_count,
-                text,
-            });
-        }
-        StreamEvent::SubAgentToolExec {
-            task_index,
-            task_count,
-            name,
-            args_json,
-        } => {
-            tracing::info!(
-                task_index,
-                task_count,
-                tool = %name,
-                "TUI→agent: forwarding subagent tool exec"
-            );
-            let _ = tx.send(AgentResponse::SubAgentToolExec {
-                task_index,
-                task_count,
-                name,
-                args_json,
-            });
-        }
-        StreamEvent::SubAgentFinish {
-            task_index,
-            task_count,
-            status,
-            duration_ms,
-            summary,
-            api_calls,
-            model,
-        } => {
-            tracing::info!(
-                task_index,
-                task_count,
-                status = %status,
-                "TUI→agent: forwarding subagent finish"
-            );
-            let _ = tx.send(AgentResponse::SubAgentFinish {
-                task_index,
-                task_count,
-                status,
-                duration_ms,
-                summary,
-                api_calls,
-                model,
-            });
-        }
-        StreamEvent::RunFinished { outcome } => {
-            tracing::info!(
-                state = outcome.state.as_str(),
-                exit_reason = outcome.exit_reason.as_str(),
-                "TUI→agent: forwarding run outcome"
-            );
-            let _ = tx.send(AgentResponse::RunFinished { outcome });
-        }
-        StreamEvent::Footer(text) => {
-            tracing::info!(len = text.len(), "TUI→agent: forwarding mutation footer");
-            let _ = tx.send(AgentResponse::Footer(text));
-        }
-        StreamEvent::Done => {
-            *saw_terminal_event = true;
-            tracing::info!("TUI→agent: forwarding done");
-            let _ = tx.send(AgentResponse::Done);
-            return true;
-        }
-        StreamEvent::Error(error) => {
-            *saw_terminal_event = true;
-            tracing::warn!(%error, "TUI→agent: forwarding error");
-            let _ = tx.send(AgentResponse::Error(error));
-            return true;
-        }
-        StreamEvent::Clarify {
-            question,
-            choices,
-            response_tx,
-        } => {
-            tracing::info!("TUI→agent: forwarding clarify request");
-            let _ = tx.send(AgentResponse::Clarify {
-                question,
-                choices,
-                response_tx,
-            });
-        }
-        StreamEvent::Approval {
-            command,
-            full_command,
-            reasons: _,
-            response_tx,
-        } => {
-            tracing::info!("TUI→agent: forwarding approval request");
-            let _ = tx.send(AgentResponse::Approval {
-                command,
-                full_command,
-                response_tx,
-            });
-        }
-        StreamEvent::SecretRequest {
-            var_name,
-            prompt,
-            is_sudo,
-            response_tx,
-        } => {
-            tracing::info!(var = %var_name, "TUI→agent: forwarding secret request");
-            let _ = tx.send(AgentResponse::SecretRequest {
-                var_name,
-                prompt,
-                is_sudo,
-                response_tx,
-            });
-        }
-        StreamEvent::HookEvent {
-            event,
-            context_json,
-        } => {
-            tracing::info!(hook = %event, "TUI→agent: handling hook event");
-            if let Ok(ctx) =
-                serde_json::from_str::<edgecrab_gateway::hooks::HookContext>(&context_json)
-            {
-                hook_registry.emit(&event, &ctx).await;
-            } else {
-                tracing::warn!(hook = %event, "TUI→agent: hook context parse failed");
-            }
-        }
-        StreamEvent::ContextPressure {
-            estimated_tokens,
-            threshold_tokens,
-        } => {
-            tracing::info!(
-                estimated_tokens,
-                threshold_tokens,
-                "TUI→agent: forwarding context pressure notice"
-            );
-            let _ = tx.send(AgentResponse::Notice(format_context_pressure_notice(
-                estimated_tokens,
-                threshold_tokens,
-            )));
-        }
-
-        // Steering events — update the TUI's pending steer counter and status bar.
-        // These events originate from the agent loop (conversation.rs) and are
-        // informational; no AgentResponse forwarding is needed.
-        StreamEvent::SteerPending { count } => {
-            tracing::debug!(count, "TUI←agent: steer pending notification");
-            // Pending count is managed optimistically in the TUI already —
-            // this event can be used to synchronise if needed in the future.
-        }
-
-        StreamEvent::SteerApplied { message } => {
-            tracing::info!(
-                len = message.len(),
-                "TUI←agent: steer applied — agent received new guidance"
-            );
-            let _ = tx.send(AgentResponse::Notice(format!(
-                "⛵ Steering applied ({})",
-                message.chars().take(72).collect::<String>()
-            )));
-        }
-    }
-
-    false
-}
-
-async fn forward_agent_stream_to_tui(
-    agent: Arc<Agent>,
-    mut chunk_rx: mpsc::UnboundedReceiver<edgecrab_core::agent::StreamEvent>,
-    mut agent_task: tokio::task::JoinHandle<Result<(), edgecrab_types::AgentError>>,
-    tx: mpsc::UnboundedSender<AgentResponse>,
-    hook_registry: Arc<edgecrab_gateway::hooks::HookRegistry>,
-) {
-    let mut saw_terminal_event = false;
-    let mut saw_token_event = false;
-    let mut saw_reasoning_event = false;
-    let mut agent_result: Option<
-        Result<Result<(), edgecrab_types::AgentError>, tokio::task::JoinError>,
-    > = None;
-
-    loop {
-        if let Some(join_result) = agent_result.take() {
-            while let Ok(event) = chunk_rx.try_recv() {
-                if forward_stream_event_to_tui(
-                    event,
-                    &tx,
-                    &hook_registry,
-                    &mut saw_token_event,
-                    &mut saw_reasoning_event,
-                    &mut saw_terminal_event,
-                )
-                .await
-                {
-                    return;
-                }
-            }
-
-            tracing::info!(
-                saw_terminal_event,
-                saw_token_event,
-                saw_reasoning_event,
-                ?join_result,
-                "TUI→agent: stream pump observed inner task completion"
-            );
-
-            if saw_terminal_event {
-                return;
-            }
-
-            match join_result {
-                Ok(Ok(())) => {
-                    let messages = agent.messages().await;
-                    if let Some(turn) = recover_latest_assistant_turn(&messages) {
-                        tracing::warn!(
-                            recovered_text_len = turn.text.len(),
-                            recovered_reasoning = turn.reasoning.is_some(),
-                            "TUI→agent: recovered assistant reply after missing terminal stream event"
-                        );
-                        if !saw_reasoning_event && let Some(reasoning) = turn.reasoning {
-                            let _ = tx.send(AgentResponse::Reasoning(reasoning));
-                        }
-                        if !saw_token_event && !turn.text.is_empty() {
-                            let _ = tx.send(AgentResponse::Token(turn.text));
-                        }
-                        let _ = tx.send(AgentResponse::Done);
-                    } else {
-                        let _ = tx.send(AgentResponse::Error(
-                            "Agent completed, but no assistant reply could be recovered for the TUI."
-                                .to_string(),
-                        ));
-                    }
-                }
-                Ok(Err(err)) => {
-                    let _ = tx.send(AgentResponse::Error(err.to_string()));
-                }
-                Err(err) => {
-                    let _ = tx.send(AgentResponse::Error(format!("Agent task failed: {err}")));
-                }
-            }
-            return;
-        }
-
-        tokio::select! {
-            join_result = &mut agent_task => {
-                agent_result = Some(join_result);
-            }
-            event = chunk_rx.recv() => {
-                match event {
-                    Some(event) => {
-                        if forward_stream_event_to_tui(
-                            event,
-                            &tx,
-                            &hook_registry,
-                            &mut saw_token_event,
-                            &mut saw_reasoning_event,
-                            &mut saw_terminal_event,
-                        )
-                        .await
-                        {
-                            return;
-                        }
-                    }
-                    None => {
-                        tracing::warn!(
-                            saw_terminal_event,
-                            saw_token_event,
-                            saw_reasoning_event,
-                            "TUI→agent: stream channel closed before terminal event"
-                        );
-                        if saw_terminal_event {
-                            return;
-                        }
-                        agent_result = Some((&mut agent_task).await);
-                    }
-                }
-            }
-        }
-    }
-}
-
 fn normalize_terminal_control_key(mut key: event::KeyEvent) -> event::KeyEvent {
     if key.modifiers.is_empty()
         && let KeyCode::Char(ch) = key.code
@@ -1014,16 +598,7 @@ fn log_level_shortcut(key: &event::KeyEvent) -> Option<LogLevelSetting> {
     }
 }
 
-fn selector_marker(is_selected: bool, accent: Color, bg: Option<Color>) -> Span<'static> {
-    let mut style = Style::default().fg(if is_selected { accent } else { Color::DarkGray });
-    if let Some(bg) = bg {
-        style = style.bg(bg);
-    }
-    if is_selected {
-        style = style.add_modifier(Modifier::BOLD);
-    }
-    Span::styled(if is_selected { "▶ " } else { "  " }, style)
-}
+use crate::picker_chrome::selector_marker;
 
 const SESSION_BROWSER_LIMIT: usize = 250;
 const SESSION_BROWSER_SEARCH_LIMIT: usize = 120;
@@ -1078,21 +653,6 @@ impl DetailPaneState {
     }
 }
 
-fn format_context_pressure_notice(estimated_tokens: usize, threshold_tokens: usize) -> String {
-    let ratio = if threshold_tokens == 0 {
-        0.0
-    } else {
-        (estimated_tokens as f32 / threshold_tokens as f32).clamp(0.0, 1.0)
-    };
-    let percent = (ratio * 100.0).round() as usize;
-    let width = 16usize;
-    let filled = ((ratio * width as f32).round() as usize).min(width);
-    let bar = format!("{}{}", "▰".repeat(filled), "▱".repeat(width - filled));
-    format!(
-        "⚠ Context {bar} {percent}% to compression ({estimated_tokens}/{threshold_tokens} tokens)"
-    )
-}
-
 fn format_run_outcome_notice(outcome: &edgecrab_types::RunOutcome) -> String {
     let headline = format!("{} {}", outcome.state.emoji(), outcome.state.headline());
 
@@ -1117,62 +677,6 @@ fn format_run_outcome_notice(outcome: &edgecrab_types::RunOutcome) -> String {
         ));
     }
     lines.join("\n")
-}
-
-fn run_outcome_badge_style(outcome: &edgecrab_types::RunOutcome) -> Style {
-    match outcome.state {
-        edgecrab_types::CompletionDecision::Completed => Style::default()
-            .fg(Color::Rgb(12, 28, 20))
-            .bg(Color::Rgb(108, 220, 155))
-            .add_modifier(Modifier::BOLD),
-        edgecrab_types::CompletionDecision::NeedsUserInput
-        | edgecrab_types::CompletionDecision::Blocked
-        | edgecrab_types::CompletionDecision::NeedsVerification => Style::default()
-            .fg(Color::Rgb(36, 24, 10))
-            .bg(Color::Rgb(255, 204, 92))
-            .add_modifier(Modifier::BOLD),
-        edgecrab_types::CompletionDecision::BudgetExhausted
-        | edgecrab_types::CompletionDecision::Incomplete => Style::default()
-            .fg(Color::Rgb(40, 22, 8))
-            .bg(Color::Rgb(255, 170, 90))
-            .add_modifier(Modifier::BOLD),
-        edgecrab_types::CompletionDecision::Interrupted
-        | edgecrab_types::CompletionDecision::Failed => Style::default()
-            .fg(Color::Rgb(38, 12, 12))
-            .bg(Color::Rgb(255, 120, 120))
-            .add_modifier(Modifier::BOLD),
-    }
-}
-
-fn goal_status_chip_style(status: edgecrab_core::GoalStatus) -> Style {
-    match status {
-        edgecrab_core::GoalStatus::Active => Style::default()
-            .fg(Color::Rgb(180, 230, 255))
-            .add_modifier(Modifier::BOLD),
-        edgecrab_core::GoalStatus::Paused => Style::default()
-            .fg(Color::Rgb(255, 210, 120))
-            .add_modifier(Modifier::BOLD),
-        edgecrab_core::GoalStatus::Done => Style::default()
-            .fg(Color::Rgb(140, 255, 180))
-            .add_modifier(Modifier::BOLD),
-        edgecrab_core::GoalStatus::Cleared => Style::default().fg(Color::Rgb(140, 140, 160)),
-    }
-}
-
-fn goal_flash_badge_style(flash: &str) -> Style {
-    if flash.contains("continuing") {
-        Style::default()
-            .fg(Color::Rgb(200, 230, 255))
-            .add_modifier(Modifier::BOLD)
-    } else if flash.contains("complete") {
-        Style::default()
-            .fg(Color::Rgb(140, 255, 180))
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(Color::Rgb(255, 210, 120))
-            .add_modifier(Modifier::BOLD)
-    }
 }
 
 fn format_task_status_progress_notice(preview: &str) -> String {
@@ -1314,12 +818,6 @@ fn format_loaded_hooks_report(hooks: &[edgecrab_gateway::hooks::LoadedHookInfo])
     lines.push(String::new());
     lines.push("Tip: use /hooks reload after editing a HOOK.yaml or handler script.".into());
     lines.join("\n")
-}
-
-fn context_usage_ratio(tokens: u64, context_window: Option<u64>) -> Option<f64> {
-    context_window
-        .filter(|&cw| cw > 0)
-        .map(|cw| (tokens as f64 / cw as f64).clamp(0.0, 1.0))
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -2248,6 +1746,7 @@ struct DisplayPreferences {
     streaming_enabled: bool,
     tool_progress_mode: ToolProgressMode,
     show_status_bar: bool,
+    activity_shelf_enabled: bool,
 }
 
 impl Default for DisplayPreferences {
@@ -2257,6 +1756,7 @@ impl Default for DisplayPreferences {
             streaming_enabled: true,
             tool_progress_mode: ToolProgressMode::Verbose,
             show_status_bar: true,
+            activity_shelf_enabled: true,
         }
     }
 }
@@ -2269,6 +1769,7 @@ fn load_display_preferences() -> DisplayPreferences {
             streaming_enabled: cfg.model.streaming && cfg.display.streaming,
             tool_progress_mode: cfg.display.tool_progress,
             show_status_bar: cfg.display.show_status_bar,
+            activity_shelf_enabled: cfg.display.activity_shelf,
         })
         .unwrap_or_default()
 }
@@ -2304,6 +1805,38 @@ fn persist_display_preferences(
     Ok(())
 }
 
+fn persist_shelf_details(state: &ShelfDetailsState) -> anyhow::Result<()> {
+    let mut config = edgecrab_core::AppConfig::load().unwrap_or_default();
+    config.display.shelf_details = state.to_config();
+    config.save()?;
+    Ok(())
+}
+
+fn load_shelf_details_from_config() -> ShelfDetailsState {
+    edgecrab_core::AppConfig::load()
+        .map(|cfg| ShelfDetailsState::from_config(&cfg.display.shelf_details))
+        .unwrap_or_default()
+}
+
+fn load_status_indicator_from_config() -> crate::status_indicator::StatusIndicatorStyle {
+    edgecrab_core::AppConfig::load()
+        .map(|cfg| {
+            crate::status_indicator::StatusIndicatorStyle::from_config(
+                &cfg.display.status_indicator,
+            )
+        })
+        .unwrap_or_default()
+}
+
+fn persist_status_indicator(
+    style: crate::status_indicator::StatusIndicatorStyle,
+) -> anyhow::Result<()> {
+    let mut config = edgecrab_core::AppConfig::load().unwrap_or_default();
+    config.display.status_indicator = style.as_str().into();
+    config.save()?;
+    Ok(())
+}
+
 fn persist_worktree_enabled_to_config(enabled: bool) -> anyhow::Result<()> {
     let mut config = edgecrab_core::AppConfig::load().unwrap_or_default();
     config.worktree = enabled;
@@ -2313,15 +1846,6 @@ fn persist_worktree_enabled_to_config(enabled: bool) -> anyhow::Result<()> {
 
 // ─── Spinner frames (braille rotation) ──────────────────────────────
 const SPINNER_FRAMES: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-const ASCII_SPINNER_FRAMES: &[&str] = &["-", "\\", "|", "/"];
-const VOICE_LISTEN_FRAMES: &[&str] = &[".  ", ".. ", "...", " ..", "  .", "   "];
-const VOICE_RECORD_FRAMES: &[&str] = &["*  ", "** ", "***", " **", "  *", "   "];
-const VOICE_PLAYBACK_FRAMES: &[&str] = &[">  ", ">> ", ">>>", " >>", "  >", "   "];
-
-/// Fixed display-column width for the thinking verb in the status bar.
-/// Padding to this width prevents horizontal jitter as words rotate during animation.
-/// Value = longest default verb ("hypothesizing" / "extrapolating" / "orchestrating" = 13).
-const VERB_DISPLAY_PAD: usize = 13;
 
 // THINKING_VERBS: the Theme now supplies thinking_verbs from SkinConfig
 // (defaulting to DEFAULT_THINKING_VERBS in theme.rs). This constant is kept
@@ -2363,149 +1887,6 @@ fn unicode_pad_right(s: &str, target_display_cols: usize) -> String {
         return s.to_string();
     }
     format!("{}{}", s, " ".repeat(target_display_cols - w))
-}
-
-fn phase_face(faces: &[String], idx: usize) -> &str {
-    if faces.is_empty() {
-        ""
-    } else {
-        faces[idx % faces.len()].as_str()
-    }
-}
-
-fn phase_wings(wings: &[[String; 2]], idx: usize) -> (&str, &str) {
-    if wings.is_empty() {
-        ("", "")
-    } else {
-        let wing = &wings[idx % wings.len()];
-        (wing[0].as_str(), wing[1].as_str())
-    }
-}
-
-fn format_phase_status(
-    spinner: &str,
-    verb: &str,
-    face: &str,
-    wings: (&str, &str),
-    elapsed_secs: u64,
-    early_label: &str,
-    long_label: &str,
-) -> String {
-    let verb_padded = unicode_pad_right(verb, VERB_DISPLAY_PAD);
-    let core = if face.is_empty() {
-        format!("{spinner} {verb_padded}")
-    } else {
-        format!("{spinner} {face} {verb_padded}")
-    };
-    let (left_wing, right_wing) = wings;
-    if elapsed_secs > 20 {
-        // Stall tier: add ⚠ prefix — likely network issue or rate-limit queue.
-        format!("{left_wing}{core} \u{26a0} {long_label} {elapsed_secs}s  ^C=stop{right_wing}")
-    } else if elapsed_secs > 10 {
-        format!("{left_wing}{core} {long_label} {elapsed_secs}s  ^C=stop{right_wing}")
-    } else if elapsed_secs > 3 {
-        format!("{left_wing}{core} {long_label} {elapsed_secs}s{right_wing}")
-    } else if elapsed_secs > 1 {
-        format!("{left_wing}{core} {early_label}{right_wing}")
-    } else {
-        format!("{left_wing}{core}{right_wing}")
-    }
-}
-
-/// Map wait elapsed seconds to an urgency color (FP46).
-/// - <15s: amber (normal wait)
-/// - 15-29s: orange (slow, pay attention)
-/// - ≥30s: red (stall — likely network issue or rate-limit queue)
-fn wait_urgency_color(elapsed_secs: u64) -> Color {
-    if elapsed_secs >= 30 {
-        Color::Rgb(239, 83, 80) // red — stall
-    } else if elapsed_secs >= 15 {
-        Color::Rgb(255, 140, 50) // orange — slow
-    } else {
-        Color::Rgb(255, 210, 120) // amber — normal
-    }
-}
-
-fn format_waiting_first_token_status(
-    theme: &Theme,
-    glyphs: TerminalGlyphProfile,
-    frame_idx: usize,
-    verb_idx: usize,
-    face_idx: usize,
-    elapsed_secs: u64,
-) -> String {
-    let spinner = compact_spinner_frame(frame_idx, glyphs);
-    let verb = if theme.waiting_verbs.is_empty() {
-        "awaiting"
-    } else {
-        &theme.waiting_verbs[verb_idx % theme.waiting_verbs.len()]
-    };
-    let face = phase_face(&theme.kaomoji_waiting, face_idx);
-    let wings = phase_wings(&theme.spinner_wings, face_idx);
-    format_phase_status(
-        spinner,
-        verb,
-        face,
-        wings,
-        elapsed_secs,
-        "first token",
-        "waiting for first token",
-    )
-}
-
-fn format_thinking_status(
-    theme: &Theme,
-    glyphs: TerminalGlyphProfile,
-    frame_idx: usize,
-    verb_idx: usize,
-    face_idx: usize,
-    elapsed_secs: u64,
-) -> String {
-    let spinner = compact_spinner_frame(frame_idx, glyphs);
-    let verb = if theme.thinking_verbs.is_empty() {
-        "thinking"
-    } else {
-        &theme.thinking_verbs[verb_idx % theme.thinking_verbs.len()]
-    };
-    let face = phase_face(&theme.kaomoji_thinking, face_idx);
-    let wings = phase_wings(&theme.spinner_wings, face_idx);
-    format_phase_status(
-        spinner,
-        verb,
-        face,
-        wings,
-        elapsed_secs,
-        "thinking",
-        "thinking",
-    )
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum VoicePresenceState {
-    Recording { elapsed_secs: u64, continuous: bool },
-    Speaking,
-    Listening,
-}
-
-fn format_voice_presence_badge(state: VoicePresenceState, frame_idx: usize) -> String {
-    match state {
-        VoicePresenceState::Recording {
-            elapsed_secs,
-            continuous,
-        } => {
-            let meter = VOICE_RECORD_FRAMES[frame_idx % VOICE_RECORD_FRAMES.len()];
-            let label = if continuous { "TALK" } else { "REC" };
-            format!(" {label} {meter} {elapsed_secs}s ")
-        }
-        VoicePresenceState::Speaking => {
-            let meter = VOICE_PLAYBACK_FRAMES[frame_idx % VOICE_PLAYBACK_FRAMES.len()];
-            format!(" SPEAK {meter} ")
-        }
-        VoicePresenceState::Listening => {
-            let meter = VOICE_LISTEN_FRAMES[frame_idx % VOICE_LISTEN_FRAMES.len()];
-            format!(" LISTEN {meter} ")
-        }
-    }
 }
 
 /// Truncate `s` to at most `max_cols` display columns (unicode-safe).
@@ -2553,142 +1934,6 @@ fn format_image_attachment_block(image_paths: &[&str]) -> String {
     )
 }
 
-/// A single line in the output area with a semantic role.
-#[derive(Clone)]
-pub struct OutputLine {
-    pub text: String,
-    pub role: OutputRole,
-    /// Pre-built ratatui spans (for tool-done lines with emoji).
-    /// When `Some`, these are used directly in render instead of re-parsing `text`.
-    pub prebuilt_spans: Option<Vec<Span<'static>>>,
-    /// Cached rendered lines (invalidated when text changes).
-    rendered: Option<Vec<Line<'static>>>,
-    /// Simplified cached lines for slow / remote terminals.
-    plain_rendered: Option<Vec<Line<'static>>>,
-}
-
-#[derive(Clone, Copy, PartialEq)]
-#[allow(dead_code)]
-pub enum OutputRole {
-    Assistant,
-    Tool,
-    System,
-    Reasoning,
-    Error,
-    User,
-}
-
-impl OutputLine {
-    fn invalidate_render_cache(&mut self) {
-        self.rendered = None;
-        self.plain_rendered = None;
-    }
-}
-
-/// Display state machine for the spinner/status area.
-#[derive(Clone, Debug)]
-enum DisplayState {
-    Idle,
-    AwaitingFirstToken {
-        frame: usize,
-        started: Instant,
-    },
-    Thinking {
-        frame: usize,
-        started: Instant,
-    },
-    Streaming {
-        token_count: u64,
-        /// Accumulated character count for word-count estimation in the status bar.
-        chars_written: u64,
-        /// Most-recently detected markdown heading (level 1 or 2) in the stream.
-        /// Updated whenever a `\n# ` or `\n## ` sequence completes. Gives users a
-        /// semantic progress landmark during long document generation.
-        current_section: Option<String>,
-        started: Instant,
-    },
-    #[allow(dead_code)]
-    ToolExec {
-        tool_call_id: String,
-        name: String,
-        args_json: String,
-        detail: Option<String>,
-        frame: usize,
-        started: Instant,
-    },
-    /// A background I/O operation is in progress (e.g. model discovery).
-    /// Shows a spinner with a label in the status bar. Does NOT block user input.
-    BgOp {
-        label: String,
-        frame: usize,
-        started: Instant,
-    },
-    /// The agent sent a clarifying question and is waiting for the user to reply.
-    ///
-    /// WHY separate from Idle: when `is_processing` is true but the state is
-    /// Idle, the status bar shows nothing — users think the agent hung.  This
-    /// variant lets `render_status_bar` display "❓ Waiting for reply" so the
-    /// interaction intent is always clear even before the user reads the question.
-    WaitingForClarify,
-    /// The agent is requesting risk-graduated approval before executing a command.
-    ///
-    /// WHY separate: mirrors `WaitingForClarify` but routes keyboard input to the
-    /// approval overlay (← → navigate choices, Enter confirm) rather than the text
-    /// input area.  When active, the main input is locked and keybindings are
-    /// redirected here.
-    WaitingForApproval {
-        /// Display label (full command — no longer truncated).
-        command: String,
-        /// Full command string (kept for backward compatibility; identical to `command`).
-        full_command: String,
-        /// Currently highlighted choice index (0–3 in [Once, Session, Always, Deny]).
-        selected: usize,
-        /// Whether the "view" mode is active (legacy — kept for key-handler symmetry).
-        show_full: bool,
-        /// Vertical scroll offset for long commands that exceed the visible area.
-        scroll_offset: u16,
-    },
-    /// The agent is requesting a secret value from the user (e.g. an API key
-    /// or sudo password).
-    ///
-    /// WHY separate: a masked-input overlay (`•••`) must replace the normal
-    /// textarea so the secret never appears in scrollback. Keybindings are
-    /// intercepted and the buffer is cleared immediately after sending.
-    SecretCapture {
-        /// Variable name or credential label shown in the overlay title.
-        var_name: String,
-        /// Human-readable prompt displayed inside the overlay.
-        prompt: String,
-        /// Whether this is a privilege-escalation (sudo) prompt — affects colour.
-        is_sudo: bool,
-        /// Currently typed buffer (never stored in history or output).
-        buffer: String,
-    },
-    /// Local inline configuration prompt used by the gateway browser.
-    ValueCapture {
-        title: String,
-        prompt: String,
-        placeholder: String,
-        masked: bool,
-        buffer: String,
-        action: ValueCaptureAction,
-    },
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum ValueCaptureAction {
-    BindAddress,
-    HomeChannel(String),
-    AllowedUsers(String),
-    PrimaryField(String),
-    ProfileCreate,
-    ProfileRename(String),
-    ProfileDeleteConfirm(String),
-    ProfileAlias(String),
-    ProfileExport(String),
-    ProfileImport,
-}
-
 /// Result payload delivered back to the main loop via `AgentResponse::BgOp`
 /// once a spawned background task completes.
 enum BackgroundOpResult {
@@ -2703,10 +1948,14 @@ enum BackgroundOpResult {
     GatewayCommandDone { report: String },
     /// Gateway diagnostics ready — open the full-screen overlay.
     DiagnoseReady { report: String },
-    /// Provider swap succeeded — update model name and persist config.
-    ModelSwitchDone { model: String },
     /// Context compression finished — show summary message.
     CompressDone { msg: String },
+    /// Model change finished — update model + show confirmation.
+    ModelChangeDone {
+        outcome: edgecrab_core::ModelChangeOutcome,
+    },
+    /// CLI → platform session handoff finished — exit CLI.
+    SessionHandoffDone { message: String },
 }
 
 /// Tab-completion overlay state.
@@ -2829,31 +2078,6 @@ impl VimPending {
     }
 }
 
-/// A single model entry for the model selector overlay.
-#[derive(Clone)]
-struct ModelEntry {
-    /// Provider/model display name (e.g. "openai/gpt-4o")
-    display: String,
-    /// Provider name (e.g. "openai")
-    provider: String,
-    /// Model name (e.g. "gpt-4o")
-    model_name: String,
-    /// Supplemental searchable/display text for selectors.
-    detail: String,
-}
-
-impl FuzzyItem for ModelEntry {
-    fn primary(&self) -> &str {
-        &self.display
-    }
-    fn secondary(&self) -> &str {
-        &self.detail
-    }
-    fn tag(&self) -> &str {
-        &self.provider
-    }
-}
-
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum ModelSelectorTarget {
     Primary,
@@ -2866,113 +2090,6 @@ enum MoaReferenceSelectorMode {
     EditRoster,
     AddExpert,
     RemoveExpert,
-}
-
-fn discovery_source_label(source: DiscoverySource) -> &'static str {
-    match source {
-        DiscoverySource::Live => "live discovery",
-        DiscoverySource::Cache => "cached discovery",
-        DiscoverySource::Static => "static catalog",
-    }
-}
-
-fn discovery_availability_short(availability: DiscoveryAvailability) -> String {
-    match availability {
-        DiscoveryAvailability::Supported => "live discovery".to_string(),
-        DiscoveryAvailability::FeatureGated(feature) => {
-            format!("live discovery gated by `{feature}`")
-        }
-        DiscoveryAvailability::Unsupported => "static catalog".to_string(),
-    }
-}
-
-fn discovery_availability_detail(provider: &str, availability: DiscoveryAvailability) -> String {
-    match availability {
-        DiscoveryAvailability::Supported => {
-            format!("{provider} supports live discovery in this build.")
-        }
-        DiscoveryAvailability::FeatureGated(feature) => format!(
-            "{provider} supports live discovery, but this build falls back to the embedded catalog because `{feature}` is disabled."
-        ),
-        DiscoveryAvailability::Unsupported => {
-            format!("{provider} is served from the embedded catalog.")
-        }
-    }
-}
-
-fn build_model_selector_entries(
-    grouped: &[(String, Vec<String>)],
-    dynamic_lookup: Option<&BTreeMap<String, (DiscoverySource, BTreeSet<String>)>>,
-) -> Vec<ModelEntry> {
-    let mut all_models = Vec::new();
-    for (provider, models) in grouped {
-        for model in models {
-            let detail = match dynamic_lookup.and_then(|lookup| lookup.get(provider)) {
-                Some((source, discovered_models)) if discovered_models.contains(model) => {
-                    format!("{model} · {}", discovery_source_label(*source))
-                }
-                Some((DiscoverySource::Static, _)) => {
-                    format!(
-                        "{model} · {}",
-                        discovery_source_label(DiscoverySource::Static)
-                    )
-                }
-                Some(_) => format!("{model} · catalog fallback"),
-                None => format!(
-                    "{model} · {}",
-                    discovery_source_label(DiscoverySource::Static)
-                ),
-            };
-            all_models.push(ModelEntry {
-                display: format!("{provider}/{model}"),
-                provider: provider.clone(),
-                detail,
-                model_name: model.clone(),
-            });
-        }
-    }
-    all_models.sort_by(|left, right| left.display.cmp(&right.display));
-    all_models
-}
-
-fn build_models_inventory_report(
-    providers: &[(String, Vec<String>)],
-    current_model: &str,
-    filter: &str,
-) -> String {
-    let current_provider = current_model
-        .split_once('/')
-        .map(|(provider, _)| normalize_discovery_provider(provider));
-    let discovery_statuses: BTreeMap<String, DiscoveryAvailability> =
-        discovery_provider_statuses().into_iter().collect();
-    let mut text = if filter.is_empty() {
-        "Model inventory (* = current provider):\n\n".to_string()
-    } else {
-        format!("Providers matching '{filter}' (* = current provider):\n\n")
-    };
-
-    for (provider, models) in providers {
-        let label = ModelCatalog::provider_label(provider);
-        let marker = if current_provider.as_deref() == Some(provider.as_str()) {
-            " *"
-        } else {
-            ""
-        };
-        let availability = discovery_statuses
-            .get(provider)
-            .copied()
-            .unwrap_or(DiscoveryAvailability::Unsupported);
-        text.push_str(&format!(
-            "  {provider:<12} {label:<22} {:>3} models  {}{marker}\n",
-            models.len(),
-            discovery_availability_short(availability),
-        ));
-    }
-
-    text.push_str(
-        "\nUse /models <provider> for the full list, /models refresh [provider|all] to refresh live inventories, or /model to open the selector.",
-    );
-    text
 }
 
 fn build_provider_models_report(
@@ -3268,6 +2385,13 @@ struct DetailFullscreenState {
     scroll: u16,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+enum DocumentOverlayKind {
+    #[default]
+    Generic,
+    Web,
+}
+
 #[derive(Clone, Debug)]
 struct DocumentOverlayState {
     title: String,
@@ -3276,6 +2400,9 @@ struct DocumentOverlayState {
     icon: String,
     accent: Color,
     scroll: u16,
+    kind: DocumentOverlayKind,
+    /// Active `/web` subcommand — used for refresh (`r`) and shortcut navigation.
+    web_sub: Option<String>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -4697,6 +3824,8 @@ pub struct App {
     /// session spend, so the indicator reflects current context pressure.
     total_tokens: u64,
     session_cost: f64,
+    /// Session cost at turn start — used for per-turn spawn diff deltas.
+    turn_baseline_cost: f64,
     /// Agent for LLM dispatch
     agent: Option<Arc<Agent>>,
     /// Tokio runtime handle for spawning async tasks from the sync TUI loop
@@ -4711,8 +3840,6 @@ pub struct App {
     progress_seq: u64,
     /// Active isolated `/background` sessions keyed by task ID.
     background_tasks_active: std::collections::HashMap<String, BackgroundTaskStatus>,
-    /// Active foreground tool calls keyed by tool_call_id for parallel status summaries.
-    active_tools: std::collections::HashMap<String, ActiveToolStatus>,
     /// Active delegated child tasks for the foreground agent turn.
     active_subagents: std::collections::HashMap<usize, ActiveSubagentStatus>,
     /// Channel for cron job completion notifications from the background ticker.
@@ -4750,6 +3877,8 @@ pub struct App {
     shadow_judge_enabled: bool,
     /// Queued prompts to run after the current one completes
     prompt_queue: Vec<String>,
+    /// Index of queued prompt being edited (Hermes `queueEditIdx`); `None` = browse-only panel.
+    queue_edit_idx: Option<usize>,
     /// Cached Ralph-loop chip for the status bar (refreshed on goal mutations).
     goal_status_chip: Option<edgecrab_core::GoalStatusChip>,
     /// Ephemeral flash line after judge verdict (↻ continuing / ✓ done / ⏸ paused).
@@ -4786,6 +3915,8 @@ pub struct App {
     model_selector_target: ModelSelectorTarget,
     /// True while background live model discovery is refreshing the selector.
     model_selector_refresh_in_flight: bool,
+    /// Disconnect confirmation stage (Hermes modelPicker ^d).
+    model_selector_stage: ModelPickerStage,
     /// Vision-model selector overlay (activated by `/vision_model`)
     vision_model_selector: FuzzySelector<ModelEntry>,
     /// Image-model selector overlay (activated by `/image_model`)
@@ -4876,6 +4007,12 @@ pub struct App {
     stream_selector_active: bool,
     /// Which row is highlighted in the stream picker (0=ON, 1=OFF)
     stream_selector_cursor: usize,
+    /// In-TUI web configurator (`/web`).
+    web_setup: crate::web_setup_tui::WebSetupTui,
+    /// In-TUI OpenAI-compat proxy setup (`/proxy`).
+    proxy_setup: crate::proxy_setup_tui::ProxySetupTui,
+    /// In-TUI xAI Grok OAuth (`/login grok`).
+    grok_auth: crate::grok_auth_tui::GrokAuthTui,
     /// Status bar picker overlay (activated by `/statusbar` with no args)
     statusbar_selector_active: bool,
     /// Which row is highlighted in the statusbar picker (0=Visible, 1=Hidden)
@@ -4950,6 +4087,9 @@ pub struct App {
     /// When the agent is waiting for a clarifying answer, this holds the
     /// oneshot sender used to relay the user's next input back to the tool.
     clarify_pending_tx: Option<tokio::sync::oneshot::Sender<String>>,
+    /// Pending clarify question — used to flush abandoned prompts (Hermes parity).
+    clarify_pending_question: Option<String>,
+    clarify_pending_choices: Option<Vec<String>>,
     /// When the agent is waiting for an approval choice, this holds the
     /// oneshot sender used to relay the user's `ApprovalChoice` back to the tool.
     /// The visual state is in `DisplayState::WaitingForApproval`.
@@ -5011,6 +4151,29 @@ pub struct App {
     hidden_tool_calls: HashSet<String>,
     /// Signatures already rendered in the current turn for `tool_progress: new`.
     seen_tool_signatures: HashSet<String>,
+    /// In-flight background process monitor lines (`run_process` tail updates).
+    bg_process_lines: std::collections::HashMap<String, BgProcessLine>,
+    /// Turn-scoped live activity for the activity shelf.
+    turn_activity: TurnActivityState,
+    shelf_coalescer: ShelfCoalescer,
+    /// `/tail` overlay for background process output.
+    process_tail_panel: ProcessTailPanel,
+    /// One-time shelf onboarding tip after the first long tool in a session.
+    shelf_onboarding_shown: bool,
+    /// Per-section shelf disclosure (Hermes `/details`).
+    shelf_details: ShelfDetailsState,
+    /// Status-bar busy indicator style (Hermes `/indicator`).
+    status_indicator: crate::status_indicator::StatusIndicatorStyle,
+    /// Interactive `/details` picker overlay.
+    details_panel: DetailsPanel,
+    /// Cached transcript line heights for scroll layout (Hermes virtualHeights parity).
+    transcript_heights: crate::transcript_heights::TranscriptHeightCache,
+    /// Full-screen delegate monitor (`/agents`).
+    agents_overlay: AgentsOverlay,
+    /// Completed delegate snapshots for `/agents` history pane.
+    spawn_history: SpawnHistory,
+    /// Hermes `agentsNudgedThisTurn` — at most one `/agents` hint per turn.
+    agents_nudged_this_turn: bool,
     /// Active local microphone recording session for push-to-talk voice input.
     voice_recording: Option<VoiceRecordingSession>,
     /// Configured push-to-talk key binding loaded from config.yaml.
@@ -5061,6 +4224,13 @@ struct PendingToolLine {
     args_json: String,
     line_idx: usize,
     edit_snapshot: Option<LocalEditSnapshot>,
+    /// Verbose-off dim indicator line (removed on ToolDone).
+    minimal_indicator: bool,
+}
+
+/// Tracks a background process output line for in-place tail updates.
+struct BgProcessLine {
+    line_idx: usize,
 }
 
 /// Tracks a sub-agent placeholder output line so it can be updated in-place.
@@ -5095,10 +4265,32 @@ enum AgentResponse {
     Token(String),
     /// A non-token runtime notice to show as a system line.
     Notice(String),
+    /// Ephemeral shelf activity feed (compression, approval, bg process) — not duplicated in transcript.
+    ActivityFeed(String),
+    /// Agent-reported count of steering events waiting for injection.
+    SteerPending {
+        count: usize,
+    },
+    /// Throttled tail from a background process (after `run_process` returns).
+    BackgroundProcessTail {
+        process_id: String,
+        command_preview: String,
+        tail: String,
+    },
+    BackgroundProcessFinished {
+        process_id: String,
+        exit_code: Option<i32>,
+    },
     /// Deterministic direct-tool output from the TUI (for voice commands).
     DirectToolOutput(String),
     /// A reasoning / think-mode delta or full reasoning block.
     Reasoning(String),
+    /// The model is drafting a tool call before execution starts.
+    ToolGenerating {
+        tool_call_id: String,
+        name: String,
+        partial_args: String,
+    },
     /// A tool execution has started — show tool name + preview in status bar.
     ToolExec {
         tool_call_id: String,
@@ -5124,6 +4316,9 @@ enum AgentResponse {
         task_index: usize,
         task_count: usize,
         goal: String,
+        depth: u32,
+        agent_id: String,
+        parent_id: Option<String>,
     },
     SubAgentReasoning {
         task_index: usize,
@@ -5258,39 +4453,6 @@ enum AgentResponse {
     },
 }
 
-#[derive(Clone, Debug)]
-struct BackgroundTaskStatus {
-    preview: String,
-    last_progress: Option<String>,
-    last_seq: u64,
-}
-
-#[derive(Clone, Debug)]
-struct ActiveSubagentStatus {
-    task_index: usize,
-    task_count: usize,
-    goal: String,
-    last_detail: Option<String>,
-    last_seq: u64,
-}
-
-#[derive(Clone, Debug)]
-struct ActiveToolStatus {
-    name: String,
-    args_json: String,
-    last_detail: Option<String>,
-    started_at: Instant,
-    last_seq: u64,
-}
-
-#[derive(Clone, Debug)]
-struct ActiveToolSummary {
-    verb: String,
-    icon: String,
-    detail: String,
-    elapsed_secs: u64,
-}
-
 fn background_progress_text(task_num: u64, event: &edgecrab_core::StreamEvent) -> Option<String> {
     match event {
         edgecrab_core::StreamEvent::ToolExec {
@@ -5308,6 +4470,9 @@ fn background_progress_text(task_num: u64, event: &edgecrab_core::StreamEvent) -
             task_index,
             task_count,
             goal,
+            depth: _,
+            agent_id: _,
+            parent_id: _,
         } => Some(format!(
             "↳ bg#{task_num} [{}/{}] delegate: {}",
             task_index + 1,
@@ -5356,131 +4521,6 @@ fn background_progress_text(task_num: u64, event: &edgecrab_core::StreamEvent) -
     }
 }
 
-fn format_background_status_summary(
-    active: &std::collections::HashMap<String, BackgroundTaskStatus>,
-) -> Option<String> {
-    let current = active.values().max_by_key(|status| status.last_seq)?;
-    let detail = current
-        .last_progress
-        .as_deref()
-        .filter(|text| !text.trim().is_empty())
-        .unwrap_or(&current.preview);
-    Some(edgecrab_core::safe_truncate(detail, 58).to_string())
-}
-
-fn format_subagent_status_summary(
-    active: &std::collections::HashMap<usize, ActiveSubagentStatus>,
-) -> Option<String> {
-    let current = active.values().max_by_key(|status| status.last_seq)?;
-    let detail = current
-        .last_detail
-        .as_deref()
-        .filter(|text| !text.trim().is_empty())
-        .map(|text| edgecrab_core::safe_truncate(text, 52).to_string())
-        .unwrap_or_else(|| edgecrab_core::safe_truncate(&current.goal, 52).to_string());
-    Some(format!(
-        "[{}/{}] {}",
-        current.task_index + 1,
-        current.task_count,
-        detail
-    ))
-}
-
-fn latest_active_tool_entry(
-    active: &std::collections::HashMap<String, ActiveToolStatus>,
-) -> Option<(&String, &ActiveToolStatus)> {
-    active.iter().max_by_key(|(_, status)| status.last_seq)
-}
-
-fn summarize_active_tools(
-    active: &std::collections::HashMap<String, ActiveToolStatus>,
-) -> Option<ActiveToolSummary> {
-    let (_, current) = latest_active_tool_entry(active)?;
-    let mut detail = current
-        .last_detail
-        .as_deref()
-        .filter(|text| !text.trim().is_empty())
-        .map(|text| edgecrab_core::safe_truncate(text.trim(), 52).to_string())
-        .unwrap_or_else(|| {
-            edgecrab_core::safe_truncate(
-                &tool_status_preview(&current.name, &current.args_json),
-                52,
-            )
-            .to_string()
-        });
-    let count = active.len();
-    if count > 1 {
-        detail.push_str(&format!("  +{} more", count - 1));
-    }
-    let elapsed_secs = active
-        .values()
-        .map(|status| status.started_at.elapsed().as_secs())
-        .max()
-        .unwrap_or(0);
-    Some(ActiveToolSummary {
-        verb: if count > 1 {
-            "running".into()
-        } else {
-            tool_action_verb(&current.name).into()
-        },
-        icon: tool_icon(&current.name).into(),
-        detail,
-        elapsed_secs,
-    })
-}
-
-// ── Picker overlay shared helpers ────────────────────────────────────────────
-
-/// Calculate a centered popup rectangle clamped to the available terminal area.
-fn popup_rect(area: Rect, w: u16, h: u16) -> Rect {
-    let pw = w.min(area.width);
-    let ph = h.min(area.height);
-    Rect {
-        x: area.x + area.width.saturating_sub(pw) / 2,
-        y: area.y + area.height.saturating_sub(ph) / 2,
-        width: pw,
-        height: ph,
-    }
-}
-
-/// Standard 3-section vertical layout for picker overlays:
-/// `[0]` header (3 rows), `[1]` body (min), `[2]` help bar (1 row).
-fn picker_three_layout(popup: Rect) -> std::rc::Rc<[Rect]> {
-    Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
-        .split(popup)
-}
-
-/// Split a body area into `[0]` list pane and `[1]` detail pane.
-fn picker_two_cols(body: Rect, list_pct: u16) -> std::rc::Rc<[Rect]> {
-    Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(list_pct),
-            Constraint::Percentage(100u16.saturating_sub(list_pct)),
-        ])
-        .split(body)
-}
-
-/// Standard help-bar `Line` for picker overlays: `↑↓ browse  Tab next  Enter apply  Esc cancel`.
-fn picker_help_line(accent: Color) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(" ↑↓ ", Style::default().fg(accent)),
-        Span::styled("browse  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Tab ", Style::default().fg(accent)),
-        Span::styled("next  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Enter ", Style::default().fg(accent)),
-        Span::styled("apply  ", Style::default().fg(Color::DarkGray)),
-        Span::styled("Esc ", Style::default().fg(accent)),
-        Span::styled("cancel", Style::default().fg(Color::DarkGray)),
-    ])
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 
 impl App {
@@ -5496,9 +4536,282 @@ impl App {
         self.pending_tool_lines.clear();
         self.pending_subagent_lines.clear();
         self.hidden_tool_calls.clear();
-        self.active_tools.clear();
         self.seen_tool_signatures.clear();
         self.display_state = DisplayState::Idle;
+        self.turn_activity.reset_turn();
+        self.agents_nudged_this_turn = false;
+        self.clear_clarify_pending();
+    }
+
+    fn restore_clarify_input_border(&mut self) {
+        self.textarea.set_block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(self.theme.input_border)
+                .title(format!(" {} ", self.theme.prompt_symbol.trim())),
+        );
+    }
+
+    fn clear_clarify_pending(&mut self) {
+        self.clarify_pending_tx = None;
+        self.clarify_pending_question = None;
+        self.clarify_pending_choices = None;
+        self.restore_clarify_input_border();
+    }
+
+    /// Hermes `flushAbandonedClarify` — persist dismissed clarify prompts.
+    fn flush_abandoned_clarify(&mut self, reason: &str) {
+        let Some(question) = self.clarify_pending_question.take() else {
+            return;
+        };
+        let choices = self.clarify_pending_choices.take();
+        let text = format_abandoned_clarify(&question, choices.as_deref(), reason);
+        self.push_output(text, OutputRole::System);
+        self.clarify_pending_tx = None;
+        if matches!(self.display_state, DisplayState::WaitingForClarify) {
+            self.display_state = DisplayState::AwaitingFirstToken {
+                frame: 0,
+                started: Instant::now(),
+            };
+            self.turn_activity.set_phase(ShelfPhase::AwaitingFirstToken);
+            self.restore_clarify_input_border();
+        }
+    }
+
+    fn maybe_agents_nudge(&mut self) {
+        if self.agents_overlay.is_active() {
+            return;
+        }
+        stream_bridge::maybe_agents_nudge(
+            &mut self.turn_activity,
+            &mut self.agents_nudged_this_turn,
+        );
+    }
+
+    fn sync_turn_activity_charms(&mut self) {
+        self.turn_activity
+            .set_long_run_charms(self.theme.long_run_hints.clone());
+    }
+
+    fn maybe_shelf_onboarding(&mut self) {
+        self.turn_activity
+            .maybe_onboarding_hint(&mut self.shelf_onboarding_shown);
+    }
+
+    fn note_shelf_activity(&mut self) {
+        if self.turn_activity.enabled && self.shelf_coalescer.should_paint(Instant::now()) {
+            self.needs_redraw = true;
+        }
+    }
+
+    fn shelf_compact_mode(&self) -> bool {
+        self.compact_status_bar
+            || self.last_terminal_width < 60
+            || self.terminal_ui_profile == TerminalUiProfile::BasicCompat
+    }
+
+    fn shelf_spinner_frame(&self) -> usize {
+        match &self.display_state {
+            DisplayState::AwaitingFirstToken { frame, .. }
+            | DisplayState::Thinking { frame, .. }
+            | DisplayState::ToolExec { frame, .. }
+            | DisplayState::BgOp { frame, .. } => *frame,
+            _ => 0,
+        }
+    }
+
+    fn shelf_area_height(&self) -> u16 {
+        if !self.turn_activity.enabled || !self.is_processing {
+            return 0;
+        }
+        estimate_shelf_lines(
+            &self.turn_activity,
+            &self.shelf_details,
+            self.shelf_compact_mode(),
+            self.tool_progress_mode == ToolProgressMode::Verbose,
+            self.is_processing,
+        )
+    }
+
+    fn open_process_tail_panel(&mut self, process_id: &str) -> String {
+        let Some(agent) = self.agent.clone() else {
+            return "No agent configured.".into();
+        };
+        if process_id.trim().is_empty() {
+            let table = agent.process_table();
+            let listing = self.rt_handle.block_on(async move {
+                let all = table.list_all().await;
+                if all.is_empty() {
+                    return "No background processes.".into();
+                }
+                let lines: Vec<String> = all
+                    .iter()
+                    .map(|rec| format!("  {} — {:?}  {}", rec.process_id, rec.status, rec.command))
+                    .collect();
+                format!(
+                    "Background processes:\n{}\n\nUsage: /tail <process_id>",
+                    lines.join("\n")
+                )
+            });
+            return listing;
+        }
+        let pid = process_id.to_string();
+        let table = agent.process_table();
+        let result = self.rt_handle.block_on(async move {
+            table
+                .get_output_tail_chars(&pid, crate::process_tail_panel::TAIL_PANEL_MAX_CHARS)
+                .await
+                .map(|(body, _, status, exit_code)| (body, format!("{status:?}"), exit_code))
+        });
+        match result {
+            Some((body, status, exit_code)) => {
+                self.process_tail_panel.set_content(
+                    process_id.to_string(),
+                    body,
+                    &status,
+                    exit_code,
+                );
+                self.needs_redraw = true;
+                format!("Opened tail for `{process_id}` (Esc to close)")
+            }
+            None => format!("Process `{process_id}` not found. Try `/tail` to list."),
+        }
+    }
+
+    fn open_agents_overlay(&mut self) {
+        self.agents_overlay.open();
+        self.needs_redraw = true;
+    }
+
+    fn open_agents_replay(&mut self, history_index: usize) {
+        self.agents_overlay.open_replay(history_index);
+        self.needs_redraw = true;
+    }
+
+    fn agents_delegate_rows(&self) -> Vec<DelegateRow> {
+        let now = Instant::now();
+        let mut rows = if self.agents_overlay.history_index == 0 {
+            build_delegate_rows(&self.turn_activity, now)
+        } else if let Some(snapshot) = self
+            .spawn_history
+            .turns()
+            .nth(self.agents_overlay.history_index - 1)
+        {
+            build_delegate_rows_from_snapshot(snapshot)
+        } else {
+            build_delegate_rows(&self.turn_activity, now)
+        };
+        sort_delegate_rows_by(&mut rows, self.agents_overlay.sort);
+        rows
+    }
+
+    fn render_agents_overlay_panel(&self, frame: &mut Frame, area: Rect) {
+        let rows = self.agents_delegate_rows();
+        render_agents_overlay(
+            frame,
+            area,
+            &AgentsRenderParams {
+                overlay: &self.agents_overlay,
+                rows: &rows,
+                history: &self.spawn_history,
+                theme: &self.theme,
+                total_tool_calls: self.turn_activity.subagent_tool_total(),
+            },
+        );
+    }
+
+    /// Queue a STOP steer from `/agents` — stop after the current tool (Hermes interrupt parity).
+    fn send_stop_steer_from_agents_overlay(&mut self) {
+        if !self.is_processing {
+            self.push_output(
+                "No active agent turn — nothing to stop.".to_string(),
+                OutputRole::System,
+            );
+            return;
+        }
+        let kind = edgecrab_core::SteeringKind::Stop;
+        let text = "stop after current tool (/agents)".to_string();
+        let send_result = if let Some(agent) = self.agent.as_ref() {
+            Some(agent.send_steering(edgecrab_core::SteeringEvent::new(
+                kind.clone(),
+                text.clone(),
+            )))
+        } else {
+            self.steer_tx.as_ref().map(|tx| {
+                tx.send(edgecrab_core::SteeringEvent::new(
+                    kind.clone(),
+                    text.clone(),
+                ))
+            })
+        };
+        match send_result {
+            Some(Ok(())) => {
+                self.push_output(
+                    "⛵ STOP steer queued from /agents".to_string(),
+                    OutputRole::System,
+                );
+            }
+            Some(Err(_)) => {
+                self.steer_tx = None;
+                self.push_output(
+                    "⚠ Steer channel closed — use Ctrl+C to interrupt.".to_string(),
+                    OutputRole::Error,
+                );
+            }
+            None => {
+                self.push_output(
+                    "⚠ No active agent for steering.".to_string(),
+                    OutputRole::Error,
+                );
+            }
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Interrupt one or more running subagents from `/agents` (Hermes `subagent.interrupt`).
+    fn interrupt_subagents_from_agents_overlay(&mut self, agent_ids: &[String]) {
+        if self.agents_overlay.history_index > 0 {
+            self.push_output(
+                "replay mode — interrupt disabled".to_string(),
+                OutputRole::System,
+            );
+            return;
+        }
+        let mut found = 0usize;
+        for id in agent_ids {
+            if edgecrab_core::interrupt_subagent(id) {
+                found += 1;
+            }
+        }
+        if found == 0 {
+            self.push_output(
+                format!(
+                    "no running subagent matched ({} requested)",
+                    agent_ids.len()
+                ),
+                OutputRole::System,
+            );
+        } else {
+            self.push_output(
+                format!("⛔ interrupt queued for {found} subagent(s)"),
+                OutputRole::System,
+            );
+        }
+        self.needs_redraw = true;
+    }
+
+    /// Toggle global delegation spawn pause from `/agents` (Hermes `delegation.pause`).
+    fn toggle_spawn_pause_from_agents_overlay(&mut self) {
+        let paused = edgecrab_tools::delegation_state::toggle_spawn_paused();
+        self.push_output(
+            if paused {
+                "⏸ delegation spawning paused — running subagents continue".to_string()
+            } else {
+                "▶ delegation spawning resumed".to_string()
+            },
+            OutputRole::System,
+        );
+        self.needs_redraw = true;
     }
 
     fn cancel_active_request(&mut self) -> bool {
@@ -5516,134 +4829,6 @@ impl App {
         had_active_request
     }
 
-    // ── Mission Steering helpers ───────────────────────────────────────────
-
-    /// Open the compact steering overlay, resetting its input and kind.
-    fn open_steering_overlay(&mut self) {
-        // Clear any previous text in the steering textarea.
-        let lines: Vec<String> = self
-            .steering_textarea
-            .lines()
-            .iter()
-            .map(|l| l.to_string())
-            .collect();
-        for _ in 0..lines.len() {
-            self.steering_textarea
-                .move_cursor(tui_textarea::CursorMove::End);
-            self.steering_textarea.delete_line_by_head();
-        }
-        self.steering_overlay_active = true;
-        self.needs_redraw = true;
-    }
-
-    /// Handle a key event while the steering overlay is open.
-    fn handle_steering_overlay_key(&mut self, key: event::KeyEvent) {
-        match (key.modifiers, key.code) {
-            // Esc or Ctrl+S (toggle) — close without sending
-            (_, KeyCode::Esc) | (KeyModifiers::CONTROL, KeyCode::Char('s')) => {
-                self.steering_overlay_active = false;
-                self.needs_redraw = true;
-            }
-            // Tab — cycle SteeringKind: Hint → Redirect → Stop → Hint
-            (_, KeyCode::Tab) => {
-                use edgecrab_core::SteeringKind;
-                self.steering_kind = match self.steering_kind {
-                    SteeringKind::Hint => SteeringKind::Redirect,
-                    SteeringKind::Redirect => SteeringKind::Stop,
-                    SteeringKind::Stop => SteeringKind::Hint,
-                };
-                self.needs_redraw = true;
-            }
-            // Enter — send the steer and close
-            (_, KeyCode::Enter) => {
-                self.send_steer_from_overlay();
-            }
-            // All other keys — route to the steering textarea
-            _ => {
-                self.steering_textarea.input(key);
-                self.needs_redraw = true;
-            }
-        }
-    }
-
-    /// Send the steer composed in the overlay, then close it.
-    fn send_steer_from_overlay(&mut self) {
-        let text: String = self.steering_textarea.lines().join("\n");
-        let text = text.trim().to_string();
-        self.steering_overlay_active = false;
-        self.needs_redraw = true;
-
-        if text.is_empty() {
-            return;
-        }
-
-        let kind = self.steering_kind.clone();
-
-        // EC-04: agent is idle → treat as new user message promoted with tag.
-        if !self.is_processing {
-            let promoted = format!(
-                "[⛵ STEER/{kind}] {text}",
-                kind = match &kind {
-                    edgecrab_core::SteeringKind::Hint => "HINT",
-                    edgecrab_core::SteeringKind::Redirect => "REDIRECT",
-                    edgecrab_core::SteeringKind::Stop => "STOP",
-                },
-            );
-            self.push_output(
-                "⛵ Steering → sent as new message (agent idle)".to_string(),
-                OutputRole::System,
-            );
-            self.process_input(&promoted);
-            return;
-        }
-
-        // Agent is running — send via steering channel.
-        let send_result = self.steer_tx.as_ref().map(|tx| {
-            tx.send(edgecrab_core::SteeringEvent::new(
-                kind.clone(),
-                text.clone(),
-            ))
-        });
-
-        match send_result {
-            Some(Ok(())) => {
-                self.pending_steer_count += 1;
-                // Show a brief acknowledgement in the output.
-                self.push_output(
-                    format!(
-                        "⛵ Steer queued ({}/{})",
-                        match &kind {
-                            edgecrab_core::SteeringKind::Hint => "HINT",
-                            edgecrab_core::SteeringKind::Redirect => "REDIRECT",
-                            edgecrab_core::SteeringKind::Stop => "STOP",
-                        },
-                        edgecrab_core::safe_truncate(&text, 60),
-                    ),
-                    OutputRole::System,
-                );
-                self.needs_redraw = true;
-            }
-            Some(Err(_)) => {
-                // Channel closed — clear steer_tx and notify.
-                self.steer_tx = None;
-                self.push_output(
-                    "⚠ Steer channel closed (new session?). Steering as new message.".to_string(),
-                    OutputRole::Error,
-                );
-                // Fallback: send as new queued message.
-                let promoted = format!("[⛵ STEER] {text}");
-                self.process_input(&promoted);
-            }
-            None => {
-                // No steer_tx — no agent set yet
-                self.push_output(
-                    "⚠ No active agent for steering. Send as new message instead.".to_string(),
-                    OutputRole::Error,
-                );
-            }
-        }
-    }
-
     fn flush_buffered_assistant_output(&mut self) {
         if self.buffered_assistant_output.is_empty() {
             return;
@@ -5655,23 +4840,13 @@ impl App {
                 self.output[idx].text.push_str(&text);
                 self.output[idx].invalidate_render_cache();
             } else {
-                self.output.push(OutputLine {
-                    text,
-                    role: OutputRole::Assistant,
-                    prebuilt_spans: None,
-                    rendered: None,
-                    plain_rendered: None,
-                });
+                self.output
+                    .push(OutputLine::new_text(text, OutputRole::Assistant));
                 self.streaming_line = Some(self.output.len() - 1);
             }
         } else {
-            self.output.push(OutputLine {
-                text,
-                role: OutputRole::Assistant,
-                prebuilt_spans: None,
-                rendered: None,
-                plain_rendered: None,
-            });
+            self.output
+                .push(OutputLine::new_text(text, OutputRole::Assistant));
             self.streaming_line = Some(self.output.len() - 1);
         }
 
@@ -5741,6 +4916,7 @@ impl App {
             context_window: None,
             total_tokens: 0,
             session_cost: 0.0,
+            turn_baseline_cost: 0.0,
             agent: None,
             rt_handle: tokio::runtime::Handle::current(),
             response_rx,
@@ -5748,7 +4924,6 @@ impl App {
             background_task_seq: 0,
             progress_seq: 0,
             background_tasks_active: std::collections::HashMap::new(),
-            active_tools: std::collections::HashMap::new(),
             active_subagents: std::collections::HashMap::new(),
             cron_rx,
             cron_tx,
@@ -5765,6 +4940,7 @@ impl App {
             yolo_enabled: false,
             shadow_judge_enabled: runtime_config.shadow_judge.enabled,
             prompt_queue: Vec::new(),
+            queue_edit_idx: None,
             goal_status_chip: None,
             goal_flash_status: None,
             display_state: DisplayState::Idle,
@@ -5787,6 +4963,7 @@ impl App {
             model_selector_seeded: false,
             model_selector_target: ModelSelectorTarget::Primary,
             model_selector_refresh_in_flight: false,
+            model_selector_stage: ModelPickerStage::default(),
             vision_model_selector: FuzzySelector::new(),
             image_model_selector: FuzzySelector::new(),
             moa_reference_selector: FuzzySelector::new(),
@@ -5831,7 +5008,14 @@ impl App {
             personality_selector_cursor: 0,
             personality_selector_entries: Vec::new(),
             stream_selector_active: false,
-            stream_selector_cursor: 0, // default to ON
+            stream_selector_cursor: 0,
+            web_setup: crate::web_setup_tui::WebSetupTui::new(
+                edgecrab_core::edgecrab_home().join("config.yaml"),
+            ),
+            proxy_setup: crate::proxy_setup_tui::ProxySetupTui::new(
+                edgecrab_core::edgecrab_home().join("config.yaml"),
+            ),
+            grok_auth: crate::grok_auth_tui::GrokAuthTui::new(),
             statusbar_selector_active: false,
             statusbar_selector_cursor: 0, // default to Visible
             shadow_judge_selector_active: false,
@@ -5861,6 +5045,8 @@ impl App {
             kaomoji_frame_idx: 0,
             turn_count: 0,
             clarify_pending_tx: None,
+            clarify_pending_question: None,
+            clarify_pending_choices: None,
             approval_pending_tx: None,
             secret_pending_tx: None,
             session_approvals: std::collections::HashSet::new(),
@@ -5879,6 +5065,18 @@ impl App {
             pending_subagent_lines: std::collections::HashMap::new(),
             hidden_tool_calls: HashSet::new(),
             seen_tool_signatures: HashSet::new(),
+            bg_process_lines: std::collections::HashMap::new(),
+            turn_activity: TurnActivityState::new(display_preferences.activity_shelf_enabled),
+            shelf_coalescer: ShelfCoalescer::new(),
+            process_tail_panel: ProcessTailPanel::default(),
+            agents_overlay: AgentsOverlay::default(),
+            spawn_history: SpawnHistory::new(),
+            agents_nudged_this_turn: false,
+            shelf_onboarding_shown: false,
+            shelf_details: load_shelf_details_from_config(),
+            status_indicator: load_status_indicator_from_config(),
+            details_panel: DetailsPanel::default(),
+            transcript_heights: crate::transcript_heights::TranscriptHeightCache::new(),
             voice_recording: None,
             voice_push_to_talk_key: runtime_config.voice.push_to_talk_key,
             voice_input_device: runtime_config.voice.input_device,
@@ -5915,6 +5113,7 @@ impl App {
         };
 
         app.apply_textarea_editor_style();
+        app.sync_turn_activity_charms();
 
         app
     }
@@ -6167,13 +5366,8 @@ impl App {
 
     /// Add a line to the output area.
     pub fn push_output(&mut self, text: impl Into<String>, role: OutputRole) {
-        self.output.push(OutputLine {
-            text: text.into(),
-            role,
-            prebuilt_spans: None,
-            rendered: None,
-            plain_rendered: None,
-        });
+        self.output.push(OutputLine::new_text(text, role));
+        self.prune_transcript_if_needed();
         // Only auto-scroll to bottom if the user was already at bottom.
         // Preserves scroll position when user has scrolled up to read history.
         if self.at_bottom {
@@ -6182,27 +5376,228 @@ impl App {
         self.needs_redraw = true;
     }
 
+    /// Remove one output line and fix pending placeholder indices above it.
+    fn remove_output_line(&mut self, idx: usize) {
+        if idx >= self.output.len() {
+            return;
+        }
+        self.output.remove(idx);
+        for pending in self.pending_tool_lines.values_mut() {
+            if pending.line_idx > idx {
+                pending.line_idx -= 1;
+            }
+        }
+        for pending in self.pending_subagent_lines.values_mut() {
+            if pending.line_idx > idx {
+                pending.line_idx -= 1;
+            }
+        }
+        self.bg_process_lines.retain(|_, entry| {
+            if entry.line_idx == idx {
+                return false;
+            }
+            if entry.line_idx > idx {
+                entry.line_idx -= 1;
+            }
+            true
+        });
+        if let Some(reasoning_idx) = self.reasoning_line {
+            if reasoning_idx == idx {
+                self.reasoning_line = None;
+            } else if reasoning_idx > idx {
+                self.reasoning_line = Some(reasoning_idx - 1);
+            }
+        }
+    }
+
     /// Push a pre-built span line (for tool-done lines with emoji).
     /// Ratatui renders each Span with correct unicode column width,
     /// so emoji/wide characters align perfectly without format-string padding tricks.
     pub fn push_output_spans(&mut self, spans: Vec<Span<'static>>, role: OutputRole) {
-        self.output.push(OutputLine {
-            text: String::new(),
-            role,
-            prebuilt_spans: Some(spans),
-            rendered: None,
-            plain_rendered: None,
-        });
+        self.output.push(OutputLine::new_spans(spans, role));
+        self.prune_transcript_if_needed();
         if self.at_bottom {
             self.scroll_offset = 0;
         }
         self.needs_redraw = true;
     }
 
+    /// Drop oldest transcript lines when over Hermes `MAX_HISTORY` (800).
+    fn prune_transcript_if_needed(&mut self) {
+        use crate::transcript_scroll::{prune_count, shift_line_index};
+        let removed = prune_count(self.output.len());
+        if removed == 0 {
+            return;
+        }
+        self.output.drain(0..removed);
+        self.transcript_heights.clear();
+
+        self.pending_tool_lines.retain(|_, pending| {
+            if let Some(idx) = shift_line_index(pending.line_idx, removed) {
+                pending.line_idx = idx;
+                true
+            } else {
+                false
+            }
+        });
+        self.pending_subagent_lines.retain(|_, pending| {
+            if let Some(idx) = shift_line_index(pending.line_idx, removed) {
+                pending.line_idx = idx;
+                true
+            } else {
+                false
+            }
+        });
+        self.bg_process_lines.retain(|_, entry| {
+            if let Some(idx) = shift_line_index(entry.line_idx, removed) {
+                entry.line_idx = idx;
+                true
+            } else {
+                false
+            }
+        });
+        self.reasoning_line = self
+            .reasoning_line
+            .and_then(|idx| shift_line_index(idx, removed));
+        if let Some(idx) = self.streaming_line {
+            self.streaming_line = shift_line_index(idx, removed);
+        }
+    }
+
+    fn parse_run_process_id(result_preview: Option<&str>) -> Option<String> {
+        let text = result_preview?;
+        let value: serde_json::Value = serde_json::from_str(text).ok()?;
+        value
+            .get("process_id")
+            .and_then(|value| value.as_str())
+            .map(str::to_string)
+    }
+
+    /// Ensure a transcript line exists for in-flight tool progress (late-bind edge case).
+    fn ensure_tool_progress_placeholder(&mut self, tool_call_id: &str) -> Option<PendingToolLine> {
+        if let Some(pending) = self.pending_tool_lines.get(tool_call_id) {
+            return Some(pending.clone());
+        }
+        if self.hidden_tool_calls.contains(tool_call_id) {
+            return None;
+        }
+        let active = self.turn_activity.tool_row(tool_call_id)?.clone();
+        if self.tool_progress_mode == ToolProgressMode::Off {
+            let preview = extract_tool_preview(&active.name, &active.args_json);
+            let line_idx = self.output.len();
+            self.push_output(format!("⏳ {}  {preview}", active.name), OutputRole::System);
+            let pending = PendingToolLine {
+                tool_name: active.name,
+                args_json: active.args_json,
+                line_idx,
+                edit_snapshot: None,
+                minimal_indicator: true,
+            };
+            self.pending_tool_lines
+                .insert(tool_call_id.to_string(), pending.clone());
+            return Some(pending);
+        }
+        let edit_snapshot = capture_local_edit_snapshot(&active.name, &active.args_json);
+        let running_spans = build_tool_running_line_width(
+            &active.name,
+            &active.args_json,
+            None,
+            &self.theme.tool_emojis,
+            &DisplayWidths::from_terminal_width(self.last_terminal_width as usize),
+        );
+        let line_idx = self.output.len();
+        self.output
+            .push(OutputLine::new_spans(running_spans, OutputRole::Tool));
+        let pending = PendingToolLine {
+            tool_name: active.name,
+            args_json: active.args_json,
+            line_idx,
+            edit_snapshot,
+            minimal_indicator: false,
+        };
+        self.pending_tool_lines
+            .insert(tool_call_id.to_string(), pending.clone());
+        Some(pending)
+    }
+
+    fn upsert_bg_process_line(&mut self, process_id: &str, command_preview: &str, tail: &str) {
+        let text = edgecrab_tools::tool_progress_tail::format_background_process_monitor(
+            process_id,
+            command_preview,
+            tail,
+        );
+
+        if let Some(line_idx) = self
+            .bg_process_lines
+            .get(process_id)
+            .map(|entry| entry.line_idx)
+        {
+            if line_idx < self.output.len() {
+                self.output[line_idx].text = text;
+                self.output[line_idx].invalidate_render_cache();
+            }
+        } else {
+            let line_idx = self.output.len();
+            self.output
+                .push(OutputLine::new_text(text, OutputRole::System));
+            self.bg_process_lines
+                .insert(process_id.to_string(), BgProcessLine { line_idx });
+        }
+        if self.at_bottom {
+            self.scroll_offset = 0;
+        }
+        self.needs_redraw = true;
+    }
+
+    fn finish_bg_process_line(&mut self, process_id: &str, exit_code: Option<i32>) {
+        if let Some(line_idx) = self
+            .bg_process_lines
+            .get(process_id)
+            .map(|entry| entry.line_idx)
+        {
+            if line_idx < self.output.len() {
+                let headline = self.output[line_idx]
+                    .text
+                    .lines()
+                    .next()
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                self.output[line_idx].text =
+                    edgecrab_tools::tool_progress_tail::format_background_process_finished(
+                        &headline, process_id, exit_code,
+                    );
+                self.output[line_idx].invalidate_render_cache();
+            }
+        } else {
+            let text = edgecrab_tools::tool_progress_tail::format_background_process_finished(
+                "", process_id, exit_code,
+            );
+            self.output
+                .push(OutputLine::new_text(text, OutputRole::System));
+        }
+        self.bg_process_lines.remove(process_id);
+        if self.at_bottom {
+            self.scroll_offset = 0;
+        }
+        self.needs_redraw = true;
+    }
+
+    fn toggle_tool_result_expand(&mut self) {
+        for line in self.output.iter_mut().rev() {
+            if line.toggle_expand() {
+                self.needs_redraw = true;
+                return;
+            }
+        }
+    }
+
     /// Clear the output area.
     pub fn clear_output(&mut self) {
         self.output.clear();
+        self.transcript_heights.clear();
         self.scroll_offset = 0;
+        self.bg_process_lines.clear();
         self.at_bottom = true;
         self.output_visual_rows = 0;
         // Reset streaming cursors so any in-flight agent events are handled
@@ -6213,7 +5608,6 @@ impl App {
         self.buffered_assistant_output.clear();
         self.pending_tool_lines.clear();
         self.hidden_tool_calls.clear();
-        self.active_tools.clear();
         self.seen_tool_signatures.clear();
         // Request a full terminal repaint.  ratatui's diff-based renderer
         // normally skips unchanged cells; if any out-of-band bytes reached the
@@ -6248,6 +5642,8 @@ impl App {
         self.active_subagents.clear();
         self.last_run_outcome = None;
         self.display_state = DisplayState::Idle;
+        self.spawn_history.clear();
+        self.clear_clarify_pending();
         self.clear_output();
         if show_banner {
             let model = self.model_name.clone();
@@ -6586,14 +5982,6 @@ impl App {
         ]
     }
 
-    fn paging_scroll_hint(&self, scroll: u16, ascii: bool) -> String {
-        if ascii {
-            format!(" scroll:{scroll} ^G=end {} ", self.paging_key_hint_label())
-        } else {
-            format!(" ↑{scroll}  ^G=end  {} ", self.paging_key_hint_label())
-        }
-    }
-
     fn paging_keyboard_note(&self) -> &'static str {
         if self.direct_paging_keys_supported {
             "If PageUp / PageDown do not reach EdgeCrab, use Ctrl+B / Ctrl+F."
@@ -6641,6 +6029,13 @@ impl App {
 
     fn submit_current_input(&mut self) {
         let input = self.textarea_text().trim().to_string();
+        if self.queue_edit_idx.is_some() {
+            if self.commit_queue_edit(&input) {
+                self.exit_compose_mode();
+                self.completion.active = false;
+            }
+            return;
+        }
         if !input.is_empty() {
             self.push_history(&input);
             self.process_input(&input);
@@ -7146,6 +6541,8 @@ impl App {
             icon: icon.into(),
             accent,
             scroll: 0,
+            kind: DocumentOverlayKind::Generic,
+            web_sub: None,
         });
         self.needs_redraw = true;
     }
@@ -7181,6 +6578,111 @@ impl App {
         body: impl Into<String>,
     ) {
         self.open_document_overlay(title, subtitle, body, "≡", Color::Rgb(130, 210, 255));
+    }
+
+    /// Full-screen report for `/computer` — matches Desktop tool accent in the activity log.
+    fn open_computer_overlay(
+        &mut self,
+        title: impl Into<String>,
+        subtitle: impl Into<String>,
+        body: impl Into<String>,
+    ) {
+        self.open_document_overlay(title, subtitle, body, "🖥", Color::Rgb(95, 195, 255));
+    }
+
+    /// Open the single-screen web configurator (`/web`).
+    fn open_web_config(&mut self) {
+        self.document_overlay = None;
+        self.web_setup.open();
+        self.needs_redraw = true;
+    }
+
+    /// Read-only web hub overlay (`/web status`, `/web chain`, …).
+    fn open_web_hub_overlay(&mut self, sub: &str) {
+        self.web_setup.close();
+        let (title, subtitle, body) = edgecrab_tools::web_command_overlay(sub);
+        self.document_overlay = Some(DocumentOverlayState {
+            title,
+            subtitle,
+            body,
+            icon: "🔍".into(),
+            accent: crate::web_command::WEB_ACCENT,
+            scroll: 0,
+            kind: DocumentOverlayKind::Web,
+            web_sub: Some(sub.to_string()),
+        });
+        self.needs_redraw = true;
+    }
+
+    fn refresh_web_hub_overlay(&mut self, sub: &str) {
+        let (title, subtitle, body) = edgecrab_tools::web_command_overlay(sub);
+        if let Some(overlay) = self.document_overlay.as_mut() {
+            overlay.title = title;
+            overlay.subtitle = subtitle;
+            overlay.body = body;
+            overlay.web_sub = Some(sub.to_string());
+            overlay.scroll = 0;
+        } else {
+            self.open_web_hub_overlay(sub);
+        }
+        self.needs_redraw = true;
+    }
+
+    fn handle_document_overlay_key(&mut self, key: crossterm::event::KeyEvent) {
+        let (kind, web_sub) = self
+            .document_overlay
+            .as_ref()
+            .map(|o| (o.kind, o.web_sub.clone()))
+            .unwrap_or((DocumentOverlayKind::Generic, None));
+
+        if kind == DocumentOverlayKind::Web {
+            use crossterm::event::KeyCode;
+            match key.code {
+                KeyCode::Esc => self.close_document_overlay(),
+                KeyCode::Up => self.scroll_document_overlay(-1),
+                KeyCode::Down => self.scroll_document_overlay(1),
+                KeyCode::PageUp => self.scroll_document_overlay(-8),
+                KeyCode::PageDown => self.scroll_document_overlay(8),
+                KeyCode::Home => self.set_document_overlay_scroll(0),
+                KeyCode::End => self.set_document_overlay_scroll(u16::MAX),
+                KeyCode::Char('s') | KeyCode::Char('S') => {
+                    self.close_document_overlay();
+                    self.open_web_config();
+                }
+                KeyCode::Char('c') | KeyCode::Char('C') => {
+                    self.refresh_web_hub_overlay("chain");
+                }
+                KeyCode::Char('d') | KeyCode::Char('D') => {
+                    self.refresh_web_hub_overlay("doctor");
+                }
+                KeyCode::Char('p') | KeyCode::Char('P') => {
+                    self.refresh_web_hub_overlay("providers");
+                }
+                KeyCode::Char('h') | KeyCode::Char('H') => {
+                    self.refresh_web_hub_overlay("help");
+                }
+                KeyCode::Char('b') | KeyCode::Char('B') => {
+                    self.refresh_web_hub_overlay("status");
+                }
+                KeyCode::Char('r') | KeyCode::Char('R') => {
+                    let sub = web_sub.as_deref().unwrap_or("status");
+                    self.refresh_web_hub_overlay(sub);
+                }
+                _ => {}
+            }
+            return;
+        }
+
+        match key.code {
+            crossterm::event::KeyCode::Esc => self.close_document_overlay(),
+            crossterm::event::KeyCode::Up => self.scroll_document_overlay(-1),
+            crossterm::event::KeyCode::Down => self.scroll_document_overlay(1),
+            crossterm::event::KeyCode::PageUp => self.scroll_document_overlay(-8),
+            crossterm::event::KeyCode::PageDown => self.scroll_document_overlay(8),
+            crossterm::event::KeyCode::Home => self.set_document_overlay_scroll(0),
+            crossterm::event::KeyCode::End => self.set_document_overlay_scroll(u16::MAX),
+            _ => {}
+        }
     }
 
     fn normalize_skill_identifier(identifier: &str) -> String {
@@ -7930,6 +7432,40 @@ impl App {
                 ("status", "Show browser connection status"),
                 ("tabs", "List open browser tabs"),
                 ("recording", "Toggle recording: recording on | off"),
+            ],
+            "proxy" | "openai-proxy" | "grok-proxy" => &[
+                ("setup", "Open in-TUI preset wizard (Grok / Nous)"),
+                ("enable grok", "Enable xAI Grok preset + proxy token"),
+                ("enable nous", "Enable Nous Portal preset"),
+                ("status", "Listen URL, aliases, upstreams (report)"),
+                ("doctor", "Preflight token + OAuth checks"),
+                ("client", "Client env snippet (token redacted)"),
+                ("help", "Usage for /proxy and edgecrab proxy CLI"),
+            ],
+            "computer" | "cu" | "desktop" | "cua" => &[
+                ("setup", "Guided wizard: install → enable → open settings"),
+                ("install", "Download and install cua-driver from GitHub"),
+                (
+                    "install upgrade",
+                    "Refresh cua-driver to the latest release",
+                ),
+                ("status", "Readiness checklist (default) — run until READY"),
+                (
+                    "permissions",
+                    "Driver + Accessibility + Screen Recording checklist",
+                ),
+                (
+                    "open",
+                    "Open Accessibility and Screen Recording in System Settings",
+                ),
+                (
+                    "enable",
+                    "Persist computer_use.enabled and activate toolset",
+                ),
+                ("on", "Alias for enable"),
+                ("disable", "Turn off computer_use in config"),
+                ("off", "Alias for disable"),
+                ("help", "Slash commands, setup flow, and agent examples"),
             ],
             // ── Cron scheduler ────────────────────────────────────────────────
             "cron" | "schedule" => &[
@@ -8815,9 +8351,18 @@ impl App {
     }
 
     fn history_up(&mut self) {
+        if self.textarea.lines().len() <= 1
+            && !self.prompt_queue.is_empty()
+            && self.cycle_queue_edit(1)
+        {
+            return;
+        }
         self.ensure_history_loaded();
         if self.input_history.is_empty() {
             return;
+        }
+        if self.queue_edit_idx.is_some() {
+            self.queue_edit_idx = None;
         }
         if self.history_pos == self.input_history.len() {
             // Stash current input before navigating
@@ -8831,9 +8376,18 @@ impl App {
     }
 
     fn history_down(&mut self) {
+        if self.textarea.lines().len() <= 1
+            && (!self.prompt_queue.is_empty() || self.queue_edit_idx.is_some())
+            && self.cycle_queue_edit(-1)
+        {
+            return;
+        }
         self.ensure_history_loaded();
         if self.history_pos >= self.input_history.len() {
             return;
+        }
+        if self.queue_edit_idx.is_some() {
+            self.queue_edit_idx = None;
         }
         self.history_pos += 1;
         let text = if self.history_pos == self.input_history.len() {
@@ -9173,6 +8727,25 @@ impl App {
     /// added to `pending_images` instead of the textarea so it is automatically
     /// analysed by the vision LLM when the user sends their next message.
     pub fn handle_paste(&mut self, text: String) {
+        if self.grok_auth.active
+            && self.grok_auth.screen == crate::grok_auth_tui::GrokAuthScreen::Finish
+        {
+            match crate::auth_cmd::extract_grok_auth_code(&text) {
+                Ok(code) => {
+                    self.grok_auth.set_pending_code(code);
+                    self.push_output(
+                        "Grok sign-in: code loaded — press Enter to save.",
+                        OutputRole::System,
+                    );
+                }
+                Err(e) => {
+                    self.grok_auth.set_error(e.to_string());
+                }
+            }
+            self.needs_redraw = true;
+            return;
+        }
+
         let trimmed = text.trim();
         if Self::is_image_path(trimmed) && std::path::Path::new(trimmed).is_file() {
             let path = std::path::PathBuf::from(trimmed);
@@ -9235,6 +8808,7 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 self.completion.active = false;
                 self.model_selector.active = false;
+                self.model_selector_stage.reset();
                 self.vision_model_selector.active = false;
                 self.image_model_selector.active = false;
                 self.moa_reference_selector.active = false;
@@ -9266,2562 +8840,6 @@ impl App {
     }
 
     /// Handle a crossterm key event.
-    pub fn handle_key_event(&mut self, key: event::KeyEvent) {
-        // Only process key press events, ignore release events (prevents double-fire on Windows)
-        if key.kind == KeyEventKind::Release {
-            return;
-        }
-        let raw_key = key;
-        let key = normalize_fallback_paging_key(normalize_terminal_control_key(key));
-
-        self.needs_redraw = true;
-
-        if key_matches_binding(&key, &self.voice_push_to_talk_key) {
-            self.toggle_voice_recording(true);
-            return;
-        }
-
-        // Global shortcuts first — these work regardless of any overlay
-        match (key.modifiers, key.code) {
-            // Ctrl+C — clear input → cancel agent → exit  (standard readline behaviour)
-            (KeyModifiers::CONTROL, KeyCode::Char('c')) => {
-                let text = self.textarea_text();
-                if !text.is_empty() {
-                    // Non-empty input: clear it (like ^C at a shell prompt)
-                    self.textarea_clear();
-                    self.completion.active = false;
-                    self.history_pos = self.input_history.len();
-                    self.push_output("^C", OutputRole::System);
-                } else if self.voice_recording.is_some() {
-                    self.abort_voice_recording("^C  (voice recording cancelled)");
-                } else if self.is_processing {
-                    self.cancel_active_request();
-                    self.push_output("^C  (cancelled)", OutputRole::System);
-                } else {
-                    // Nothing to do: exit
-                    self.should_exit = true;
-                }
-                return;
-            }
-            // Ctrl+D — exit (EOF signal, identical to shell behaviour)
-            (KeyModifiers::CONTROL, KeyCode::Char('d')) => {
-                let text = self.textarea_text();
-                if text.is_empty() {
-                    self.should_exit = true;
-                }
-                // Non-empty: let textarea handle delete-char (standard readline)
-                return;
-            }
-            // Ctrl+L — clear screen (standard shell shortcut)
-            (KeyModifiers::CONTROL, KeyCode::Char('l')) => {
-                self.clear_output();
-                return;
-            }
-            // Ctrl+Shift+V — paste clipboard image (or text) into conversation.
-            // Ctrl+V (without Shift) arrives as a bracketed-paste Event::Paste, so
-            // this shortcut gives explicit access to the arboard clipboard reader
-            // which can capture raw images (screenshots, browser copies, etc.).
-            (m, KeyCode::Char('v'))
-                if m.contains(KeyModifiers::CONTROL) && m.contains(KeyModifiers::SHIFT) =>
-            {
-                self.handle_paste_clipboard();
-                return;
-            }
-            // F6 — toggle mouse capture mode for copy/select ergonomics.
-            (_, KeyCode::F(6)) => {
-                self.toggle_mouse_capture_mode();
-                return;
-            }
-            // Ctrl+M — alternate toggle for mouse capture mode.
-            (KeyModifiers::CONTROL, KeyCode::Char('m')) => {
-                self.toggle_mouse_capture_mode();
-                return;
-            }
-            // Ctrl+U — clear current input line (standard readline shortcut)
-            (KeyModifiers::CONTROL, KeyCode::Char('u')) => {
-                self.textarea_clear();
-                self.completion.active = false;
-                return;
-            }
-            // Ctrl+G — scroll output to very bottom (jump back to live view)
-            (KeyModifiers::CONTROL, KeyCode::Char('g')) => {
-                self.scroll_offset = 0;
-                self.at_bottom = true;
-                self.needs_redraw = true;
-                return;
-            }
-            // Ctrl+K — kill text from cursor to end of line (readline standard)
-            (KeyModifiers::CONTROL, KeyCode::Char('k')) => {
-                self.textarea.delete_line_by_end();
-                self.needs_redraw = true;
-                return;
-            }
-            // Ctrl+A — move cursor to beginning of line (readline standard)
-            (KeyModifiers::CONTROL, KeyCode::Char('a')) => {
-                self.textarea.move_cursor(CursorMove::Head);
-                self.needs_redraw = true;
-                return;
-            }
-            // Ctrl+E — move cursor to end of line (readline standard)
-            (KeyModifiers::CONTROL, KeyCode::Char('e')) => {
-                self.textarea.move_cursor(CursorMove::End);
-                self.needs_redraw = true;
-                return;
-            }
-            // Ctrl+Home — scroll output to very top
-            (KeyModifiers::CONTROL, KeyCode::Home) => {
-                let max_scroll = self
-                    .output_visual_rows
-                    .saturating_sub(self.output_area_height);
-                self.scroll_offset = max_scroll;
-                self.at_bottom = false;
-                return;
-            }
-            // Ctrl+End — scroll output to very bottom
-            (KeyModifiers::CONTROL, KeyCode::End) => {
-                self.scroll_offset = 0;
-                self.at_bottom = true;
-                return;
-            }
-            // Shift+Up — scroll output up one line (doesn't conflict with history navigation)
-            (KeyModifiers::SHIFT, KeyCode::Up) => {
-                self.scroll_output(5);
-                return;
-            }
-            // Shift+Down — scroll output down one line
-            (KeyModifiers::SHIFT, KeyCode::Down) => {
-                self.scroll_output(-5);
-                return;
-            }
-            // Alt+Up — scroll output up (works in multi-line input mode)
-            (KeyModifiers::ALT, KeyCode::Up) => {
-                self.scroll_output(5);
-                return;
-            }
-            // Alt+Down — scroll output down
-            (KeyModifiers::ALT, KeyCode::Down) => {
-                self.scroll_output(-5);
-                return;
-            }
-            // F1 — show help overlay
-            (_, KeyCode::F(1)) => {
-                self.process_input("/help");
-                return;
-            }
-            // F2 — open model selector
-            (_, KeyCode::F(2)) => {
-                self.refresh_model_selector_catalog();
-                return;
-            }
-            // F3 — open skill browser (same experience as F2 for models)
-            (_, KeyCode::F(3)) => {
-                self.refresh_skills_list();
-                self.open_skill_selector();
-                return;
-            }
-            // F7 — open dedicated vision-model selector
-            (_, KeyCode::F(7)) => {
-                self.open_vision_model_selector();
-                return;
-            }
-            // F4 — open session browser overlay
-            (_, KeyCode::F(4)) => {
-                self.open_session_browser();
-                return;
-            }
-            // F5 — retry last message
-            (_, KeyCode::F(5)) => {
-                self.process_input("/retry");
-                return;
-            }
-            // F10 - cycle tool progress mode
-            (_, KeyCode::F(10)) => {
-                self.process_input("/verbose");
-                return;
-            }
-            _ => {}
-        }
-
-        if let Some(intent) = paging_intent_for_key(raw_key).or_else(|| paging_intent_for_key(key))
-            && self.handle_paging_intent(intent)
-        {
-            return;
-        }
-
-        // Approval overlay active — intercept all keys for choice navigation
-        if matches!(self.display_state, DisplayState::WaitingForApproval { .. }) {
-            self.handle_approval_key(key);
-            return;
-        }
-
-        // Secret capture overlay active — intercept all keys for masked input
-        if matches!(self.display_state, DisplayState::SecretCapture { .. }) {
-            self.handle_secret_capture_key(key);
-            return;
-        }
-
-        if matches!(self.display_state, DisplayState::ValueCapture { .. }) {
-            self.handle_value_capture_key(key);
-            return;
-        }
-
-        if self.document_overlay.is_some() {
-            match key.code {
-                KeyCode::Esc => self.close_document_overlay(),
-                KeyCode::Up => self.scroll_document_overlay(-1),
-                KeyCode::Down => self.scroll_document_overlay(1),
-                KeyCode::PageUp => self.scroll_document_overlay(-8),
-                KeyCode::PageDown => self.scroll_document_overlay(8),
-                KeyCode::Home => self.set_document_overlay_scroll(0),
-                KeyCode::End => self.set_document_overlay_scroll(u16::MAX),
-                _ => {}
-            }
-            return;
-        }
-
-        // ── Steering overlay active — intercept all keys ──────────────────
-        if self.steering_overlay_active {
-            self.handle_steering_overlay_key(key);
-            return;
-        }
-
-        // Ctrl+S — open steering overlay (when agent is running) or send steer
-        // as a new message if idle (EC-04).
-        if matches!(
-            (key.modifiers, key.code),
-            (KeyModifiers::CONTROL, KeyCode::Char('s'))
-        ) && !matches!(
-            self.editor_mode,
-            InputEditorMode::ComposeInsert | InputEditorMode::ComposeNormal
-        ) {
-            self.open_steering_overlay();
-            return;
-        }
-
-        // ── Steering overlay active — intercept all keys ──────────────────
-        if self.steering_overlay_active {
-            self.handle_steering_overlay_key(key);
-            return;
-        }
-
-        // Ctrl+S — open steering overlay (when agent is running) or send steer
-        // as a new message if idle (EC-04).
-        if matches!(
-            (key.modifiers, key.code),
-            (KeyModifiers::CONTROL, KeyCode::Char('s'))
-        ) && !matches!(
-            self.editor_mode,
-            InputEditorMode::ComposeInsert | InputEditorMode::ComposeNormal
-        ) {
-            self.open_steering_overlay();
-            return;
-        }
-
-        // Gateway Diagnostics overlay — full-screen scrollable report
-        if self.diagnose_panel.active {
-            self.handle_diagnose_panel_key(key);
-            return;
-        }
-
-        // Reasoning picker overlay active — intercept all keys
-        if self.reasoning_selector_active {
-            match key.code {
-                KeyCode::Esc => {
-                    self.reasoning_selector_active = false;
-                    self.needs_redraw = true;
-                }
-                KeyCode::Up | KeyCode::BackTab => {
-                    if self.reasoning_selector_cursor > 0 {
-                        self.reasoning_selector_cursor -= 1;
-                    } else {
-                        self.reasoning_selector_cursor = 4;
-                    }
-                    self.needs_redraw = true;
-                }
-                KeyCode::Down | KeyCode::Tab => {
-                    self.reasoning_selector_cursor = (self.reasoning_selector_cursor + 1) % 5;
-                    self.needs_redraw = true;
-                }
-                KeyCode::Enter => {
-                    let arg =
-                        ["low", "medium", "high", "show", "hide"][self.reasoning_selector_cursor];
-                    self.reasoning_selector_active = false;
-                    self.handle_set_reasoning(arg.to_string());
-                    self.needs_redraw = true;
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // Personality picker overlay active — intercept all keys
-        if self.personality_selector_active {
-            match key.code {
-                KeyCode::Esc => {
-                    self.personality_selector_active = false;
-                    self.needs_redraw = true;
-                }
-                KeyCode::Up | KeyCode::BackTab => {
-                    let n = self.personality_selector_entries.len();
-                    if n > 0 {
-                        if self.personality_selector_cursor > 0 {
-                            self.personality_selector_cursor -= 1;
-                        } else {
-                            self.personality_selector_cursor = n.saturating_sub(1);
-                        }
-                    }
-                    self.needs_redraw = true;
-                }
-                KeyCode::Down | KeyCode::Tab => {
-                    let n = self.personality_selector_entries.len();
-                    if n > 0 {
-                        self.personality_selector_cursor =
-                            (self.personality_selector_cursor + 1) % n;
-                    }
-                    self.needs_redraw = true;
-                }
-                KeyCode::Enter => {
-                    if let Some((name, _)) = self
-                        .personality_selector_entries
-                        .get(self.personality_selector_cursor)
-                        .cloned()
-                    {
-                        self.personality_selector_active = false;
-                        self.handle_switch_personality(name);
-                        self.needs_redraw = true;
-                    }
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // Stream picker overlay active — intercept all keys
-        if self.stream_selector_active {
-            match key.code {
-                KeyCode::Esc => {
-                    self.stream_selector_active = false;
-                    self.needs_redraw = true;
-                }
-                KeyCode::Up | KeyCode::BackTab | KeyCode::Down | KeyCode::Tab => {
-                    self.stream_selector_cursor = 1 - self.stream_selector_cursor;
-                    self.needs_redraw = true;
-                }
-                KeyCode::Enter => {
-                    let arg = if self.stream_selector_cursor == 0 {
-                        "on"
-                    } else {
-                        "off"
-                    };
-                    self.stream_selector_active = false;
-                    self.handle_set_streaming(arg.to_string());
-                    self.needs_redraw = true;
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // Status bar picker overlay active — intercept all keys
-        if self.statusbar_selector_active {
-            match key.code {
-                KeyCode::Esc => {
-                    self.statusbar_selector_active = false;
-                    self.needs_redraw = true;
-                }
-                KeyCode::Up | KeyCode::BackTab | KeyCode::Down | KeyCode::Tab => {
-                    self.statusbar_selector_cursor = 1 - self.statusbar_selector_cursor;
-                    self.needs_redraw = true;
-                }
-                KeyCode::Enter => {
-                    let arg = if self.statusbar_selector_cursor == 0 {
-                        "on"
-                    } else {
-                        "off"
-                    };
-                    self.statusbar_selector_active = false;
-                    self.handle_status_bar_command(arg.to_string());
-                    self.needs_redraw = true;
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // Shadow Judge picker overlay active — intercept all keys
-        if self.shadow_judge_selector_active {
-            match key.code {
-                KeyCode::Esc => {
-                    self.shadow_judge_selector_active = false;
-                    self.needs_redraw = true;
-                }
-                KeyCode::Up | KeyCode::BackTab | KeyCode::Down | KeyCode::Tab => {
-                    self.shadow_judge_selector_cursor = 1 - self.shadow_judge_selector_cursor;
-                    self.needs_redraw = true;
-                }
-                KeyCode::Enter => {
-                    let arg = if self.shadow_judge_selector_cursor == 0 {
-                        "on"
-                    } else {
-                        "off"
-                    };
-                    self.shadow_judge_selector_active = false;
-                    self.handle_set_shadow_judge(arg.to_string());
-                    self.needs_redraw = true;
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // Verbose / tool-progress picker overlay active — intercept all keys
-        if self.verbose_selector_active {
-            match key.code {
-                KeyCode::Esc => {
-                    self.verbose_selector_active = false;
-                    self.needs_redraw = true;
-                }
-                KeyCode::Up | KeyCode::BackTab => {
-                    if self.verbose_selector_cursor > 0 {
-                        self.verbose_selector_cursor -= 1;
-                    } else {
-                        self.verbose_selector_cursor = 3;
-                    }
-                    self.needs_redraw = true;
-                }
-                KeyCode::Down | KeyCode::Tab => {
-                    self.verbose_selector_cursor = (self.verbose_selector_cursor + 1) % 4;
-                    self.needs_redraw = true;
-                }
-                KeyCode::Enter => {
-                    let mode = [
-                        ToolProgressMode::Off,
-                        ToolProgressMode::New,
-                        ToolProgressMode::All,
-                        ToolProgressMode::Verbose,
-                    ][self.verbose_selector_cursor];
-                    let msg = self.set_tool_progress_mode_explicit(mode);
-                    self.verbose_selector_active = false;
-                    self.push_output(msg, OutputRole::System);
-                    self.needs_redraw = true;
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // Model selector overlay active — intercept all keys
-        if self.model_selector.active {
-            match key.code {
-                KeyCode::Esc if !self.close_detail_fullscreen(DetailSurface::ModelSelector) => {
-                    self.model_selector.active = false;
-                }
-                _ if selector_action_key(&key, 'z') => {
-                    self.toggle_detail_fullscreen(
-                        DetailSurface::ModelSelector,
-                        self.split_detail_scroll(DetailSurface::ModelSelector),
-                    );
-                }
-                KeyCode::Tab | KeyCode::BackTab
-                    if !self.detail_fullscreen_active(DetailSurface::ModelSelector) =>
-                {
-                    self.toggle_simple_split_focus(DetailSurface::ModelSelector);
-                }
-                KeyCode::Enter => {
-                    if let Some(model) = self.model_selector.current().map(|e| e.display.clone()) {
-                        self.model_selector.active = false;
-                        self.close_detail_fullscreen(DetailSurface::ModelSelector);
-                        match self.model_selector_target {
-                            ModelSelectorTarget::Primary => self.handle_model_switch(model),
-                            ModelSelectorTarget::Cheap => self.handle_set_cheap_model(model),
-                            ModelSelectorTarget::MoaAggregator => {
-                                self.handle_set_moa_aggregator(model);
-                            }
-                        }
-                    }
-                }
-                KeyCode::Up => {
-                    if self.simple_split_detail_focused(DetailSurface::ModelSelector) {
-                        self.scroll_split_detail_lines(DetailSurface::ModelSelector, -1);
-                    } else {
-                        self.model_selector.move_up();
-                        self.reset_split_detail_scroll(DetailSurface::ModelSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::ModelSelector);
-                    }
-                }
-                KeyCode::Down => {
-                    if self.simple_split_detail_focused(DetailSurface::ModelSelector) {
-                        self.scroll_split_detail_lines(DetailSurface::ModelSelector, 1);
-                    } else {
-                        self.model_selector.move_down();
-                        self.reset_split_detail_scroll(DetailSurface::ModelSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::ModelSelector);
-                    }
-                }
-                KeyCode::PageUp if self.detail_fullscreen_active(DetailSurface::ModelSelector) => {
-                    self.page_up_detail_fullscreen(DetailSurface::ModelSelector);
-                }
-                KeyCode::PageDown
-                    if self.detail_fullscreen_active(DetailSurface::ModelSelector) =>
-                {
-                    self.page_down_detail_fullscreen(DetailSurface::ModelSelector);
-                }
-                KeyCode::PageUp => self
-                    .apply_simple_selector_paging(DetailSurface::ModelSelector, PagingIntent::Up),
-                KeyCode::PageDown => self
-                    .apply_simple_selector_paging(DetailSurface::ModelSelector, PagingIntent::Down),
-                KeyCode::Home => {
-                    if self.simple_split_detail_focused(DetailSurface::ModelSelector) {
-                        self.set_split_detail_scroll_to_edge(DetailSurface::ModelSelector, false);
-                    } else {
-                        self.model_selector.selected = 0;
-                        self.reset_split_detail_scroll(DetailSurface::ModelSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::ModelSelector);
-                    }
-                }
-                KeyCode::End => {
-                    if self.simple_split_detail_focused(DetailSurface::ModelSelector) {
-                        self.set_split_detail_scroll_to_edge(DetailSurface::ModelSelector, true);
-                    } else {
-                        self.model_selector.selected =
-                            self.model_selector.filtered.len().saturating_sub(1);
-                        self.reset_split_detail_scroll(DetailSurface::ModelSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::ModelSelector);
-                    }
-                }
-                KeyCode::Backspace => {
-                    self.model_selector.pop_char();
-                    self.reset_split_detail_scroll(DetailSurface::ModelSelector);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::ModelSelector);
-                }
-                KeyCode::Char(c)
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    self.model_selector.push_char(c);
-                    self.reset_split_detail_scroll(DetailSurface::ModelSelector);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::ModelSelector);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        if self.gateway_browser.active {
-            match key.code {
-                KeyCode::Esc if !self.close_detail_fullscreen(DetailSurface::GatewayBrowser) => {
-                    self.gateway_browser.active = false;
-                }
-                _ if selector_action_key(&key, 'z') => {
-                    self.toggle_detail_fullscreen(
-                        DetailSurface::GatewayBrowser,
-                        self.gateway_browser_pane.scroll,
-                    );
-                }
-                KeyCode::Enter => {
-                    self.open_gateway_primary_editor();
-                }
-                KeyCode::Char(' ') => {
-                    self.toggle_selected_gateway_platform();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::GatewayBrowser);
-                }
-                _ if selector_action_key(&key, 'a') => {
-                    self.open_gateway_allowlist_editor();
-                }
-                _ if selector_action_key(&key, 'h') => {
-                    self.open_gateway_home_channel_editor();
-                }
-                _ if selector_action_key(&key, 'b') => {
-                    self.open_gateway_bind_editor();
-                }
-                _ if selector_action_key(&key, 'r') => {
-                    self.refresh_gateway_browser();
-                }
-                _ if selector_action_key(&key, 'x') => {
-                    self.handle_gateway_control("restart".into());
-                }
-                KeyCode::Tab | KeyCode::BackTab
-                    if !self.detail_fullscreen_active(DetailSurface::GatewayBrowser) =>
-                {
-                    self.gateway_browser_pane.focus = self.gateway_browser_pane.focus.toggle();
-                }
-                KeyCode::Up => {
-                    self.gateway_browser.move_up();
-                    self.gateway_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::GatewayBrowser);
-                }
-                KeyCode::Down => {
-                    self.gateway_browser.move_down();
-                    self.gateway_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::GatewayBrowser);
-                }
-                KeyCode::PageUp if self.detail_fullscreen_active(DetailSurface::GatewayBrowser) => {
-                    self.page_up_detail_fullscreen(DetailSurface::GatewayBrowser);
-                }
-                KeyCode::PageUp => {
-                    if self.gateway_browser_pane.focus == SplitPaneFocus::Detail {
-                        self.gateway_browser_pane.page_up(8);
-                    } else {
-                        self.gateway_browser.page_up();
-                        self.gateway_browser_pane.reset_scroll();
-                        self.reset_detail_fullscreen_scroll(DetailSurface::GatewayBrowser);
-                    }
-                }
-                KeyCode::PageDown
-                    if self.detail_fullscreen_active(DetailSurface::GatewayBrowser) =>
-                {
-                    self.page_down_detail_fullscreen(DetailSurface::GatewayBrowser);
-                }
-                KeyCode::PageDown => {
-                    if self.gateway_browser_pane.focus == SplitPaneFocus::Detail {
-                        self.gateway_browser_pane.page_down(8);
-                    } else {
-                        self.gateway_browser.page_down();
-                        self.gateway_browser_pane.reset_scroll();
-                        self.reset_detail_fullscreen_scroll(DetailSurface::GatewayBrowser);
-                    }
-                }
-                KeyCode::Home => {
-                    self.gateway_browser.selected = 0;
-                    self.gateway_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::GatewayBrowser);
-                }
-                KeyCode::End => {
-                    self.gateway_browser.selected =
-                        self.gateway_browser.filtered.len().saturating_sub(1);
-                    self.gateway_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::GatewayBrowser);
-                }
-                KeyCode::Backspace => {
-                    self.gateway_browser.pop_char();
-                    self.gateway_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::GatewayBrowser);
-                }
-                KeyCode::Char(c) if selector_search_char(&key) == Some(c) => {
-                    self.gateway_browser.push_char(c);
-                    self.gateway_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::GatewayBrowser);
-                }
-                _ => {}
-            }
-            self.needs_redraw = true;
-            return;
-        }
-
-        if self.moa_reference_selector.active {
-            match key.code {
-                KeyCode::Esc => {
-                    self.moa_reference_selector.active = false;
-                }
-                KeyCode::Enter => {
-                    self.moa_reference_selector.active = false;
-                    match self.moa_reference_selector_mode {
-                        MoaReferenceSelectorMode::EditRoster => {
-                            let selected: Vec<String> =
-                                self.moa_reference_selected.iter().cloned().collect();
-                            self.handle_save_moa_reference_selection(selected);
-                        }
-                        MoaReferenceSelectorMode::AddExpert => {
-                            if let Some(model) = self
-                                .moa_reference_selector
-                                .current()
-                                .map(|entry| entry.display.clone())
-                            {
-                                self.handle_add_moa_reference(model);
-                            }
-                        }
-                        MoaReferenceSelectorMode::RemoveExpert => {
-                            if let Some(model) = self
-                                .moa_reference_selector
-                                .current()
-                                .map(|entry| entry.display.clone())
-                            {
-                                self.handle_remove_moa_reference(model);
-                            }
-                        }
-                    }
-                }
-                KeyCode::Char(' ')
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
-                        && self.moa_reference_selector_mode
-                            == MoaReferenceSelectorMode::EditRoster =>
-                {
-                    if let Some(model) = self
-                        .moa_reference_selector
-                        .current()
-                        .map(|entry| entry.display.clone())
-                    {
-                        if !self.moa_reference_selected.insert(model.clone()) {
-                            self.moa_reference_selected.remove(&model);
-                        }
-                        self.needs_redraw = true;
-                    }
-                }
-                KeyCode::Tab => self.moa_reference_selector.move_down(),
-                KeyCode::BackTab => self.moa_reference_selector.move_up(),
-                KeyCode::Up => self.moa_reference_selector.move_up(),
-                KeyCode::Down => self.moa_reference_selector.move_down(),
-                KeyCode::PageUp => self.moa_reference_selector.page_up(),
-                KeyCode::PageDown => self.moa_reference_selector.page_down(),
-                KeyCode::Backspace => self.moa_reference_selector.pop_char(),
-                KeyCode::Char(c)
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    self.moa_reference_selector.push_char(c);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // Vision-model selector overlay active — same navigation as /model.
-        if self.vision_model_selector.active {
-            match key.code {
-                KeyCode::Esc
-                    if !self.close_detail_fullscreen(DetailSurface::VisionModelSelector) =>
-                {
-                    self.vision_model_selector.active = false;
-                }
-                _ if selector_action_key(&key, 'z') => {
-                    self.toggle_detail_fullscreen(
-                        DetailSurface::VisionModelSelector,
-                        self.split_detail_scroll(DetailSurface::VisionModelSelector),
-                    );
-                }
-                KeyCode::Tab | KeyCode::BackTab
-                    if !self.detail_fullscreen_active(DetailSurface::VisionModelSelector) =>
-                {
-                    self.toggle_simple_split_focus(DetailSurface::VisionModelSelector);
-                }
-                KeyCode::Enter => {
-                    if let Some(model) = self
-                        .vision_model_selector
-                        .current()
-                        .map(|entry| entry.display.clone())
-                    {
-                        self.vision_model_selector.active = false;
-                        self.close_detail_fullscreen(DetailSurface::VisionModelSelector);
-                        self.handle_set_vision_model(model);
-                    }
-                }
-                KeyCode::Up => {
-                    if self.simple_split_detail_focused(DetailSurface::VisionModelSelector) {
-                        self.scroll_split_detail_lines(DetailSurface::VisionModelSelector, -1);
-                    } else {
-                        self.vision_model_selector.move_up();
-                        self.reset_split_detail_scroll(DetailSurface::VisionModelSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::VisionModelSelector);
-                    }
-                }
-                KeyCode::Down => {
-                    if self.simple_split_detail_focused(DetailSurface::VisionModelSelector) {
-                        self.scroll_split_detail_lines(DetailSurface::VisionModelSelector, 1);
-                    } else {
-                        self.vision_model_selector.move_down();
-                        self.reset_split_detail_scroll(DetailSurface::VisionModelSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::VisionModelSelector);
-                    }
-                }
-                KeyCode::PageUp
-                    if self.detail_fullscreen_active(DetailSurface::VisionModelSelector) =>
-                {
-                    self.page_up_detail_fullscreen(DetailSurface::VisionModelSelector);
-                }
-                KeyCode::PageDown
-                    if self.detail_fullscreen_active(DetailSurface::VisionModelSelector) =>
-                {
-                    self.page_down_detail_fullscreen(DetailSurface::VisionModelSelector);
-                }
-                KeyCode::PageUp => self.apply_simple_selector_paging(
-                    DetailSurface::VisionModelSelector,
-                    PagingIntent::Up,
-                ),
-                KeyCode::PageDown => self.apply_simple_selector_paging(
-                    DetailSurface::VisionModelSelector,
-                    PagingIntent::Down,
-                ),
-                KeyCode::Home => {
-                    if self.simple_split_detail_focused(DetailSurface::VisionModelSelector) {
-                        self.set_split_detail_scroll_to_edge(
-                            DetailSurface::VisionModelSelector,
-                            false,
-                        );
-                    } else {
-                        self.vision_model_selector.selected = 0;
-                        self.reset_split_detail_scroll(DetailSurface::VisionModelSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::VisionModelSelector);
-                    }
-                }
-                KeyCode::End => {
-                    if self.simple_split_detail_focused(DetailSurface::VisionModelSelector) {
-                        self.set_split_detail_scroll_to_edge(
-                            DetailSurface::VisionModelSelector,
-                            true,
-                        );
-                    } else {
-                        self.vision_model_selector.selected =
-                            self.vision_model_selector.filtered.len().saturating_sub(1);
-                        self.reset_split_detail_scroll(DetailSurface::VisionModelSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::VisionModelSelector);
-                    }
-                }
-                KeyCode::Backspace => {
-                    self.vision_model_selector.pop_char();
-                    self.reset_split_detail_scroll(DetailSurface::VisionModelSelector);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::VisionModelSelector);
-                }
-                KeyCode::Char(c)
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    self.vision_model_selector.push_char(c);
-                    self.reset_split_detail_scroll(DetailSurface::VisionModelSelector);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::VisionModelSelector);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        if self.image_model_selector.active {
-            match key.code {
-                KeyCode::Esc
-                    if !self.close_detail_fullscreen(DetailSurface::ImageModelSelector) =>
-                {
-                    self.image_model_selector.active = false;
-                }
-                _ if selector_action_key(&key, 'z') => {
-                    self.toggle_detail_fullscreen(
-                        DetailSurface::ImageModelSelector,
-                        self.split_detail_scroll(DetailSurface::ImageModelSelector),
-                    );
-                }
-                KeyCode::Tab | KeyCode::BackTab
-                    if !self.detail_fullscreen_active(DetailSurface::ImageModelSelector) =>
-                {
-                    self.toggle_simple_split_focus(DetailSurface::ImageModelSelector);
-                }
-                KeyCode::Enter => {
-                    if let Some(model) = self
-                        .image_model_selector
-                        .current()
-                        .map(|entry| entry.display.clone())
-                    {
-                        self.image_model_selector.active = false;
-                        self.close_detail_fullscreen(DetailSurface::ImageModelSelector);
-                        self.handle_set_image_model(model);
-                    }
-                }
-                KeyCode::Up => {
-                    if self.simple_split_detail_focused(DetailSurface::ImageModelSelector) {
-                        self.scroll_split_detail_lines(DetailSurface::ImageModelSelector, -1);
-                    } else {
-                        self.image_model_selector.move_up();
-                        self.reset_split_detail_scroll(DetailSurface::ImageModelSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::ImageModelSelector);
-                    }
-                }
-                KeyCode::Down => {
-                    if self.simple_split_detail_focused(DetailSurface::ImageModelSelector) {
-                        self.scroll_split_detail_lines(DetailSurface::ImageModelSelector, 1);
-                    } else {
-                        self.image_model_selector.move_down();
-                        self.reset_split_detail_scroll(DetailSurface::ImageModelSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::ImageModelSelector);
-                    }
-                }
-                KeyCode::PageUp
-                    if self.detail_fullscreen_active(DetailSurface::ImageModelSelector) =>
-                {
-                    self.page_up_detail_fullscreen(DetailSurface::ImageModelSelector);
-                }
-                KeyCode::PageDown
-                    if self.detail_fullscreen_active(DetailSurface::ImageModelSelector) =>
-                {
-                    self.page_down_detail_fullscreen(DetailSurface::ImageModelSelector);
-                }
-                KeyCode::PageUp => self.apply_simple_selector_paging(
-                    DetailSurface::ImageModelSelector,
-                    PagingIntent::Up,
-                ),
-                KeyCode::PageDown => self.apply_simple_selector_paging(
-                    DetailSurface::ImageModelSelector,
-                    PagingIntent::Down,
-                ),
-                KeyCode::Home => {
-                    if self.simple_split_detail_focused(DetailSurface::ImageModelSelector) {
-                        self.set_split_detail_scroll_to_edge(
-                            DetailSurface::ImageModelSelector,
-                            false,
-                        );
-                    } else {
-                        self.image_model_selector.selected = 0;
-                        self.reset_split_detail_scroll(DetailSurface::ImageModelSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::ImageModelSelector);
-                    }
-                }
-                KeyCode::End => {
-                    if self.simple_split_detail_focused(DetailSurface::ImageModelSelector) {
-                        self.set_split_detail_scroll_to_edge(
-                            DetailSurface::ImageModelSelector,
-                            true,
-                        );
-                    } else {
-                        self.image_model_selector.selected =
-                            self.image_model_selector.filtered.len().saturating_sub(1);
-                        self.reset_split_detail_scroll(DetailSurface::ImageModelSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::ImageModelSelector);
-                    }
-                }
-                KeyCode::Backspace => {
-                    self.image_model_selector.pop_char();
-                    self.reset_split_detail_scroll(DetailSurface::ImageModelSelector);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::ImageModelSelector);
-                }
-                KeyCode::Char(c)
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    self.image_model_selector.push_char(c);
-                    self.reset_split_detail_scroll(DetailSurface::ImageModelSelector);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::ImageModelSelector);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // MCP selector overlay active — mirrors /model UX while keeping
-        // installs controlled. Catalog-only entries open detail view instead.
-        if self.mcp_selector.active {
-            match key.code {
-                KeyCode::Esc if !self.close_detail_fullscreen(DetailSurface::McpSelector) => {
-                    self.mcp_selector.active = false;
-                }
-                _ if selector_action_key(&key, 'z') => {
-                    self.toggle_detail_fullscreen(
-                        DetailSurface::McpSelector,
-                        self.split_detail_scroll(DetailSurface::McpSelector),
-                    );
-                }
-                KeyCode::Tab | KeyCode::BackTab
-                    if !self.detail_fullscreen_active(DetailSurface::McpSelector) =>
-                {
-                    self.toggle_simple_split_focus(DetailSurface::McpSelector);
-                }
-                _ if selector_action_key(&key, 'r') => {
-                    let query = self.mcp_selector.query.clone();
-                    self.open_mcp_selector(Some(&query), true);
-                }
-                KeyCode::Enter => {
-                    if let Some(entry) = self.mcp_selector.current() {
-                        let command = entry.default_command();
-                        self.mcp_selector.active = false;
-                        self.close_detail_fullscreen(DetailSurface::McpSelector);
-                        self.handle_mcp_command(command);
-                    }
-                }
-                KeyCode::Delete => {
-                    if let Some(entry) = self.mcp_selector.current()
-                        && let Some(command) = entry.remove_command()
-                    {
-                        self.mcp_selector.active = false;
-                        self.handle_mcp_command(command);
-                    }
-                }
-                KeyCode::Up => {
-                    if self.simple_split_detail_focused(DetailSurface::McpSelector) {
-                        self.scroll_split_detail_lines(DetailSurface::McpSelector, -1);
-                    } else {
-                        self.mcp_selector.move_up();
-                        self.reset_split_detail_scroll(DetailSurface::McpSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::McpSelector);
-                    }
-                }
-                KeyCode::Down => {
-                    if self.simple_split_detail_focused(DetailSurface::McpSelector) {
-                        self.scroll_split_detail_lines(DetailSurface::McpSelector, 1);
-                    } else {
-                        self.mcp_selector.move_down();
-                        self.reset_split_detail_scroll(DetailSurface::McpSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::McpSelector);
-                    }
-                }
-                KeyCode::PageUp if self.detail_fullscreen_active(DetailSurface::McpSelector) => {
-                    self.page_up_detail_fullscreen(DetailSurface::McpSelector);
-                }
-                KeyCode::PageDown if self.detail_fullscreen_active(DetailSurface::McpSelector) => {
-                    self.page_down_detail_fullscreen(DetailSurface::McpSelector);
-                }
-                KeyCode::PageUp => {
-                    self.apply_simple_selector_paging(DetailSurface::McpSelector, PagingIntent::Up)
-                }
-                KeyCode::PageDown => self
-                    .apply_simple_selector_paging(DetailSurface::McpSelector, PagingIntent::Down),
-                KeyCode::Home => {
-                    if self.simple_split_detail_focused(DetailSurface::McpSelector) {
-                        self.set_split_detail_scroll_to_edge(DetailSurface::McpSelector, false);
-                    } else {
-                        self.mcp_selector.selected = 0;
-                        self.reset_split_detail_scroll(DetailSurface::McpSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::McpSelector);
-                    }
-                }
-                KeyCode::End => {
-                    if self.simple_split_detail_focused(DetailSurface::McpSelector) {
-                        self.set_split_detail_scroll_to_edge(DetailSurface::McpSelector, true);
-                    } else {
-                        self.mcp_selector.selected =
-                            self.mcp_selector.filtered.len().saturating_sub(1);
-                        self.reset_split_detail_scroll(DetailSurface::McpSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::McpSelector);
-                    }
-                }
-                KeyCode::Backspace => {
-                    self.mcp_selector.pop_char();
-                    self.reset_split_detail_scroll(DetailSurface::McpSelector);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::McpSelector);
-                }
-                KeyCode::Char(' ') => {
-                    if let Some(entry) = self.mcp_selector.current()
-                        && let Some(command) = entry.toggle_command()
-                    {
-                        let query = self.mcp_selector.query.clone();
-                        self.handle_mcp_command(command);
-                        self.open_mcp_selector(Some(&query), false);
-                    }
-                }
-                _ if selector_action_key(&key, 'v') => {
-                    if let Some(entry) = self.mcp_selector.current() {
-                        let command = entry.view_command();
-                        self.mcp_selector.active = false;
-                        self.handle_mcp_command(command);
-                    }
-                }
-                _ if selector_action_key(&key, 'i') => {
-                    if let Some(entry) = self.mcp_selector.current()
-                        && let Some(command) = entry.install_command()
-                    {
-                        self.mcp_selector.active = false;
-                        self.handle_mcp_command(command);
-                    }
-                }
-                _ if selector_action_key(&key, 't') => {
-                    if let Some(entry) = self.mcp_selector.current()
-                        && entry.kind == McpEntryKind::ConfiguredServer
-                    {
-                        let command = entry.test_command();
-                        self.mcp_selector.active = false;
-                        self.handle_mcp_command(command);
-                    }
-                }
-                _ if selector_action_key(&key, 'c') => {
-                    if let Some(entry) = self.mcp_selector.current()
-                        && entry.kind == McpEntryKind::ConfiguredServer
-                    {
-                        let command = entry.doctor_command();
-                        self.mcp_selector.active = false;
-                        self.handle_mcp_command(command);
-                    }
-                }
-                _ if selector_action_key(&key, 'd') => {
-                    if let Some(entry) = self.mcp_selector.current()
-                        && let Some(command) = entry.remove_command()
-                    {
-                        self.mcp_selector.active = false;
-                        self.handle_mcp_command(command);
-                    }
-                }
-                KeyCode::Char(c) if selector_search_char(&key) == Some(c) => {
-                    self.mcp_selector.push_char(c);
-                    self.reset_split_detail_scroll(DetailSurface::McpSelector);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::McpSelector);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        if self.remote_mcp_browser.selector.active {
-            match key.code {
-                KeyCode::Esc if !self.close_detail_fullscreen(DetailSurface::RemoteMcpBrowser) => {
-                    self.remote_mcp_browser.selector.active = false;
-                    self.needs_redraw = true;
-                }
-                _ if selector_action_key(&key, 'z') => {
-                    self.toggle_detail_fullscreen(
-                        DetailSurface::RemoteMcpBrowser,
-                        self.split_detail_scroll(DetailSurface::RemoteMcpBrowser),
-                    );
-                }
-                KeyCode::Tab | KeyCode::BackTab
-                    if !self.detail_fullscreen_active(DetailSurface::RemoteMcpBrowser) =>
-                {
-                    self.toggle_simple_split_focus(DetailSurface::RemoteMcpBrowser);
-                }
-                KeyCode::Enter => {
-                    if let Some(entry) = self.remote_mcp_browser.selector.current().cloned() {
-                        match entry.action() {
-                            RemoteMcpAction::Install => self.install_remote_mcp_entry(&entry),
-                            RemoteMcpAction::View => self.view_remote_mcp_entry(&entry),
-                        }
-                    }
-                }
-                _ if selector_action_key(&key, 'i') => {
-                    if let Some(entry) = self.remote_mcp_browser.selector.current().cloned() {
-                        if entry.install.is_some() {
-                            self.install_remote_mcp_entry(&entry);
-                        } else {
-                            self.push_output(
-                                "This remote MCP entry is view-only. Use Enter or V to inspect it.",
-                                OutputRole::System,
-                            );
-                        }
-                    }
-                }
-                _ if selector_action_key(&key, 'v') => {
-                    if let Some(entry) = self.remote_mcp_browser.selector.current().cloned() {
-                        self.view_remote_mcp_entry(&entry);
-                    }
-                }
-                _ if selector_action_key(&key, 'r') => {
-                    self.schedule_remote_mcp_search(true);
-                }
-                _ if selector_action_key(&key, 'l') => {
-                    self.remote_mcp_browser.selector.active = false;
-                    self.close_detail_fullscreen(DetailSurface::RemoteMcpBrowser);
-                    self.open_mcp_selector(None, false);
-                }
-                KeyCode::Up => {
-                    if self.simple_split_detail_focused(DetailSurface::RemoteMcpBrowser) {
-                        self.scroll_split_detail_lines(DetailSurface::RemoteMcpBrowser, -1);
-                    } else {
-                        self.remote_mcp_browser.selector.move_up();
-                        self.reset_split_detail_scroll(DetailSurface::RemoteMcpBrowser);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::RemoteMcpBrowser);
-                    }
-                }
-                KeyCode::Down => {
-                    if self.simple_split_detail_focused(DetailSurface::RemoteMcpBrowser) {
-                        self.scroll_split_detail_lines(DetailSurface::RemoteMcpBrowser, 1);
-                    } else {
-                        self.remote_mcp_browser.selector.move_down();
-                        self.reset_split_detail_scroll(DetailSurface::RemoteMcpBrowser);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::RemoteMcpBrowser);
-                    }
-                }
-                KeyCode::PageUp
-                    if self.detail_fullscreen_active(DetailSurface::RemoteMcpBrowser) =>
-                {
-                    self.page_up_detail_fullscreen(DetailSurface::RemoteMcpBrowser);
-                }
-                KeyCode::PageDown
-                    if self.detail_fullscreen_active(DetailSurface::RemoteMcpBrowser) =>
-                {
-                    self.page_down_detail_fullscreen(DetailSurface::RemoteMcpBrowser);
-                }
-                KeyCode::PageUp => self.apply_simple_selector_paging(
-                    DetailSurface::RemoteMcpBrowser,
-                    PagingIntent::Up,
-                ),
-                KeyCode::PageDown => self.apply_simple_selector_paging(
-                    DetailSurface::RemoteMcpBrowser,
-                    PagingIntent::Down,
-                ),
-                KeyCode::Home => {
-                    if self.simple_split_detail_focused(DetailSurface::RemoteMcpBrowser) {
-                        self.set_split_detail_scroll_to_edge(
-                            DetailSurface::RemoteMcpBrowser,
-                            false,
-                        );
-                    } else {
-                        self.remote_mcp_browser.selector.selected = 0;
-                        self.reset_split_detail_scroll(DetailSurface::RemoteMcpBrowser);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::RemoteMcpBrowser);
-                    }
-                }
-                KeyCode::End => {
-                    if self.simple_split_detail_focused(DetailSurface::RemoteMcpBrowser) {
-                        self.set_split_detail_scroll_to_edge(DetailSurface::RemoteMcpBrowser, true);
-                    } else {
-                        self.remote_mcp_browser.selector.selected = self
-                            .remote_mcp_browser
-                            .selector
-                            .filtered
-                            .len()
-                            .saturating_sub(1);
-                        self.reset_split_detail_scroll(DetailSurface::RemoteMcpBrowser);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::RemoteMcpBrowser);
-                    }
-                }
-                KeyCode::Backspace => {
-                    self.remote_mcp_browser.selector.pop_char();
-                    self.reset_split_detail_scroll(DetailSurface::RemoteMcpBrowser);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::RemoteMcpBrowser);
-                    self.schedule_remote_mcp_search(false);
-                }
-                KeyCode::Char(c) if selector_search_char(&key) == Some(c) => {
-                    self.remote_mcp_browser.selector.push_char(c);
-                    self.reset_split_detail_scroll(DetailSurface::RemoteMcpBrowser);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::RemoteMcpBrowser);
-                    self.schedule_remote_mcp_search(false);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        if self.remote_skill_browser.selector.active {
-            match key.code {
-                KeyCode::Esc
-                    if !self.close_detail_fullscreen(DetailSurface::RemoteSkillBrowser) =>
-                {
-                    self.remote_skill_browser.selector.active = false;
-                    self.remote_skill_browser.action_in_flight = None;
-                    self.needs_redraw = true;
-                }
-                _ if selector_action_key(&key, 'z') => {
-                    self.toggle_detail_fullscreen(
-                        DetailSurface::RemoteSkillBrowser,
-                        self.split_detail_scroll(DetailSurface::RemoteSkillBrowser),
-                    );
-                }
-                KeyCode::Tab | KeyCode::BackTab
-                    if !self.detail_fullscreen_active(DetailSurface::RemoteSkillBrowser) =>
-                {
-                    self.toggle_simple_split_focus(DetailSurface::RemoteSkillBrowser);
-                }
-                KeyCode::Enter => {
-                    if let Some(entry) = self.remote_skill_browser.selector.current().cloned() {
-                        self.run_remote_skill_action(entry);
-                    }
-                }
-                _ if selector_action_key(&key, 'i') => {
-                    if let Some(entry) = self.remote_skill_browser.selector.current().cloned() {
-                        self.run_remote_skill_action(entry);
-                    }
-                }
-                _ if selector_action_key(&key, 'u') => {
-                    if let Some(mut entry) = self.remote_skill_browser.selector.current().cloned() {
-                        if entry.installed_name.is_some() {
-                            entry.action = RemoteSkillAction::Update;
-                            self.run_remote_skill_action(entry);
-                        } else {
-                            self.push_output(
-                                "This remote skill is not hub-installed yet. Use Enter or I to install it.",
-                                OutputRole::System,
-                            );
-                        }
-                    }
-                }
-                _ if selector_action_key(&key, 'r') => {
-                    self.schedule_remote_skill_search(true);
-                }
-                _ if selector_action_key(&key, 'l') => {
-                    self.remote_skill_browser.selector.active = false;
-                    self.close_detail_fullscreen(DetailSurface::RemoteSkillBrowser);
-                    self.refresh_skills_list();
-                    self.open_skill_selector();
-                    self.needs_redraw = true;
-                }
-                KeyCode::Up => {
-                    if self.simple_split_detail_focused(DetailSurface::RemoteSkillBrowser) {
-                        self.scroll_split_detail_lines(DetailSurface::RemoteSkillBrowser, -1);
-                    } else {
-                        self.remote_skill_browser.selector.move_up();
-                        self.reset_split_detail_scroll(DetailSurface::RemoteSkillBrowser);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::RemoteSkillBrowser);
-                    }
-                }
-                KeyCode::Down => {
-                    if self.simple_split_detail_focused(DetailSurface::RemoteSkillBrowser) {
-                        self.scroll_split_detail_lines(DetailSurface::RemoteSkillBrowser, 1);
-                    } else {
-                        self.remote_skill_browser.selector.move_down();
-                        self.reset_split_detail_scroll(DetailSurface::RemoteSkillBrowser);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::RemoteSkillBrowser);
-                    }
-                }
-                KeyCode::PageUp
-                    if self.detail_fullscreen_active(DetailSurface::RemoteSkillBrowser) =>
-                {
-                    self.page_up_detail_fullscreen(DetailSurface::RemoteSkillBrowser);
-                }
-                KeyCode::PageDown
-                    if self.detail_fullscreen_active(DetailSurface::RemoteSkillBrowser) =>
-                {
-                    self.page_down_detail_fullscreen(DetailSurface::RemoteSkillBrowser);
-                }
-                KeyCode::PageUp => self.apply_simple_selector_paging(
-                    DetailSurface::RemoteSkillBrowser,
-                    PagingIntent::Up,
-                ),
-                KeyCode::PageDown => self.apply_simple_selector_paging(
-                    DetailSurface::RemoteSkillBrowser,
-                    PagingIntent::Down,
-                ),
-                KeyCode::Home => {
-                    if self.simple_split_detail_focused(DetailSurface::RemoteSkillBrowser) {
-                        self.set_split_detail_scroll_to_edge(
-                            DetailSurface::RemoteSkillBrowser,
-                            false,
-                        );
-                    } else {
-                        self.remote_skill_browser.selector.selected = 0;
-                        self.reset_split_detail_scroll(DetailSurface::RemoteSkillBrowser);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::RemoteSkillBrowser);
-                    }
-                }
-                KeyCode::End => {
-                    if self.simple_split_detail_focused(DetailSurface::RemoteSkillBrowser) {
-                        self.set_split_detail_scroll_to_edge(
-                            DetailSurface::RemoteSkillBrowser,
-                            true,
-                        );
-                    } else {
-                        self.remote_skill_browser.selector.selected = self
-                            .remote_skill_browser
-                            .selector
-                            .filtered
-                            .len()
-                            .saturating_sub(1);
-                        self.reset_split_detail_scroll(DetailSurface::RemoteSkillBrowser);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::RemoteSkillBrowser);
-                    }
-                }
-                KeyCode::Backspace => {
-                    self.remote_skill_browser.selector.pop_char();
-                    self.reset_split_detail_scroll(DetailSurface::RemoteSkillBrowser);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::RemoteSkillBrowser);
-                    self.schedule_remote_skill_search(false);
-                }
-                KeyCode::Char(c) if selector_search_char(&key) == Some(c) => {
-                    self.remote_skill_browser.selector.push_char(c);
-                    self.reset_split_detail_scroll(DetailSurface::RemoteSkillBrowser);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::RemoteSkillBrowser);
-                    self.schedule_remote_skill_search(false);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        if self.remote_plugin_browser.selector.active {
-            match key.code {
-                KeyCode::Esc
-                    if !self.close_detail_fullscreen(DetailSurface::RemotePluginBrowser) =>
-                {
-                    self.remote_plugin_browser.selector.active = false;
-                    self.remote_plugin_browser.action_in_flight = None;
-                    self.needs_redraw = true;
-                }
-                _ if selector_action_key(&key, 'z') => {
-                    self.toggle_detail_fullscreen(
-                        DetailSurface::RemotePluginBrowser,
-                        self.split_detail_scroll(DetailSurface::RemotePluginBrowser),
-                    );
-                }
-                KeyCode::Tab | KeyCode::BackTab
-                    if !self.detail_fullscreen_active(DetailSurface::RemotePluginBrowser) =>
-                {
-                    self.toggle_simple_split_focus(DetailSurface::RemotePluginBrowser);
-                }
-                KeyCode::Enter => {
-                    if let Some(entry) = self.remote_plugin_browser.selector.current().cloned() {
-                        self.run_remote_plugin_action(entry);
-                    }
-                }
-                _ if selector_action_key(&key, 'i') => {
-                    if let Some(entry) = self.remote_plugin_browser.selector.current().cloned() {
-                        self.run_remote_plugin_action(entry);
-                    }
-                }
-                _ if selector_action_key(&key, 'u') => {
-                    if let Some(mut entry) = self.remote_plugin_browser.selector.current().cloned()
-                    {
-                        if entry.installed_name.is_some() {
-                            entry.action = RemotePluginAction::Update;
-                            self.run_remote_plugin_action(entry);
-                        } else {
-                            self.push_output(
-                                "This remote plugin is not hub-installed yet. Use Enter or I to install it.",
-                                OutputRole::System,
-                            );
-                        }
-                    }
-                }
-                _ if selector_action_key(&key, 'r') => {
-                    self.schedule_remote_plugin_search(true);
-                }
-                _ if selector_action_key(&key, 'l') => {
-                    let scope = self.plugin_toggle_scope.clone();
-                    self.remote_plugin_browser.selector.active = false;
-                    self.close_detail_fullscreen(DetailSurface::RemotePluginBrowser);
-                    self.open_plugin_toggle(scope);
-                    self.needs_redraw = true;
-                }
-                KeyCode::Up => {
-                    if self.simple_split_detail_focused(DetailSurface::RemotePluginBrowser) {
-                        self.scroll_split_detail_lines(DetailSurface::RemotePluginBrowser, -1);
-                    } else {
-                        self.remote_plugin_browser.selector.move_up();
-                        self.reset_split_detail_scroll(DetailSurface::RemotePluginBrowser);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::RemotePluginBrowser);
-                    }
-                }
-                KeyCode::Down => {
-                    if self.simple_split_detail_focused(DetailSurface::RemotePluginBrowser) {
-                        self.scroll_split_detail_lines(DetailSurface::RemotePluginBrowser, 1);
-                    } else {
-                        self.remote_plugin_browser.selector.move_down();
-                        self.reset_split_detail_scroll(DetailSurface::RemotePluginBrowser);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::RemotePluginBrowser);
-                    }
-                }
-                KeyCode::PageUp
-                    if self.detail_fullscreen_active(DetailSurface::RemotePluginBrowser) =>
-                {
-                    self.page_up_detail_fullscreen(DetailSurface::RemotePluginBrowser);
-                }
-                KeyCode::PageDown
-                    if self.detail_fullscreen_active(DetailSurface::RemotePluginBrowser) =>
-                {
-                    self.page_down_detail_fullscreen(DetailSurface::RemotePluginBrowser);
-                }
-                KeyCode::PageUp => self.apply_simple_selector_paging(
-                    DetailSurface::RemotePluginBrowser,
-                    PagingIntent::Up,
-                ),
-                KeyCode::PageDown => self.apply_simple_selector_paging(
-                    DetailSurface::RemotePluginBrowser,
-                    PagingIntent::Down,
-                ),
-                KeyCode::Home => {
-                    if self.simple_split_detail_focused(DetailSurface::RemotePluginBrowser) {
-                        self.set_split_detail_scroll_to_edge(
-                            DetailSurface::RemotePluginBrowser,
-                            false,
-                        );
-                    } else {
-                        self.remote_plugin_browser.selector.selected = 0;
-                        self.reset_split_detail_scroll(DetailSurface::RemotePluginBrowser);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::RemotePluginBrowser);
-                    }
-                }
-                KeyCode::End => {
-                    if self.simple_split_detail_focused(DetailSurface::RemotePluginBrowser) {
-                        self.set_split_detail_scroll_to_edge(
-                            DetailSurface::RemotePluginBrowser,
-                            true,
-                        );
-                    } else {
-                        self.remote_plugin_browser.selector.selected = self
-                            .remote_plugin_browser
-                            .selector
-                            .filtered
-                            .len()
-                            .saturating_sub(1);
-                        self.reset_split_detail_scroll(DetailSurface::RemotePluginBrowser);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::RemotePluginBrowser);
-                    }
-                }
-                KeyCode::Backspace => {
-                    self.remote_plugin_browser.selector.pop_char();
-                    self.reset_split_detail_scroll(DetailSurface::RemotePluginBrowser);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::RemotePluginBrowser);
-                    self.schedule_remote_plugin_search(false);
-                }
-                KeyCode::Char(c) if selector_search_char(&key) == Some(c) => {
-                    self.remote_plugin_browser.selector.push_char(c);
-                    self.reset_split_detail_scroll(DetailSurface::RemotePluginBrowser);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::RemotePluginBrowser);
-                    self.schedule_remote_plugin_search(false);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        if self.profile_selector.active {
-            match key.code {
-                KeyCode::Esc if !self.close_detail_fullscreen(DetailSurface::ProfileSelector) => {
-                    self.profile_selector.active = false;
-                }
-                _ if selector_action_key(&key, 'z') => {
-                    self.toggle_detail_fullscreen(
-                        DetailSurface::ProfileSelector,
-                        self.split_detail_scroll(DetailSurface::ProfileSelector),
-                    );
-                }
-                KeyCode::Enter => {
-                    if let Some(name) = self
-                        .profile_selector
-                        .current()
-                        .map(|entry| entry.name.clone())
-                    {
-                        self.handle_profile_switch(name);
-                    }
-                }
-                _ if selector_action_key(&key, 'v') => {
-                    self.set_profile_detail_mode(ProfileDetailMode::Summary);
-                }
-                _ if selector_action_key(&key, 'c') => {
-                    self.set_profile_detail_mode(ProfileDetailMode::Config);
-                }
-                _ if selector_action_key(&key, 's') => {
-                    self.set_profile_detail_mode(ProfileDetailMode::Soul);
-                }
-                _ if selector_action_key(&key, 'm') => {
-                    self.set_profile_detail_mode(ProfileDetailMode::Memory);
-                }
-                _ if selector_action_key(&key, 't') => {
-                    self.set_profile_detail_mode(ProfileDetailMode::Tools);
-                }
-                _ if selector_action_key(&key, 'h') || matches!(key.code, KeyCode::Char('?')) => {
-                    self.set_profile_detail_mode(ProfileDetailMode::Help);
-                }
-                _ if selector_action_key(&key, 'a') => {
-                    if let Some(name) = self
-                        .profile_selector
-                        .current()
-                        .map(|entry| entry.name.clone())
-                    {
-                        self.open_profile_alias_editor(name);
-                    }
-                }
-                _ if selector_action_key(&key, 'e') => {
-                    if let Some(name) = self
-                        .profile_selector
-                        .current()
-                        .map(|entry| entry.name.clone())
-                    {
-                        self.open_profile_export_editor(name);
-                    }
-                }
-                _ if selector_action_key(&key, 'd') || selector_action_key(&key, 'x') => {
-                    if let Some(name) = self
-                        .profile_selector
-                        .current()
-                        .map(|entry| entry.name.clone())
-                    {
-                        self.open_profile_delete_editor(name);
-                    }
-                }
-                _ if selector_action_key(&key, 'n') => {
-                    self.open_profile_create_editor();
-                }
-                _ if selector_action_key(&key, 'i') => {
-                    self.open_profile_import_editor();
-                }
-                _ if selector_action_key(&key, 'o') => {
-                    if let Some(name) = self
-                        .profile_selector
-                        .current()
-                        .map(|entry| entry.name.clone())
-                    {
-                        self.open_profile_rename_editor(name);
-                    }
-                }
-                KeyCode::Home => {
-                    self.profile_selector.selected = 0;
-                    self.reset_split_detail_scroll(DetailSurface::ProfileSelector);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::ProfileSelector);
-                }
-                KeyCode::End => {
-                    self.profile_selector.selected =
-                        self.profile_selector.filtered.len().saturating_sub(1);
-                    self.reset_split_detail_scroll(DetailSurface::ProfileSelector);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::ProfileSelector);
-                }
-                KeyCode::Left | KeyCode::BackTab => {
-                    self.cycle_profile_detail_mode(false);
-                }
-                KeyCode::Right | KeyCode::Tab => {
-                    self.cycle_profile_detail_mode(true);
-                }
-                KeyCode::Up => {
-                    self.profile_selector.move_up();
-                    self.reset_split_detail_scroll(DetailSurface::ProfileSelector);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::ProfileSelector);
-                }
-                KeyCode::Down => {
-                    self.profile_selector.move_down();
-                    self.reset_split_detail_scroll(DetailSurface::ProfileSelector);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::ProfileSelector);
-                }
-                KeyCode::PageUp
-                    if self.detail_fullscreen_active(DetailSurface::ProfileSelector) =>
-                {
-                    self.page_up_detail_fullscreen(DetailSurface::ProfileSelector);
-                }
-                KeyCode::PageDown
-                    if self.detail_fullscreen_active(DetailSurface::ProfileSelector) =>
-                {
-                    self.page_down_detail_fullscreen(DetailSurface::ProfileSelector);
-                }
-                KeyCode::PageUp => self
-                    .apply_simple_selector_paging(DetailSurface::ProfileSelector, PagingIntent::Up),
-                KeyCode::PageDown => self.apply_simple_selector_paging(
-                    DetailSurface::ProfileSelector,
-                    PagingIntent::Down,
-                ),
-                _ if selector_action_key(&key, 'r') => {
-                    self.refresh_profiles_list();
-                }
-                KeyCode::Backspace => {
-                    self.profile_selector.pop_char();
-                    self.reset_split_detail_scroll(DetailSurface::ProfileSelector);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::ProfileSelector);
-                }
-                KeyCode::Char(c) if selector_search_char(&key) == Some(c) => {
-                    self.profile_selector.push_char(c);
-                    self.reset_split_detail_scroll(DetailSurface::ProfileSelector);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::ProfileSelector);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // Skill selector overlay active — same key scheme as model selector
-        if self.skill_selector.active {
-            match key.code {
-                KeyCode::Esc if !self.close_detail_fullscreen(DetailSurface::SkillSelector) => {
-                    self.skill_selector.active = false;
-                }
-                _ if selector_action_key(&key, 'z') => {
-                    self.toggle_detail_fullscreen(
-                        DetailSurface::SkillSelector,
-                        self.split_detail_scroll(DetailSurface::SkillSelector),
-                    );
-                }
-                KeyCode::Tab | KeyCode::BackTab
-                    if !self.detail_fullscreen_active(DetailSurface::SkillSelector) =>
-                {
-                    self.toggle_simple_split_focus(DetailSurface::SkillSelector);
-                }
-                KeyCode::Char(' ') => {
-                    if let Some(name) = self
-                        .skill_selector
-                        .current()
-                        .map(|entry| entry.name.clone())
-                    {
-                        self.set_skill_activation(
-                            &name,
-                            !self.active_skills.iter().any(|skill| skill == &name),
-                        );
-                    }
-                }
-                KeyCode::Enter => {
-                    if let Some(entry) = self.skill_selector.current() {
-                        let skill_name = format!("/{} ", entry.name);
-                        self.skill_selector.active = false;
-                        self.close_detail_fullscreen(DetailSurface::SkillSelector);
-                        self.textarea_set_text(&skill_name);
-                        self.needs_redraw = true;
-                    }
-                }
-                KeyCode::Up => {
-                    if self.simple_split_detail_focused(DetailSurface::SkillSelector) {
-                        self.scroll_split_detail_lines(DetailSurface::SkillSelector, -1);
-                    } else {
-                        self.skill_selector.move_up();
-                        self.reset_split_detail_scroll(DetailSurface::SkillSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::SkillSelector);
-                    }
-                }
-                KeyCode::Down => {
-                    if self.simple_split_detail_focused(DetailSurface::SkillSelector) {
-                        self.scroll_split_detail_lines(DetailSurface::SkillSelector, 1);
-                    } else {
-                        self.skill_selector.move_down();
-                        self.reset_split_detail_scroll(DetailSurface::SkillSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::SkillSelector);
-                    }
-                }
-                KeyCode::PageUp if self.detail_fullscreen_active(DetailSurface::SkillSelector) => {
-                    self.page_up_detail_fullscreen(DetailSurface::SkillSelector);
-                }
-                KeyCode::PageDown
-                    if self.detail_fullscreen_active(DetailSurface::SkillSelector) =>
-                {
-                    self.page_down_detail_fullscreen(DetailSurface::SkillSelector);
-                }
-                KeyCode::PageUp => self
-                    .apply_simple_selector_paging(DetailSurface::SkillSelector, PagingIntent::Up),
-                KeyCode::PageDown => self
-                    .apply_simple_selector_paging(DetailSurface::SkillSelector, PagingIntent::Down),
-                KeyCode::Home => {
-                    if self.simple_split_detail_focused(DetailSurface::SkillSelector) {
-                        self.set_split_detail_scroll_to_edge(DetailSurface::SkillSelector, false);
-                    } else {
-                        self.skill_selector.selected = 0;
-                        self.reset_split_detail_scroll(DetailSurface::SkillSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::SkillSelector);
-                    }
-                }
-                KeyCode::End => {
-                    if self.simple_split_detail_focused(DetailSurface::SkillSelector) {
-                        self.set_split_detail_scroll_to_edge(DetailSurface::SkillSelector, true);
-                    } else {
-                        self.skill_selector.selected =
-                            self.skill_selector.filtered.len().saturating_sub(1);
-                        self.reset_split_detail_scroll(DetailSurface::SkillSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::SkillSelector);
-                    }
-                }
-                _ if selector_action_key(&key, 'r') => {
-                    self.open_remote_skill_selector(None);
-                }
-                KeyCode::Backspace => {
-                    self.skill_selector.pop_char();
-                    self.reset_split_detail_scroll(DetailSurface::SkillSelector);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::SkillSelector);
-                }
-                KeyCode::Char(c) if selector_search_char(&key) == Some(c) => {
-                    self.skill_selector.push_char(c);
-                    self.reset_split_detail_scroll(DetailSurface::SkillSelector);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::SkillSelector);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        if self.tool_manager.active {
-            match key.code {
-                KeyCode::Esc if !self.close_detail_fullscreen(DetailSurface::ToolManager) => {
-                    self.tool_manager.active = false;
-                }
-                KeyCode::Left => {
-                    self.tool_manager_scope = self.tool_manager_scope.previous();
-                    let _ = self.refresh_tool_manager_entries();
-                    self.reset_split_detail_scroll(DetailSurface::ToolManager);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::ToolManager);
-                }
-                KeyCode::Right => {
-                    self.tool_manager_scope = self.tool_manager_scope.next();
-                    let _ = self.refresh_tool_manager_entries();
-                    self.reset_split_detail_scroll(DetailSurface::ToolManager);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::ToolManager);
-                }
-                KeyCode::Tab | KeyCode::BackTab
-                    if !self.detail_fullscreen_active(DetailSurface::ToolManager) =>
-                {
-                    self.toggle_simple_split_focus(DetailSurface::ToolManager);
-                }
-                _ if selector_action_key(&key, 'z') => {
-                    self.toggle_detail_fullscreen(
-                        DetailSurface::ToolManager,
-                        self.split_detail_scroll(DetailSurface::ToolManager),
-                    );
-                }
-                KeyCode::Enter | KeyCode::Char(' ') => {
-                    self.toggle_tool_manager_selected();
-                }
-                KeyCode::Up => {
-                    if self.simple_split_detail_focused(DetailSurface::ToolManager) {
-                        self.scroll_split_detail_lines(DetailSurface::ToolManager, -1);
-                    } else {
-                        self.tool_manager.move_up();
-                        self.reset_split_detail_scroll(DetailSurface::ToolManager);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::ToolManager);
-                    }
-                }
-                KeyCode::Down => {
-                    if self.simple_split_detail_focused(DetailSurface::ToolManager) {
-                        self.scroll_split_detail_lines(DetailSurface::ToolManager, 1);
-                    } else {
-                        self.tool_manager.move_down();
-                        self.reset_split_detail_scroll(DetailSurface::ToolManager);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::ToolManager);
-                    }
-                }
-                KeyCode::PageUp if self.detail_fullscreen_active(DetailSurface::ToolManager) => {
-                    self.page_up_detail_fullscreen(DetailSurface::ToolManager);
-                }
-                KeyCode::PageDown if self.detail_fullscreen_active(DetailSurface::ToolManager) => {
-                    self.page_down_detail_fullscreen(DetailSurface::ToolManager);
-                }
-                KeyCode::PageUp => {
-                    self.apply_simple_selector_paging(DetailSurface::ToolManager, PagingIntent::Up)
-                }
-                KeyCode::PageDown => self
-                    .apply_simple_selector_paging(DetailSurface::ToolManager, PagingIntent::Down),
-                KeyCode::Home => {
-                    if self.simple_split_detail_focused(DetailSurface::ToolManager) {
-                        self.set_split_detail_scroll_to_edge(DetailSurface::ToolManager, false);
-                    } else {
-                        self.tool_manager.selected = 0;
-                        self.reset_split_detail_scroll(DetailSurface::ToolManager);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::ToolManager);
-                    }
-                }
-                KeyCode::End => {
-                    if self.simple_split_detail_focused(DetailSurface::ToolManager) {
-                        self.set_split_detail_scroll_to_edge(DetailSurface::ToolManager, true);
-                    } else {
-                        self.tool_manager.selected =
-                            self.tool_manager.filtered.len().saturating_sub(1);
-                        self.reset_split_detail_scroll(DetailSurface::ToolManager);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::ToolManager);
-                    }
-                }
-                _ if selector_action_key(&key, 'r') => {
-                    self.reset_tool_manager_policy();
-                }
-                KeyCode::Backspace => {
-                    self.tool_manager.pop_char();
-                    self.reset_split_detail_scroll(DetailSurface::ToolManager);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::ToolManager);
-                }
-                KeyCode::Char(c) if selector_search_char(&key) == Some(c) => {
-                    self.tool_manager.push_char(c);
-                    self.reset_split_detail_scroll(DetailSurface::ToolManager);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::ToolManager);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        if self.plugin_toggle.active {
-            match key.code {
-                KeyCode::Esc if !self.close_detail_fullscreen(DetailSurface::PluginToggle) => {
-                    self.plugin_toggle.active = false;
-                }
-                KeyCode::Left => {
-                    self.plugin_toggle_scope = self.previous_plugin_toggle_scope();
-                    let _ = self.refresh_plugin_toggle_entries();
-                    self.reset_split_detail_scroll(DetailSurface::PluginToggle);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::PluginToggle);
-                }
-                KeyCode::Right => {
-                    self.plugin_toggle_scope = self.next_plugin_toggle_scope();
-                    let _ = self.refresh_plugin_toggle_entries();
-                    self.reset_split_detail_scroll(DetailSurface::PluginToggle);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::PluginToggle);
-                }
-                KeyCode::Tab | KeyCode::BackTab
-                    if !self.detail_fullscreen_active(DetailSurface::PluginToggle) =>
-                {
-                    self.toggle_simple_split_focus(DetailSurface::PluginToggle);
-                }
-                _ if selector_action_key(&key, 'z') => {
-                    self.toggle_detail_fullscreen(
-                        DetailSurface::PluginToggle,
-                        self.split_detail_scroll(DetailSurface::PluginToggle),
-                    );
-                }
-                KeyCode::Enter => {
-                    self.confirm_plugin_toggle();
-                }
-                KeyCode::Char(' ') => {
-                    self.toggle_plugin_selected();
-                }
-                KeyCode::Up => {
-                    if self.simple_split_detail_focused(DetailSurface::PluginToggle) {
-                        self.scroll_split_detail_lines(DetailSurface::PluginToggle, -1);
-                    } else {
-                        self.plugin_toggle.move_up();
-                        self.reset_split_detail_scroll(DetailSurface::PluginToggle);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::PluginToggle);
-                    }
-                }
-                KeyCode::Down => {
-                    if self.simple_split_detail_focused(DetailSurface::PluginToggle) {
-                        self.scroll_split_detail_lines(DetailSurface::PluginToggle, 1);
-                    } else {
-                        self.plugin_toggle.move_down();
-                        self.reset_split_detail_scroll(DetailSurface::PluginToggle);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::PluginToggle);
-                    }
-                }
-                KeyCode::PageUp if self.detail_fullscreen_active(DetailSurface::PluginToggle) => {
-                    self.page_up_detail_fullscreen(DetailSurface::PluginToggle);
-                }
-                KeyCode::PageDown if self.detail_fullscreen_active(DetailSurface::PluginToggle) => {
-                    self.page_down_detail_fullscreen(DetailSurface::PluginToggle);
-                }
-                KeyCode::PageUp => {
-                    self.apply_simple_selector_paging(DetailSurface::PluginToggle, PagingIntent::Up)
-                }
-                KeyCode::PageDown => self
-                    .apply_simple_selector_paging(DetailSurface::PluginToggle, PagingIntent::Down),
-                KeyCode::Home => {
-                    if self.simple_split_detail_focused(DetailSurface::PluginToggle) {
-                        self.set_split_detail_scroll_to_edge(DetailSurface::PluginToggle, false);
-                    } else {
-                        self.plugin_toggle.selected = 0;
-                        self.reset_split_detail_scroll(DetailSurface::PluginToggle);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::PluginToggle);
-                    }
-                }
-                KeyCode::End => {
-                    if self.simple_split_detail_focused(DetailSurface::PluginToggle) {
-                        self.set_split_detail_scroll_to_edge(DetailSurface::PluginToggle, true);
-                    } else {
-                        self.plugin_toggle.selected =
-                            self.plugin_toggle.filtered.len().saturating_sub(1);
-                        self.reset_split_detail_scroll(DetailSurface::PluginToggle);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::PluginToggle);
-                    }
-                }
-                _ if selector_action_key(&key, 'r') => {
-                    self.open_remote_plugin_selector(None, None);
-                }
-                KeyCode::Backspace => {
-                    self.plugin_toggle.pop_char();
-                    self.reset_split_detail_scroll(DetailSurface::PluginToggle);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::PluginToggle);
-                }
-                KeyCode::Char(c) if selector_search_char(&key) == Some(c) => {
-                    self.plugin_toggle.push_char(c);
-                    self.reset_split_detail_scroll(DetailSurface::PluginToggle);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::PluginToggle);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        if self.config_selector.active {
-            match key.code {
-                KeyCode::Esc if !self.close_detail_fullscreen(DetailSurface::ConfigSelector) => {
-                    self.config_selector.active = false;
-                }
-                _ if selector_action_key(&key, 'z') => {
-                    self.toggle_detail_fullscreen(
-                        DetailSurface::ConfigSelector,
-                        self.split_detail_scroll(DetailSurface::ConfigSelector),
-                    );
-                }
-                KeyCode::Tab | KeyCode::BackTab
-                    if !self.detail_fullscreen_active(DetailSurface::ConfigSelector) =>
-                {
-                    self.toggle_simple_split_focus(DetailSurface::ConfigSelector);
-                }
-                KeyCode::Enter => {
-                    if let Some(entry) = self.config_selector.current() {
-                        let action = entry.action;
-                        self.config_selector.active = false;
-                        self.close_detail_fullscreen(DetailSurface::ConfigSelector);
-                        self.handle_config_selector_action(action);
-                    }
-                }
-                KeyCode::Up => {
-                    if self.simple_split_detail_focused(DetailSurface::ConfigSelector) {
-                        self.scroll_split_detail_lines(DetailSurface::ConfigSelector, -1);
-                    } else {
-                        self.config_selector.move_up();
-                        self.reset_split_detail_scroll(DetailSurface::ConfigSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::ConfigSelector);
-                    }
-                }
-                KeyCode::Down => {
-                    if self.simple_split_detail_focused(DetailSurface::ConfigSelector) {
-                        self.scroll_split_detail_lines(DetailSurface::ConfigSelector, 1);
-                    } else {
-                        self.config_selector.move_down();
-                        self.reset_split_detail_scroll(DetailSurface::ConfigSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::ConfigSelector);
-                    }
-                }
-                KeyCode::PageUp if self.detail_fullscreen_active(DetailSurface::ConfigSelector) => {
-                    self.page_up_detail_fullscreen(DetailSurface::ConfigSelector);
-                }
-                KeyCode::PageDown
-                    if self.detail_fullscreen_active(DetailSurface::ConfigSelector) =>
-                {
-                    self.page_down_detail_fullscreen(DetailSurface::ConfigSelector);
-                }
-                KeyCode::PageUp => self
-                    .apply_simple_selector_paging(DetailSurface::ConfigSelector, PagingIntent::Up),
-                KeyCode::PageDown => self.apply_simple_selector_paging(
-                    DetailSurface::ConfigSelector,
-                    PagingIntent::Down,
-                ),
-                KeyCode::Home => {
-                    if self.simple_split_detail_focused(DetailSurface::ConfigSelector) {
-                        self.set_split_detail_scroll_to_edge(DetailSurface::ConfigSelector, false);
-                    } else {
-                        self.config_selector.selected = 0;
-                        self.reset_split_detail_scroll(DetailSurface::ConfigSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::ConfigSelector);
-                    }
-                }
-                KeyCode::End => {
-                    if self.simple_split_detail_focused(DetailSurface::ConfigSelector) {
-                        self.set_split_detail_scroll_to_edge(DetailSurface::ConfigSelector, true);
-                    } else {
-                        self.config_selector.selected =
-                            self.config_selector.filtered.len().saturating_sub(1);
-                        self.reset_split_detail_scroll(DetailSurface::ConfigSelector);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::ConfigSelector);
-                    }
-                }
-                KeyCode::Backspace => {
-                    self.config_selector.pop_char();
-                    self.reset_split_detail_scroll(DetailSurface::ConfigSelector);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::ConfigSelector);
-                }
-                KeyCode::Char(c)
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    self.config_selector.push_char(c);
-                    self.reset_split_detail_scroll(DetailSurface::ConfigSelector);
-                    self.reset_detail_fullscreen_scroll(DetailSurface::ConfigSelector);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        // Skin browser overlay active — select with Enter to hot-reload skin
-        if self.skin_browser.active {
-            match key.code {
-                KeyCode::Esc => {
-                    self.skin_browser.active = false;
-                }
-                KeyCode::Enter => {
-                    if let Some(entry) = self.skin_browser.current() {
-                        let name = entry.name.clone();
-                        self.skin_browser.active = false;
-                        self.handle_switch_skin(name);
-                    }
-                }
-                KeyCode::Up => self.skin_browser.move_up(),
-                KeyCode::Down => self.skin_browser.move_down(),
-                KeyCode::Tab => self.skin_browser.move_down(),
-                KeyCode::BackTab => self.skin_browser.move_up(),
-                KeyCode::PageUp => self.skin_browser.page_up(),
-                KeyCode::PageDown => self.skin_browser.page_down(),
-                KeyCode::Backspace => self.skin_browser.pop_char(),
-                KeyCode::Char(c)
-                    if !key
-                        .modifiers
-                        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-                {
-                    self.skin_browser.push_char(c);
-                }
-                _ => {}
-            }
-            return;
-        }
-
-        if self.session_inspector.active() {
-            match key.code {
-                KeyCode::Esc if !self.close_detail_fullscreen(DetailSurface::SessionInspector) => {
-                    self.close_session_inspector();
-                }
-                _ if selector_action_key(&key, 'z') => {
-                    self.toggle_detail_fullscreen(
-                        DetailSurface::SessionInspector,
-                        self.session_inspector.pane.scroll,
-                    );
-                }
-                _ if selector_action_key(&key, 'b') => {
-                    self.close_session_inspector();
-                }
-                _ if selector_action_key(&key, 'r') => {
-                    if let Some(session) = self.session_inspector.session.as_ref() {
-                        if session.is_live {
-                            self.push_output(
-                                "The current session is already active.",
-                                OutputRole::System,
-                            );
-                        } else {
-                            let session_id = session.id.clone();
-                            self.session_inspector.close();
-                            self.session_browser.active = false;
-                            self.close_detail_fullscreen(DetailSurface::SessionInspector);
-                            self.handle_resume_session(Some(session_id));
-                        }
-                    }
-                }
-                KeyCode::Tab | KeyCode::BackTab
-                    if !self.detail_fullscreen_active(DetailSurface::SessionInspector) =>
-                {
-                    self.session_inspector.pane.focus = self.session_inspector.pane.focus.toggle();
-                }
-                KeyCode::Up => {
-                    self.session_inspector.selector.move_up();
-                    self.session_inspector.pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::SessionInspector);
-                }
-                KeyCode::Down => {
-                    self.session_inspector.selector.move_down();
-                    self.session_inspector.pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::SessionInspector);
-                }
-                KeyCode::PageUp
-                    if self.detail_fullscreen_active(DetailSurface::SessionInspector) =>
-                {
-                    self.page_up_detail_fullscreen(DetailSurface::SessionInspector);
-                }
-                KeyCode::PageUp => {
-                    if self.session_inspector.pane.focus == SplitPaneFocus::Detail {
-                        self.session_inspector.pane.page_up(8);
-                    } else {
-                        self.session_inspector.selector.page_up();
-                        self.session_inspector.pane.reset_scroll();
-                        self.reset_detail_fullscreen_scroll(DetailSurface::SessionInspector);
-                    }
-                }
-                KeyCode::PageDown
-                    if self.detail_fullscreen_active(DetailSurface::SessionInspector) =>
-                {
-                    self.page_down_detail_fullscreen(DetailSurface::SessionInspector);
-                }
-                KeyCode::PageDown => {
-                    if self.session_inspector.pane.focus == SplitPaneFocus::Detail {
-                        self.session_inspector.pane.page_down(8);
-                    } else {
-                        self.session_inspector.selector.page_down();
-                        self.session_inspector.pane.reset_scroll();
-                        self.reset_detail_fullscreen_scroll(DetailSurface::SessionInspector);
-                    }
-                }
-                KeyCode::Home => {
-                    self.session_inspector.selector.selected = 0;
-                    self.session_inspector.pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::SessionInspector);
-                }
-                KeyCode::End => {
-                    self.session_inspector.selector.selected = self
-                        .session_inspector
-                        .selector
-                        .filtered
-                        .len()
-                        .saturating_sub(1);
-                    self.session_inspector.pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::SessionInspector);
-                }
-                KeyCode::Backspace => {
-                    self.session_inspector.selector.pop_char();
-                    self.session_inspector.pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::SessionInspector);
-                }
-                KeyCode::Char(c) if selector_search_char(&key) == Some(c) => {
-                    self.session_inspector.selector.push_char(c);
-                    self.session_inspector.pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::SessionInspector);
-                }
-                _ => {}
-            }
-            self.needs_redraw = true;
-            return;
-        }
-
-        if self.log_inspector.active() {
-            match key.code {
-                KeyCode::Esc if !self.close_detail_fullscreen(DetailSurface::LogInspector) => {
-                    self.close_log_inspector();
-                }
-                _ if selector_action_key(&key, 'z') => {
-                    self.toggle_detail_fullscreen(
-                        DetailSurface::LogInspector,
-                        self.log_inspector.pane.scroll,
-                    );
-                }
-                _ if selector_action_key(&key, 'b') => {
-                    self.close_log_inspector();
-                }
-                _ if selector_action_key(&key, 'r') => {
-                    self.refresh_log_inspector();
-                }
-                _ if selector_action_key(&key, 'f') => {
-                    self.toggle_log_follow();
-                }
-                KeyCode::Char(_) if log_level_shortcut(&key).is_some() => {
-                    if let Some(level) = log_level_shortcut(&key) {
-                        self.apply_log_level(level);
-                    }
-                }
-                KeyCode::Tab | KeyCode::BackTab
-                    if !self.detail_fullscreen_active(DetailSurface::LogInspector) =>
-                {
-                    self.log_inspector.pane.focus = self.log_inspector.pane.focus.toggle();
-                }
-                KeyCode::Up => {
-                    self.log_inspector.selector.move_up();
-                    self.log_inspector.pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::LogInspector);
-                }
-                KeyCode::Down => {
-                    self.log_inspector.selector.move_down();
-                    self.log_inspector.pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::LogInspector);
-                }
-                KeyCode::PageUp if self.detail_fullscreen_active(DetailSurface::LogInspector) => {
-                    self.page_up_detail_fullscreen(DetailSurface::LogInspector);
-                }
-                KeyCode::PageUp => {
-                    if self.log_inspector.pane.focus == SplitPaneFocus::Detail {
-                        self.log_inspector.pane.page_up(8);
-                    } else {
-                        self.log_inspector.selector.page_up();
-                        self.log_inspector.pane.reset_scroll();
-                        self.reset_detail_fullscreen_scroll(DetailSurface::LogInspector);
-                    }
-                }
-                KeyCode::PageDown if self.detail_fullscreen_active(DetailSurface::LogInspector) => {
-                    self.page_down_detail_fullscreen(DetailSurface::LogInspector);
-                }
-                KeyCode::PageDown => {
-                    if self.log_inspector.pane.focus == SplitPaneFocus::Detail {
-                        self.log_inspector.pane.page_down(8);
-                    } else {
-                        self.log_inspector.selector.page_down();
-                        self.log_inspector.pane.reset_scroll();
-                        self.reset_detail_fullscreen_scroll(DetailSurface::LogInspector);
-                    }
-                }
-                KeyCode::Home => {
-                    self.log_inspector.selector.selected = 0;
-                    self.log_inspector.pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::LogInspector);
-                }
-                KeyCode::End => {
-                    self.log_inspector.selector.selected =
-                        self.log_inspector.selector.filtered.len().saturating_sub(1);
-                    self.log_inspector.pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::LogInspector);
-                }
-                KeyCode::Backspace => {
-                    self.log_inspector.selector.pop_char();
-                    self.log_inspector.pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::LogInspector);
-                }
-                KeyCode::Char(c) if selector_search_char(&key) == Some(c) => {
-                    self.log_inspector.selector.push_char(c);
-                    self.log_inspector.pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::LogInspector);
-                }
-                _ => {}
-            }
-            self.needs_redraw = true;
-            return;
-        }
-
-        if self.log_browser.active {
-            match key.code {
-                KeyCode::Esc if !self.close_detail_fullscreen(DetailSurface::LogBrowser) => {
-                    self.log_browser.active = false;
-                }
-                _ if selector_action_key(&key, 'z') => {
-                    self.toggle_detail_fullscreen(
-                        DetailSurface::LogBrowser,
-                        self.log_browser_pane.scroll,
-                    );
-                }
-                _ if selector_action_key(&key, 'r') => {
-                    self.refresh_log_browser();
-                    self.log_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::LogBrowser);
-                }
-                _ if selector_action_key(&key, 'f') => {
-                    self.toggle_log_follow();
-                }
-                KeyCode::Char(_) if log_level_shortcut(&key).is_some() => {
-                    if let Some(level) = log_level_shortcut(&key) {
-                        self.apply_log_level(level);
-                    }
-                    self.log_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::LogBrowser);
-                }
-                KeyCode::Enter => {
-                    if let Some(entry) = self.log_browser.current().cloned() {
-                        self.open_log_inspector(entry);
-                    }
-                }
-                KeyCode::Tab | KeyCode::BackTab
-                    if !self.detail_fullscreen_active(DetailSurface::LogBrowser) =>
-                {
-                    self.log_browser_pane.focus = self.log_browser_pane.focus.toggle();
-                }
-                KeyCode::Up => {
-                    self.log_browser.move_up();
-                    self.log_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::LogBrowser);
-                }
-                KeyCode::Down => {
-                    self.log_browser.move_down();
-                    self.log_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::LogBrowser);
-                }
-                KeyCode::PageUp if self.detail_fullscreen_active(DetailSurface::LogBrowser) => {
-                    self.page_up_detail_fullscreen(DetailSurface::LogBrowser);
-                }
-                KeyCode::PageUp => {
-                    if self.log_browser_pane.focus == SplitPaneFocus::Detail {
-                        self.log_browser_pane.page_up(8);
-                    } else {
-                        self.log_browser.page_up();
-                        self.log_browser_pane.reset_scroll();
-                        self.reset_detail_fullscreen_scroll(DetailSurface::LogBrowser);
-                    }
-                }
-                KeyCode::PageDown if self.detail_fullscreen_active(DetailSurface::LogBrowser) => {
-                    self.page_down_detail_fullscreen(DetailSurface::LogBrowser);
-                }
-                KeyCode::PageDown => {
-                    if self.log_browser_pane.focus == SplitPaneFocus::Detail {
-                        self.log_browser_pane.page_down(8);
-                    } else {
-                        self.log_browser.page_down();
-                        self.log_browser_pane.reset_scroll();
-                        self.reset_detail_fullscreen_scroll(DetailSurface::LogBrowser);
-                    }
-                }
-                KeyCode::Home => {
-                    self.log_browser.selected = 0;
-                    self.log_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::LogBrowser);
-                }
-                KeyCode::End => {
-                    self.log_browser.selected = self.log_browser.filtered.len().saturating_sub(1);
-                    self.log_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::LogBrowser);
-                }
-                KeyCode::Backspace => {
-                    self.log_browser.pop_char();
-                    self.log_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::LogBrowser);
-                }
-                KeyCode::Char(c) if selector_search_char(&key) == Some(c) => {
-                    self.log_browser.push_char(c);
-                    self.log_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::LogBrowser);
-                }
-                _ => {}
-            }
-            self.needs_redraw = true;
-            return;
-        }
-
-        // Session browser overlay active — search-first, explicit uppercase actions
-        if self.session_browser.active {
-            match key.code {
-                KeyCode::Esc if !self.close_detail_fullscreen(DetailSurface::SessionBrowser) => {
-                    self.session_browser.active = false;
-                }
-                _ if selector_action_key(&key, 'z') => {
-                    self.toggle_detail_fullscreen(
-                        DetailSurface::SessionBrowser,
-                        self.session_browser_pane.scroll,
-                    );
-                }
-                KeyCode::Enter => {
-                    if let Some(entry) = self.session_browser.current().cloned() {
-                        self.close_detail_fullscreen(DetailSurface::SessionBrowser);
-                        self.open_session_inspector(entry);
-                    }
-                }
-                _ if selector_action_key(&key, 'r') => {
-                    if let Some(entry) = self.session_browser.current() {
-                        let session_id = entry.id.clone();
-                        self.session_browser.active = false;
-                        self.close_detail_fullscreen(DetailSurface::SessionBrowser);
-                        self.handle_resume_session(Some(session_id));
-                    }
-                }
-                _ if selector_action_key(&key, 'd') => {
-                    if let Some(session_id) =
-                        self.session_browser.current().map(|entry| entry.id.clone())
-                    {
-                        self.delete_session_from_browser(&session_id);
-                        self.reset_detail_fullscreen_scroll(DetailSurface::SessionBrowser);
-                    }
-                }
-                KeyCode::Tab | KeyCode::BackTab
-                    if !self.detail_fullscreen_active(DetailSurface::SessionBrowser) =>
-                {
-                    self.session_browser_pane.focus = self.session_browser_pane.focus.toggle();
-                }
-                KeyCode::Up => {
-                    self.session_browser.move_up();
-                    self.session_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::SessionBrowser);
-                }
-                KeyCode::Down => {
-                    self.session_browser.move_down();
-                    self.session_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::SessionBrowser);
-                }
-                KeyCode::PageUp if self.detail_fullscreen_active(DetailSurface::SessionBrowser) => {
-                    self.page_up_detail_fullscreen(DetailSurface::SessionBrowser);
-                }
-                KeyCode::PageUp => {
-                    if self.session_browser_pane.focus == SplitPaneFocus::Detail {
-                        self.session_browser_pane.page_up(8);
-                    } else {
-                        self.session_browser.page_up();
-                        self.session_browser_pane.reset_scroll();
-                        self.reset_detail_fullscreen_scroll(DetailSurface::SessionBrowser);
-                    }
-                }
-                KeyCode::PageDown
-                    if self.detail_fullscreen_active(DetailSurface::SessionBrowser) =>
-                {
-                    self.page_down_detail_fullscreen(DetailSurface::SessionBrowser);
-                }
-                KeyCode::PageDown => {
-                    if self.session_browser_pane.focus == SplitPaneFocus::Detail {
-                        self.session_browser_pane.page_down(8);
-                    } else {
-                        self.session_browser.page_down();
-                        self.session_browser_pane.reset_scroll();
-                        self.reset_detail_fullscreen_scroll(DetailSurface::SessionBrowser);
-                    }
-                }
-                KeyCode::Home => {
-                    self.session_browser.selected = 0;
-                    self.session_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::SessionBrowser);
-                }
-                KeyCode::End => {
-                    self.session_browser.selected =
-                        self.session_browser.filtered.len().saturating_sub(1);
-                    self.session_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::SessionBrowser);
-                }
-                KeyCode::Backspace => {
-                    self.session_browser.pop_char();
-                    self.session_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::SessionBrowser);
-                    self.refresh_session_browser();
-                }
-                KeyCode::Char(c) if selector_search_char(&key) == Some(c) => {
-                    self.session_browser.push_char(c);
-                    self.session_browser_pane.reset_scroll();
-                    self.reset_detail_fullscreen_scroll(DetailSurface::SessionBrowser);
-                    self.refresh_session_browser();
-                }
-                _ => {}
-            }
-            self.needs_redraw = true;
-            return;
-        }
-
-        // Completion overlay active — intercept Tab, Enter, Escape, arrows
-        if self.completion.active {
-            match key.code {
-                KeyCode::Tab => {
-                    if !self.completion.candidates.is_empty() {
-                        self.completion.selected =
-                            (self.completion.selected + 1) % self.completion.candidates.len();
-                    }
-                    return;
-                }
-                KeyCode::BackTab => {
-                    if !self.completion.candidates.is_empty() {
-                        self.completion.selected = if self.completion.selected == 0 {
-                            self.completion.candidates.len() - 1
-                        } else {
-                            self.completion.selected - 1
-                        };
-                    }
-                    return;
-                }
-                KeyCode::Up => {
-                    if !self.completion.candidates.is_empty() {
-                        self.completion.selected = if self.completion.selected == 0 {
-                            self.completion.candidates.len() - 1
-                        } else {
-                            self.completion.selected - 1
-                        };
-                    }
-                    return;
-                }
-                KeyCode::Down => {
-                    if !self.completion.candidates.is_empty() {
-                        self.completion.selected =
-                            (self.completion.selected + 1) % self.completion.candidates.len();
-                    }
-                    return;
-                }
-                KeyCode::PageUp => {
-                    if !self.completion.candidates.is_empty() {
-                        self.completion.selected = self.completion.selected.saturating_sub(8);
-                    }
-                    return;
-                }
-                KeyCode::PageDown => {
-                    if !self.completion.candidates.is_empty() {
-                        let last = self.completion.candidates.len() - 1;
-                        self.completion.selected = (self.completion.selected + 8).min(last);
-                    }
-                    return;
-                }
-                KeyCode::Home => {
-                    if !self.completion.candidates.is_empty() {
-                        self.completion.selected = 0;
-                    }
-                    return;
-                }
-                KeyCode::End => {
-                    if !self.completion.candidates.is_empty() {
-                        self.completion.selected = self.completion.candidates.len() - 1;
-                    }
-                    return;
-                }
-                KeyCode::Enter => {
-                    self.accept_completion();
-                    return;
-                }
-                KeyCode::Esc => {
-                    self.completion.active = false;
-                    return;
-                }
-                _ => {
-                    // Any other key deactivates completion and falls through
-                    self.completion.active = false;
-                }
-            }
-        }
-
-        match (key.modifiers, key.code) {
-            // Page Up/Down — scroll output by viewport height
-            (_, KeyCode::PageUp) if self.editor_mode.is_compose() => {
-                self.textarea.scroll(Scrolling::PageUp);
-                self.needs_redraw = true;
-                return;
-            }
-            (_, KeyCode::PageDown) if self.editor_mode.is_compose() => {
-                self.textarea.scroll(Scrolling::PageDown);
-                self.needs_redraw = true;
-                return;
-            }
-            (_, KeyCode::PageUp) => {
-                let page = self.output_area_height.max(3).saturating_sub(2);
-                self.scroll_output(page as i32);
-                return;
-            }
-            (_, KeyCode::PageDown) => {
-                let page = self.output_area_height.max(3).saturating_sub(2);
-                self.scroll_output(-(page as i32));
-                return;
-            }
-            _ => {}
-        }
-
-        match self.editor_mode {
-            InputEditorMode::Inline => self.handle_inline_input_key(key),
-            InputEditorMode::ComposeInsert => self.handle_compose_insert_key(key),
-            InputEditorMode::ComposeNormal => self.handle_compose_normal_key(key),
-        }
-    }
-
     /// Process submitted input — either slash command or agent prompt.
     fn process_input(&mut self, input: &str) {
         // If the agent is waiting for a clarifying answer, route this input
@@ -11829,13 +8847,9 @@ impl App {
         if let Some(tx) = self.clarify_pending_tx.take() {
             self.push_output(format!("> {}", input), OutputRole::User);
             let _ = tx.send(input.to_string());
-            // Restore normal input border label now that the clarify reply is sent.
-            self.textarea.set_block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(self.theme.input_border)
-                    .title(format!(" {} ", self.theme.prompt_symbol.trim())),
-            );
+            self.clarify_pending_question = None;
+            self.clarify_pending_choices = None;
+            self.restore_clarify_input_border();
             // The agent task is now unblocked and will resume processing;
             // is_processing is still true so the spinner stays active.
             self.display_state = DisplayState::AwaitingFirstToken {
@@ -11893,10 +8907,7 @@ impl App {
         let auto_stop_prompt = input.strip_prefix(STOP_HOOK_AUTO_PREFIX).map(str::trim);
         let goal_continuation = edgecrab_core::is_goal_continuation_text(input);
         if goal_continuation {
-            self.push_output(
-                "↻ Continuing toward standing goal…",
-                OutputRole::System,
-            );
+            self.push_output("↻ Continuing toward standing goal…", OutputRole::System);
             self.goal_flash_status = Some("↻ goal continuing".into());
             self.refresh_goal_status_chip();
         } else if auto_stop_prompt.is_none() {
@@ -11924,7 +8935,14 @@ impl App {
             self.push_output("Still processing previous request...", OutputRole::System);
             return;
         }
+        if let Some(reason) =
+            edgecrab_core::copilot_model_policy::copilot_model_id_reject_reason(&self.model_name)
+        {
+            self.push_output(format!("⚠ Invalid model\n{reason}"), OutputRole::Error);
+            return;
+        }
         self.goal_flash_status = None;
+        self.turn_baseline_cost = self.session_cost;
         self.is_processing = true;
         self.reasoning_line = None;
         // Reset per-turn streaming counters.
@@ -11932,7 +8950,6 @@ impl App {
         self.active_subagents.clear();
         self.turn_stream_tokens = 0;
         self.hidden_tool_calls.clear();
-        self.active_tools.clear();
         self.seen_tool_signatures.clear();
         // Reset per-turn TTFB accumulator — a fresh submit starts fresh measurement.
         self.last_ttfb_secs = None;
@@ -11944,6 +8961,10 @@ impl App {
             frame: 0,
             started: Instant::now(),
         };
+        self.turn_activity.reset_turn();
+        self.turn_activity.set_phase(ShelfPhase::AwaitingFirstToken);
+        self.agents_nudged_this_turn = false;
+        self.shelf_coalescer.force_paint(Instant::now());
 
         let tx = self.response_tx.clone();
         // Build the enriched prompt: active skill contexts are prepended
@@ -11987,7 +9008,14 @@ impl App {
                 tracing::info!(?result, "TUI→agent: chat_streaming returned");
                 result
             });
-            forward_agent_stream_to_tui(agent_clone, chunk_rx, agent_task, tx, hook_registry).await;
+            stream_forward::forward_agent_stream_to_tui(
+                agent_clone,
+                chunk_rx,
+                agent_task,
+                tx,
+                hook_registry,
+            )
+            .await;
         });
         self.active_request_abort = Some(request_task.abort_handle());
     }
@@ -12007,6 +9035,12 @@ impl App {
             CommandResult::Noop => {}
             CommandResult::ModelSwitch(model) => {
                 self.handle_model_switch(model);
+            }
+            CommandResult::TransferModel(target) => {
+                self.handle_transfer_model(target);
+            }
+            CommandResult::SessionHandoff(platform) => {
+                self.handle_session_handoff(platform);
             }
             CommandResult::ModelSelector => {
                 self.refresh_model_selector_catalog();
@@ -12078,6 +9112,7 @@ impl App {
                         .title(format!(" {} ", self.theme.prompt_symbol.trim())),
                 );
                 self.textarea.set_style(self.theme.input_text);
+                self.sync_turn_activity_charms();
                 self.push_output(
                     "Theme reloaded from ~/.edgecrab/skin.yaml",
                     OutputRole::System,
@@ -12172,6 +9207,12 @@ impl App {
             CommandResult::ShowConfig(args) => {
                 self.handle_config_command(args);
             }
+            CommandResult::WebCommand(args) => {
+                self.handle_web_command(args);
+            }
+            CommandResult::ProxyCommand(args) => {
+                self.handle_proxy_command(args);
+            }
             CommandResult::ShowHistory => {
                 self.handle_show_history();
             }
@@ -12182,6 +9223,12 @@ impl App {
             CommandResult::SetToolProgress(mode) => {
                 let msg = self.handle_tool_progress_command(mode);
                 self.push_output(msg, OutputRole::System);
+            }
+            CommandResult::ShelfDetails(args) => {
+                self.handle_details_command(args);
+            }
+            CommandResult::StatusIndicator(args) => {
+                self.handle_indicator_command(args);
             }
             CommandResult::SaveSession(path) => {
                 self.handle_save_session(path);
@@ -12233,6 +9280,18 @@ impl App {
             }
             CommandResult::BackgroundPrompt(prompt) => {
                 self.handle_background_prompt(prompt);
+            }
+            CommandResult::ShowProcessTail(process_id) => {
+                let msg = self.open_process_tail_panel(&process_id);
+                if !self.process_tail_panel.is_active() {
+                    self.push_output(msg, OutputRole::System);
+                }
+            }
+            CommandResult::ShowAgentsOverlay => {
+                self.open_agents_overlay();
+            }
+            CommandResult::ShowAgentsReplay(args) => {
+                self.handle_replay_command(args);
             }
             CommandResult::SideQuestion(question) => {
                 self.handle_side_question(question);
@@ -12350,10 +9409,51 @@ impl App {
                 self.handle_paste(path);
             }
             CommandResult::AuthCommand(command) => {
-                if let crate::cli_args::AuthCommand::Login { target } = &command {
-                    self.run_login_target_with_terminal_handoff(
+                let oauth_handoff = match &command {
+                    crate::cli_args::AuthCommand::Login {
+                        target,
+                        no_browser,
+                        manual_paste,
+                        ..
+                    } => Some((
                         target.as_deref().unwrap_or("copilot"),
-                    );
+                        *no_browser,
+                        *manual_paste,
+                    )),
+                    crate::cli_args::AuthCommand::Add {
+                        target,
+                        token,
+                        no_browser,
+                        manual_paste,
+                        ..
+                    } if token.is_none()
+                        && crate::auth_cmd::target_uses_interactive_oauth(target) =>
+                    {
+                        Some((target.as_str(), *no_browser, *manual_paste))
+                    }
+                    _ => None,
+                };
+                if let crate::cli_args::AuthCommand::Grok { command } = &command {
+                    use crate::cli_args::GrokAuthCommand;
+                    let screen = match command {
+                        GrokAuthCommand::Start { .. } => {
+                            crate::grok_auth_tui::GrokAuthScreen::Start
+                        }
+                        GrokAuthCommand::Finish { .. } => {
+                            crate::grok_auth_tui::GrokAuthScreen::Finish
+                        }
+                    };
+                    self.open_grok_auth_overlay(screen);
+                } else if let Some((target, no_browser, manual_paste)) = oauth_handoff {
+                    if crate::auth_cmd::is_grok_auth_target(target) {
+                        self.open_grok_auth_overlay(crate::grok_auth_tui::GrokAuthScreen::Start);
+                    } else {
+                        self.run_login_target_with_terminal_handoff(
+                            target,
+                            no_browser,
+                            manual_paste,
+                        );
+                    }
                 } else {
                     match self
                         .rt_handle
@@ -12366,7 +9466,11 @@ impl App {
                 }
             }
             CommandResult::LoginTarget(target) => {
-                self.run_login_target_with_terminal_handoff(&target);
+                if crate::auth_cmd::is_grok_auth_target(&target) {
+                    self.open_grok_auth_overlay(crate::grok_auth_tui::GrokAuthScreen::Start);
+                } else {
+                    self.run_login_target_with_terminal_handoff(&target, false, false);
+                }
             }
             CommandResult::LogoutTarget(target) => {
                 match self
@@ -12426,6 +9530,9 @@ impl App {
             CommandResult::MacosPermissions(args) => {
                 let report = crate::permissions::run_permissions_command(&args);
                 self.push_output(report, OutputRole::System);
+            }
+            CommandResult::ShowComputer(args) => {
+                self.handle_computer_command(args);
             }
             CommandResult::RollbackCheckpoint(args) => {
                 self.handle_rollback_checkpoint(args);
@@ -12505,90 +9612,11 @@ impl App {
         }
     }
 
-    fn apply_approval_choice(&mut self, choice: edgecrab_core::ApprovalChoice) {
-        let full_command =
-            if let DisplayState::WaitingForApproval { full_command, .. } = &self.display_state {
-                Some(full_command.clone())
-            } else {
-                None
-            };
-
-        if matches!(
-            choice,
-            edgecrab_core::ApprovalChoice::Session | edgecrab_core::ApprovalChoice::Always
-        ) && let Some(full_command) = full_command.as_deref()
-        {
-            use std::hash::{Hash, Hasher};
-            let mut hasher = std::collections::hash_map::DefaultHasher::new();
-            full_command.hash(&mut hasher);
-            self.session_approvals
-                .insert(format!("{:x}", hasher.finish()));
-        }
-
-        if let Some(tx) = self.approval_pending_tx.take() {
-            let is_deny = choice == edgecrab_core::ApprovalChoice::Deny;
-            let _ = tx.send(choice);
-            self.display_state = if is_deny {
-                DisplayState::Idle
-            } else {
-                DisplayState::AwaitingFirstToken {
-                    frame: 0,
-                    started: Instant::now(),
-                }
-            };
-            self.needs_redraw = true;
-        }
-    }
-
-    fn handle_approval_choice_command(&mut self, choice: edgecrab_core::ApprovalChoice) {
-        if self.approval_pending_tx.is_some() {
-            let text = match &choice {
-                edgecrab_core::ApprovalChoice::Once => "Approved current command once.",
-                edgecrab_core::ApprovalChoice::Session => {
-                    "Approved current command for the rest of this session."
-                }
-                edgecrab_core::ApprovalChoice::Always => "Approved current command permanently.",
-                edgecrab_core::ApprovalChoice::Deny => "Denied current command.",
-            };
-            self.apply_approval_choice(choice);
-            self.push_output(text, OutputRole::System);
-            return;
-        }
-
-        if choice == edgecrab_core::ApprovalChoice::Deny
-            && let Some(tx) = self.clarify_pending_tx.take()
-        {
-            let _ = tx.send(String::new());
-            self.display_state = DisplayState::Idle;
-            self.push_output(
-                "Cancelled the pending clarification prompt.",
-                OutputRole::System,
-            );
-            self.needs_redraw = true;
-            return;
-        }
-
-        self.push_output(
-            "No pending approval prompt. Use /deny only when EdgeCrab is explicitly waiting for approval or clarification.",
-            OutputRole::System,
-        );
-    }
-
     fn configured_home_channel_platforms(
         &self,
         config: &edgecrab_core::AppConfig,
     ) -> Vec<&'static str> {
-        let mut platforms = Vec::new();
-        if config.gateway.platform_enabled("telegram") || config.gateway.telegram.enabled {
-            platforms.push("telegram");
-        }
-        if config.gateway.platform_enabled("discord") || config.gateway.discord.enabled {
-            platforms.push("discord");
-        }
-        if config.gateway.platform_enabled("slack") || config.gateway.slack.enabled {
-            platforms.push("slack");
-        }
-        platforms
+        config.gateway.home_channel_platforms()
     }
 
     fn set_home_channel_in_config(
@@ -12597,27 +9625,10 @@ impl App {
         platform: &str,
         channel: Option<String>,
     ) -> anyhow::Result<()> {
-        match platform {
-            "telegram" => {
-                config.gateway.telegram.enabled = true;
-                config.gateway.enable_platform("telegram");
-                config.gateway.telegram.home_channel = channel;
-            }
-            "discord" => {
-                config.gateway.discord.enabled = true;
-                config.gateway.enable_platform("discord");
-                config.gateway.discord.home_channel = channel;
-            }
-            "slack" => {
-                config.gateway.slack.enabled = true;
-                config.gateway.enable_platform("slack");
-                config.gateway.slack.home_channel = channel;
-            }
-            _ => anyhow::bail!(
-                "Unsupported platform '{platform}'. Supported platforms: telegram, discord, slack"
-            ),
-        }
-        Ok(())
+        config
+            .gateway
+            .set_home_channel(platform, channel)
+            .map_err(|err| anyhow::anyhow!(err))
     }
 
     fn handle_set_home_channel(&mut self, args: String) {
@@ -12650,7 +9661,10 @@ impl App {
             let enabled = self.configured_home_channel_platforms(&config);
             if enabled.len() != 1 {
                 self.push_output(
-                    "Ambiguous home-channel target. Use: /sethome <telegram|discord|slack> <channel|clear>",
+                    format!(
+                        "Ambiguous home-channel target. Use: /sethome <platform> <channel|clear>\nSupported: {}",
+                        edgecrab_core::HANDOFF_PLATFORM_HINT
+                    ),
                     OutputRole::System,
                 );
                 return;
@@ -12770,999 +9784,6 @@ impl App {
         self.pending_mouse_capture.take()
     }
 
-    /// Check for agent responses from background tasks.
-    pub fn check_responses(&mut self) {
-        while let Ok(resp) = self.response_rx.try_recv() {
-            match resp {
-                AgentResponse::Token(text) => {
-                    // Accumulate per-turn token count regardless of streaming mode.
-                    self.turn_stream_tokens += 1;
-                    // Record TTFB (Time To First Token) on the very first token that
-                    // arrives out of the AwaitingFirstToken phase. This is the wall-clock
-                    // latency from "submit sent" to "first model token received" — a
-                    // useful calibration metric for model-selection decisions.
-                    if matches!(self.display_state, DisplayState::AwaitingFirstToken { .. })
-                        && self.last_ttfb_secs.is_none()
-                        && let DisplayState::AwaitingFirstToken { ref started, .. } =
-                            self.display_state
-                    {
-                        self.last_ttfb_secs = Some(started.elapsed().as_secs_f32());
-                    }
-                    // Transition to streaming state on first token of a new phase.
-                    if self.streaming_enabled
-                        && matches!(
-                            self.display_state,
-                            DisplayState::AwaitingFirstToken { .. }
-                                | DisplayState::Thinking { .. }
-                                | DisplayState::ToolExec { .. }
-                        )
-                    {
-                        // WHY turn_stream_tokens: initialise from the running total so
-                        // the status bar shows cumulative tokens even after tool-call
-                        // interruptions, rather than resetting to 0 each streaming phase.
-                        self.display_state = DisplayState::Streaming {
-                            token_count: self.turn_stream_tokens,
-                            chars_written: 0,
-                            current_section: None,
-                            started: Instant::now(),
-                        };
-                    }
-                    // Keep the Streaming state's token_count, chars_written, and current_section
-                    // in sync as new tokens arrive.
-                    let new_chars = text.len() as u64;
-                    if let DisplayState::Streaming {
-                        ref mut token_count,
-                        ref mut chars_written,
-                        ref mut current_section,
-                        ..
-                    } = self.display_state
-                    {
-                        *token_count = self.turn_stream_tokens;
-                        *chars_written += new_chars;
-                        // Detect new markdown headings in the accumulated streaming text.
-                        // We check for `\n# ` and `\n## ` patterns in the current token
-                        // plus a small look-behind (the text ends with `\n#...`).
-                        extract_streaming_section(&text, current_section);
-                    }
-
-                    if self.live_token_display_enabled {
-                        if let Some(idx) = self.streaming_line {
-                            if idx < self.output.len() {
-                                self.output[idx].text.push_str(&text);
-                                self.output[idx].invalidate_render_cache();
-                            }
-                        } else {
-                            self.output.push(OutputLine {
-                                text: text.clone(),
-                                role: OutputRole::Assistant,
-                                prebuilt_spans: None,
-                                rendered: None,
-                                plain_rendered: None,
-                            });
-                            self.streaming_line = Some(self.output.len() - 1);
-                            // Only auto-scroll to bottom if the user is already there
-                            if self.at_bottom {
-                                self.scroll_offset = 0;
-                            }
-                        }
-                        self.needs_redraw = true;
-                    } else {
-                        self.buffered_assistant_output.push_str(&text);
-                    }
-                    // Accumulate response text for voice mode TTS readback.
-                    self.last_agent_response_text.push_str(&text);
-                }
-                AgentResponse::Footer(text) => {
-                    if !text.trim().is_empty() {
-                        self.last_agent_response_text.push_str("\n\n");
-                        self.last_agent_response_text.push_str(&text);
-                        self.push_output(text, OutputRole::System);
-                        self.needs_redraw = true;
-                    }
-                }
-                AgentResponse::Notice(text) => {
-                    // Detect steering-applied notices to update steer state.
-                    if text.starts_with("⛵ Steering applied") {
-                        self.steer_applied_at = Some(Instant::now());
-                        self.pending_steer_count = self.pending_steer_count.saturating_sub(1);
-                    }
-                    self.push_output(text, OutputRole::System);
-                    self.needs_redraw = true;
-                }
-                AgentResponse::DirectToolOutput(text) => {
-                    self.push_output(text, OutputRole::System);
-                    self.needs_redraw = true;
-                }
-                AgentResponse::Reasoning(text) => {
-                    if matches!(self.display_state, DisplayState::AwaitingFirstToken { .. }) {
-                        self.display_state = DisplayState::Thinking {
-                            frame: 0,
-                            started: Instant::now(),
-                        };
-                    }
-                    if self.show_reasoning && !text.trim().is_empty() {
-                        if let Some(idx) = self.reasoning_line {
-                            if idx < self.output.len() {
-                                self.output[idx].text.push_str(&text);
-                                self.output[idx].invalidate_render_cache();
-                            }
-                        } else {
-                            let line = OutputLine {
-                                text: format!("Thinking\n{text}"),
-                                role: OutputRole::Reasoning,
-                                prebuilt_spans: None,
-                                rendered: None,
-                                plain_rendered: None,
-                            };
-                            if let Some(idx) = self.streaming_line {
-                                let insert_idx = idx.min(self.output.len());
-                                self.output.insert(insert_idx, line);
-                                self.reasoning_line = Some(insert_idx);
-                                self.streaming_line = Some(insert_idx + 1);
-                            } else {
-                                self.output.push(line);
-                                self.reasoning_line = Some(self.output.len() - 1);
-                            }
-                            if self.at_bottom {
-                                self.scroll_offset = 0;
-                            }
-                        }
-                        self.needs_redraw = true;
-                    }
-                }
-                AgentResponse::ToolExec {
-                    tool_call_id,
-                    name,
-                    args_json,
-                } => {
-                    if name == "shadow_judge" {
-                        self.handle_shadow_judge_intervention_notice(&args_json);
-                        self.needs_redraw = true;
-                        continue;
-                    }
-                    self.flush_buffered_assistant_output();
-                    // CRITICAL: Break the streaming buffer at the tool boundary.
-                    // Without this, tokens arriving after the tool call append to
-                    // the pre-tool text, visually merging text before and after
-                    // the tool call into a single garbled line.
-                    self.streaming_line = None;
-                    // Track parallel in-flight tools — multiple ToolExec events
-                    // may arrive before any ToolDone (parallel tool dispatch).
-                    self.in_flight_tool_count = self.in_flight_tool_count.saturating_add(1);
-                    self.progress_seq = self.progress_seq.saturating_add(1);
-                    let started_at = Instant::now();
-                    self.active_tools.insert(
-                        tool_call_id.clone(),
-                        ActiveToolStatus {
-                            name: name.clone(),
-                            args_json: args_json.clone(),
-                            last_detail: None,
-                            started_at,
-                            last_seq: self.progress_seq,
-                        },
-                    );
-                    self.display_state = DisplayState::ToolExec {
-                        tool_call_id: tool_call_id.clone(),
-                        name: name.clone(),
-                        args_json: args_json.clone(),
-                        detail: None,
-                        frame: 0,
-                        started: started_at,
-                    };
-                    if self.should_render_tool_call(&name, &args_json) {
-                        // Push a live "in-flight" placeholder line to the output area.
-                        //
-                        // WHY immediately: Long tool operations (web fetch, terminal,
-                        // delegate) can take 10-60 s.  Without this placeholder the
-                        // output area appears frozen — only the status-bar spinner
-                        // moves.  The placeholder gives the user a place in the
-                        // scrollable transcript to see that work is happening, and
-                        // ToolDone later upgrades it in-place with timing/result
-                        // info (no layout shift).
-                        let edit_snapshot = capture_local_edit_snapshot(&name, &args_json);
-                        let running_spans = build_tool_running_line_width(
-                            &name,
-                            &args_json,
-                            None,
-                            &self.theme.tool_emojis,
-                            &DisplayWidths::from_terminal_width(self.last_terminal_width as usize),
-                        );
-                        let line_idx = self.output.len();
-                        self.output.push(OutputLine {
-                            text: String::new(),
-                            role: OutputRole::Tool,
-                            prebuilt_spans: Some(running_spans),
-                            rendered: None,
-                            plain_rendered: None,
-                        });
-                        self.pending_tool_lines.insert(
-                            tool_call_id,
-                            PendingToolLine {
-                                tool_name: name,
-                                args_json,
-                                line_idx,
-                                edit_snapshot,
-                            },
-                        );
-                    } else {
-                        self.hidden_tool_calls.insert(tool_call_id);
-                    }
-                    if self.at_bottom {
-                        self.scroll_offset = 0;
-                    }
-                    self.needs_redraw = true;
-                }
-                AgentResponse::ToolProgress {
-                    tool_call_id,
-                    name,
-                    message,
-                } => {
-                    let detail = message.trim().to_string();
-                    if detail.is_empty() {
-                        continue;
-                    }
-                    self.progress_seq = self.progress_seq.saturating_add(1);
-                    if let Some(status) = self.active_tools.get_mut(&tool_call_id) {
-                        status.last_detail = Some(detail.clone());
-                        status.last_seq = self.progress_seq;
-                    }
-                    if let DisplayState::ToolExec {
-                        tool_call_id: active_tool_call_id,
-                        detail: active_detail,
-                        ..
-                    } = &mut self.display_state
-                        && active_tool_call_id == &tool_call_id
-                    {
-                        *active_detail = Some(detail.clone());
-                    }
-                    if self.hidden_tool_calls.contains(&tool_call_id) {
-                        if self.at_bottom {
-                            self.scroll_offset = 0;
-                        }
-                        self.needs_redraw = true;
-                        continue;
-                    }
-                    if let Some(PendingToolLine {
-                        line_idx,
-                        tool_name,
-                        args_json,
-                        ..
-                    }) = self.pending_tool_lines.get(&tool_call_id).cloned()
-                    {
-                        if line_idx < self.output.len() {
-                            let elapsed = self
-                                .active_tools
-                                .get(&tool_call_id)
-                                .map(|s| s.started_at.elapsed().as_secs());
-                            self.output[line_idx].prebuilt_spans =
-                                Some(build_tool_running_line_width_elapsed(
-                                    &tool_name,
-                                    &args_json,
-                                    Some(detail.as_str()),
-                                    elapsed,
-                                    &self.theme.tool_emojis,
-                                    &DisplayWidths::from_terminal_width(
-                                        self.last_terminal_width as usize,
-                                    ),
-                                ));
-                            self.output[line_idx].invalidate_render_cache();
-                        }
-                    } else {
-                        self.push_output(
-                            format!("{}: {detail}", name.replace('_', " ")),
-                            OutputRole::System,
-                        );
-                    }
-                    if self.at_bottom {
-                        self.scroll_offset = 0;
-                    }
-                    self.needs_redraw = true;
-                }
-                AgentResponse::ToolDone {
-                    tool_call_id,
-                    name,
-                    args_json,
-                    result_preview,
-                    duration_ms,
-                    is_error,
-                } => {
-                    let hidden = self.hidden_tool_calls.remove(&tool_call_id);
-                    // Build the final styled completion spans.
-                    let pending = self.pending_tool_lines.remove(&tool_call_id);
-                    self.active_tools.remove(&tool_call_id);
-                    if !hidden {
-                        let widths =
-                            DisplayWidths::from_terminal_width(self.last_terminal_width as usize);
-                        let spans = build_tool_done_line_width(
-                            &name,
-                            &args_json,
-                            result_preview.as_deref(),
-                            duration_ms,
-                            is_error,
-                            &self.theme.tool_emojis,
-                            &widths,
-                        );
-                        // Upgrade the in-flight placeholder in-place (if present).
-                        //
-                        // WHY in-place: replacing the placeholder avoids appending a
-                        // second line for the same tool call — the layout stays stable
-                        // (no shift), and the cyan "···" naturally becomes the gold
-                        // timing string without any visual flash.
-                        if let Some(PendingToolLine { line_idx, .. }) = pending.as_ref() {
-                            if *line_idx < self.output.len() {
-                                self.output[*line_idx].prebuilt_spans = Some(spans);
-                                self.output[*line_idx].invalidate_render_cache();
-                            } else {
-                                // Index out of range — fall back to append (shouldn't happen).
-                                self.push_output_spans(spans, OutputRole::Tool);
-                            }
-                        } else {
-                            // No pending placeholder (e.g. streaming disabled, or the
-                            // tool fired before the feature was introduced) — append.
-                            self.push_output_spans(spans, OutputRole::Tool);
-                        }
-                        if self.tool_progress_mode == ToolProgressMode::Verbose {
-                            for line in build_tool_verbose_lines_width(
-                                &name,
-                                &args_json,
-                                result_preview.as_deref(),
-                                is_error,
-                                widths.verbose_content,
-                            ) {
-                                self.push_output_spans(line, OutputRole::Tool);
-                            }
-                        }
-                        if let Some(diff_lines) = render_edit_diff_lines(
-                            &name,
-                            &args_json,
-                            is_error,
-                            pending
-                                .as_ref()
-                                .and_then(|entry| entry.edit_snapshot.as_ref()),
-                        ) {
-                            for line in diff_lines {
-                                self.push_output_spans(line, OutputRole::Tool);
-                            }
-                        }
-                        if name == "report_task_status"
-                            && !is_error
-                            && let Some(preview) = result_preview
-                                .as_deref()
-                                .filter(|text| !text.trim().is_empty())
-                        {
-                            self.push_output(
-                                format_task_status_progress_notice(preview),
-                                OutputRole::System,
-                            );
-                        }
-                    }
-                    // Decrement the in-flight counter. Only transition back to
-                    // Thinking when ALL parallel tools have completed; otherwise
-                    // stay in ToolExec state so the status bar stays accurate.
-                    self.in_flight_tool_count = self.in_flight_tool_count.saturating_sub(1);
-                    if self.in_flight_tool_count == 0 {
-                        self.display_state = DisplayState::AwaitingFirstToken {
-                            frame: 0,
-                            started: Instant::now(),
-                        };
-                    } else if let Some((active_tool_call_id, active)) =
-                        latest_active_tool_entry(&self.active_tools)
-                    {
-                        self.display_state = DisplayState::ToolExec {
-                            tool_call_id: active_tool_call_id.clone(),
-                            name: active.name.clone(),
-                            args_json: active.args_json.clone(),
-                            detail: active.last_detail.clone(),
-                            frame: 0,
-                            started: active.started_at,
-                        };
-                    }
-                    self.needs_redraw = true;
-                }
-                AgentResponse::SubAgentStart {
-                    task_index,
-                    task_count,
-                    goal,
-                } => {
-                    self.flush_buffered_assistant_output();
-                    self.progress_seq = self.progress_seq.saturating_add(1);
-                    self.active_subagents.insert(
-                        task_index,
-                        ActiveSubagentStatus {
-                            task_index,
-                            task_count,
-                            goal: goal.clone(),
-                            last_detail: None,
-                            last_seq: self.progress_seq,
-                        },
-                    );
-                    self.streaming_line = None;
-                    // Push a running placeholder and record its index so that
-                    // SubAgentReasoning / SubAgentToolExec can update it in-place,
-                    // and SubAgentFinish can replace it — exactly like ToolExec/ToolDone.
-                    let widths =
-                        DisplayWidths::from_terminal_width(self.last_terminal_width as usize);
-                    let running_spans = build_subagent_running_line_width(
-                        task_index, task_count, &goal, None, 0, &widths,
-                    );
-                    let line_idx = self.output.len();
-                    self.output.push(OutputLine {
-                        text: String::new(),
-                        role: OutputRole::Tool,
-                        prebuilt_spans: Some(running_spans),
-                        rendered: None,
-                        plain_rendered: None,
-                    });
-                    self.pending_subagent_lines.insert(
-                        task_index,
-                        PendingSubagentLine {
-                            line_idx,
-                            started_at: Instant::now(),
-                            goal: goal.clone(),
-                            task_count,
-                        },
-                    );
-                    if self.at_bottom {
-                        self.scroll_offset = 0;
-                    }
-                    self.needs_redraw = true;
-                }
-                AgentResponse::SubAgentReasoning {
-                    task_index,
-                    task_count: _task_count,
-                    text,
-                } => {
-                    self.progress_seq = self.progress_seq.saturating_add(1);
-                    let detail = format!(
-                        "thinking: {}",
-                        edgecrab_core::safe_truncate(text.trim(), 72)
-                    );
-                    if let Some(status) = self.active_subagents.get_mut(&task_index) {
-                        status.last_detail = Some(detail.clone());
-                        status.last_seq = self.progress_seq;
-                    }
-                    // Update running placeholder in-place — no new lines pushed.
-                    if let Some(pending) = self.pending_subagent_lines.get(&task_index) {
-                        let line_idx = pending.line_idx;
-                        let goal = pending.goal.clone();
-                        let task_count = pending.task_count;
-                        let elapsed = pending.started_at.elapsed().as_secs();
-                        if line_idx < self.output.len() {
-                            let widths = DisplayWidths::from_terminal_width(
-                                self.last_terminal_width as usize,
-                            );
-                            self.output[line_idx].prebuilt_spans =
-                                Some(build_subagent_running_line_width(
-                                    task_index,
-                                    task_count,
-                                    &goal,
-                                    Some(&detail),
-                                    elapsed,
-                                    &widths,
-                                ));
-                            self.output[line_idx].invalidate_render_cache();
-                        }
-                    }
-                    self.needs_redraw = true;
-                }
-                AgentResponse::SubAgentToolExec {
-                    task_index,
-                    task_count: _task_count,
-                    name,
-                    args_json,
-                } => {
-                    self.progress_seq = self.progress_seq.saturating_add(1);
-                    let preview = crate::tool_display::extract_tool_preview(&name, &args_json);
-                    let detail = if preview.is_empty() {
-                        name.clone()
-                    } else {
-                        format!("{name}  {preview}")
-                    };
-                    if let Some(status) = self.active_subagents.get_mut(&task_index) {
-                        status.last_detail = Some(detail.clone());
-                        status.last_seq = self.progress_seq;
-                    }
-                    // Update the running placeholder in-place — do NOT push a new line.
-                    // Showing every sub-agent tool call as a permanent line creates
-                    // O(tool_calls × subagents) output noise.
-                    if let Some(pending) = self.pending_subagent_lines.get(&task_index) {
-                        let line_idx = pending.line_idx;
-                        let goal = pending.goal.clone();
-                        let task_count = pending.task_count;
-                        let elapsed = pending.started_at.elapsed().as_secs();
-                        if line_idx < self.output.len() {
-                            let widths = DisplayWidths::from_terminal_width(
-                                self.last_terminal_width as usize,
-                            );
-                            self.output[line_idx].prebuilt_spans =
-                                Some(build_subagent_running_line_width(
-                                    task_index,
-                                    task_count,
-                                    &goal,
-                                    Some(&detail),
-                                    elapsed,
-                                    &widths,
-                                ));
-                            self.output[line_idx].invalidate_render_cache();
-                        }
-                    }
-                    if self.at_bottom {
-                        self.scroll_offset = 0;
-                    }
-                    self.needs_redraw = true;
-                }
-                AgentResponse::SubAgentFinish {
-                    task_index,
-                    task_count,
-                    status,
-                    duration_ms,
-                    summary,
-                    api_calls,
-                    model,
-                } => {
-                    self.active_subagents.remove(&task_index);
-                    self.streaming_line = None;
-                    let is_error = status != "completed";
-                    let widths =
-                        DisplayWidths::from_terminal_width(self.last_terminal_width as usize);
-                    let done_spans = build_subagent_done_line_width(
-                        task_index,
-                        task_count,
-                        is_error,
-                        duration_ms,
-                        api_calls,
-                        model.as_deref().filter(|m| !m.is_empty()),
-                        summary.trim(),
-                        &widths,
-                    );
-                    // Replace the running placeholder in-place; fall back to append when
-                    // the placeholder is missing (e.g. session restore, race condition).
-                    if let Some(pending) = self.pending_subagent_lines.remove(&task_index) {
-                        if pending.line_idx < self.output.len() {
-                            self.output[pending.line_idx].prebuilt_spans = Some(done_spans);
-                            self.output[pending.line_idx].invalidate_render_cache();
-                        } else {
-                            self.push_output_spans(done_spans, OutputRole::Tool);
-                        }
-                    } else {
-                        self.push_output_spans(done_spans, OutputRole::Tool);
-                    }
-                    if self.at_bottom {
-                        self.scroll_offset = 0;
-                    }
-                    self.needs_redraw = true;
-                }
-                AgentResponse::RunFinished { outcome } => {
-                    self.flush_buffered_assistant_output();
-                    let outcome = self.maybe_apply_stop_hooks(outcome);
-                    self.last_run_outcome = Some(outcome.clone());
-                    self.push_output(
-                        format_run_outcome_notice(&outcome),
-                        run_outcome_role(&outcome),
-                    );
-                    self.needs_redraw = true;
-                }
-                AgentResponse::Done => {
-                    self.flush_buffered_assistant_output();
-                    let goal_last_response = self.last_agent_response_text.clone();
-                    let goal_interrupted = self
-                        .last_run_outcome
-                        .as_ref()
-                        .is_some_and(|o| {
-                            matches!(
-                                o.state,
-                                edgecrab_types::CompletionDecision::Interrupted
-                            )
-                        });
-                    self.clear_active_request_state();
-                    self.last_response_time = Some(Instant::now());
-                    self.turn_count += 1;
-                    self.needs_redraw = true;
-
-                    // Show TTFB calibration hint when the wait was noticeable (>1s).
-                    // This surfaces the model's latency characteristics to the user
-                    // without requiring any external tooling.
-                    if let Some(ttfb) = self.last_ttfb_secs.take()
-                        && ttfb >= 1.0
-                    {
-                        self.push_output(
-                            format!("  \u{21b3} ttfb: {ttfb:.1}s"),
-                            OutputRole::System,
-                        );
-                    }
-
-                    // Auto-update status bar tokens/cost from agent
-                    self.auto_update_status();
-
-                    // Voice mode: speak the response via direct TTS after each
-                    // turn. This avoids routing a deterministic action back
-                    // through the model and removes a major source of flakiness.
-                    let response_text = std::mem::take(&mut self.last_agent_response_text);
-                    if self.voice_mode_enabled && !response_text.is_empty() {
-                        self.spawn_direct_tts(response_text, false);
-                    }
-                    if self.voice_continuous_active && !self.voice_playback_active {
-                        self.maybe_restart_continuous_voice_session(
-                            "Response finished. Listening again for continuous voice...",
-                        );
-                    }
-
-                    if edgecrab_core::prompt_queue_has_real_user_message(&self.prompt_queue) {
-                        if let Some(next) = self.prompt_queue.first().cloned() {
-                            self.prompt_queue.remove(0);
-                            self.process_input(&next);
-                        }
-                    } else {
-                        self.drain_queued_slash_commands();
-                        self.maybe_continue_goal_loop(&goal_last_response, goal_interrupted);
-                    }
-                }
-                AgentResponse::Error(err) => {
-                    self.flush_buffered_assistant_output();
-                    self.clear_active_request_state();
-                    self.push_output(format!("⚠ Run failed\n{}", err.trim()), OutputRole::Error);
-                    if self.voice_continuous_active {
-                        self.stop_continuous_voice_session(false);
-                    }
-                    self.needs_redraw = true;
-                }
-                AgentResponse::Clarify {
-                    question,
-                    choices,
-                    response_tx,
-                } => {
-                    // Display the question prominently and wait for the user.
-                    // The agent is paused — it will resume once the oneshot sender
-                    // is fulfilled. We store the sender and route the user's next
-                    // Enter key press to it instead of treating it as a new prompt.
-                    self.display_state = DisplayState::WaitingForClarify;
-                    self.push_output(format!("❓ {question}"), OutputRole::System);
-                    // Render predefined choices as a numbered list so the user can
-                    // type a number or their own answer. A 5th "Other" option is
-                    // implied; the user may also type free-form text.
-                    if let Some(ref list) = choices {
-                        for (i, choice) in list.iter().enumerate() {
-                            self.push_output(
-                                format!("  {}. {}", i + 1, choice),
-                                OutputRole::System,
-                            );
-                        }
-                        self.push_output(
-                            format!("  {}. Other (type your answer)", list.len() + 1),
-                            OutputRole::System,
-                        );
-                    }
-                    self.clarify_pending_tx = Some(response_tx);
-                    self.textarea.set_block(
-                        Block::default()
-                            .borders(Borders::ALL)
-                            .border_style(Style::default().fg(Color::Rgb(255, 220, 80)))
-                            .title(" ❓ Reply: "),
-                    );
-                    self.needs_redraw = true;
-                }
-                AgentResponse::Approval {
-                    command,
-                    full_command,
-                    response_tx,
-                } => {
-                    // Check the session-level approval cache first.
-                    // SHA-256 key is the exact full_command string so permission is
-                    // tight — "rm -rf /tmp/a" and "rm -rf /tmp/b" are distinct keys.
-                    use std::hash::{Hash, Hasher};
-                    let mut h = std::collections::hash_map::DefaultHasher::new();
-                    full_command.hash(&mut h);
-                    let cache_key = format!("{:x}", h.finish());
-
-                    if self.session_approvals.contains(&cache_key) {
-                        // Already approved for this session — auto-accept.
-                        let _ = response_tx.send(edgecrab_core::ApprovalChoice::Once);
-                        self.needs_redraw = true;
-                    } else {
-                        // Surface the approval overlay.
-                        self.display_state = DisplayState::WaitingForApproval {
-                            command: command.clone(),
-                            full_command,
-                            selected: 0,
-                            show_full: false,
-                            scroll_offset: 0,
-                        };
-                        self.approval_pending_tx = Some(response_tx);
-                        self.needs_redraw = true;
-                    }
-                }
-                AgentResponse::SecretRequest {
-                    var_name,
-                    prompt,
-                    is_sudo,
-                    response_tx,
-                } => {
-                    // Surface the masked-input overlay.
-                    self.display_state = DisplayState::SecretCapture {
-                        var_name,
-                        prompt,
-                        is_sudo,
-                        buffer: String::new(),
-                    };
-                    self.secret_pending_tx = Some(response_tx);
-                    self.needs_redraw = true;
-                }
-                AgentResponse::BgOp(result) => {
-                    if matches!(self.display_state, DisplayState::BgOp { .. }) {
-                        self.display_state = DisplayState::Idle;
-                        self.needs_redraw = true;
-                    }
-                    match result {
-                        BackgroundOpResult::ModelCatalogReady {
-                            models,
-                            current_model,
-                        } => {
-                            self.model_selector_refresh_in_flight = false;
-                            self.apply_model_selector_catalog(
-                                models,
-                                &current_model,
-                                true,
-                                self.model_selector_target,
-                            );
-                        }
-                        BackgroundOpResult::SystemMsg(text) => {
-                            self.push_output(text, OutputRole::System);
-                        }
-                        BackgroundOpResult::GatewayCommandDone { report } => {
-                            self.push_output(report, OutputRole::System);
-                            self.refresh_gateway_browser();
-                        }
-                        BackgroundOpResult::DiagnoseReady { report } => {
-                            // Count lines before storing for scroll-clamping.
-                            let total = report.lines().count();
-                            self.diagnose_panel.report = report;
-                            self.diagnose_panel.total_lines = total;
-                            self.diagnose_panel.scroll = 0;
-                            self.diagnose_panel.active = true;
-                            self.diagnose_panel.refresh_in_flight = false;
-                            self.needs_redraw = true;
-                        }
-                        BackgroundOpResult::ModelSwitchDone { model } => {
-                            self.model_name = model.clone();
-                            self.update_context_window();
-                            match persist_model_to_config(&model) {
-                                Ok(()) => self.push_output(
-                                    format!("Model switched to: {model} (saved as default for next run)"),
-                                    OutputRole::System,
-                                ),
-                                Err(e) => self.push_output(
-                                    format!("Model switched to: {model} (warning: failed to save default: {e})"),
-                                    OutputRole::System,
-                                ),
-                            }
-                        }
-                        BackgroundOpResult::CompressDone { msg } => {
-                            self.push_output(msg, OutputRole::System);
-                        }
-                    }
-                }
-                AgentResponse::RemoteSkillSearchReady {
-                    request_id,
-                    query,
-                    report,
-                } => {
-                    self.apply_remote_skill_search_result(request_id, query, report);
-                }
-                AgentResponse::RemotePluginSearchReady {
-                    request_id,
-                    query,
-                    report,
-                } => {
-                    self.apply_remote_plugin_search_result(request_id, query, report);
-                }
-                AgentResponse::RemoteMcpSearchReady {
-                    request_id,
-                    query,
-                    report,
-                } => {
-                    self.apply_remote_mcp_search_result(request_id, query, report);
-                }
-                AgentResponse::RemotePluginActionComplete {
-                    message,
-                    plugin_name,
-                } => {
-                    self.remote_plugin_browser.action_in_flight = None;
-                    if let Err(error) = self.refresh_agent_plugin_runtime() {
-                        self.push_output(
-                            format!("Plugin runtime refresh failed: {error}"),
-                            OutputRole::Error,
-                        );
-                    }
-                    self.push_output(
-                        format!("{message}\nInspect with: /plugins info {plugin_name}"),
-                        OutputRole::System,
-                    );
-                    if self.remote_plugin_browser.selector.active {
-                        self.schedule_remote_plugin_search(true);
-                    }
-                }
-                AgentResponse::RemotePluginActionFailed {
-                    action_label,
-                    identifier,
-                    error,
-                } => {
-                    self.remote_plugin_browser.action_in_flight = None;
-                    self.push_output(
-                        format!("Remote {action_label} failed for '{identifier}': {error}"),
-                        OutputRole::Error,
-                    );
-                    self.needs_redraw = true;
-                }
-                AgentResponse::RemoteSkillActionComplete {
-                    message,
-                    skill_name,
-                } => {
-                    self.remote_skill_browser.action_in_flight = None;
-                    self.refresh_skills_list();
-                    self.push_output(
-                        format!("{message}\nActivate with: /skills view {skill_name}"),
-                        OutputRole::System,
-                    );
-                    if self.remote_skill_browser.selector.active {
-                        self.schedule_remote_skill_search(true);
-                    }
-                }
-                AgentResponse::RemoteSkillActionFailed {
-                    action_label,
-                    identifier,
-                    error,
-                } => {
-                    self.remote_skill_browser.action_in_flight = None;
-                    self.push_output(
-                        format!("Remote {action_label} failed for '{identifier}': {error}"),
-                        OutputRole::Error,
-                    );
-                    self.needs_redraw = true;
-                }
-                AgentResponse::VoiceTranscript {
-                    transcript,
-                    submit_to_agent,
-                    meta,
-                } => {
-                    let transcript = normalize_voice_transcript(&transcript);
-                    let filtered = meta.is_some_and(|meta| {
-                        self.voice_hallucination_filter
-                            && is_probable_voice_hallucination(
-                                &transcript,
-                                meta.capture_duration_secs,
-                            )
-                    });
-                    if transcript.trim().is_empty() {
-                        self.push_output(
-                            "Transcription completed, but no speech was detected.",
-                            OutputRole::System,
-                        );
-                        self.note_empty_voice_capture();
-                    } else if filtered {
-                        self.push_output(
-                            format!(
-                                "Filtered probable STT hallucination from a short capture:\n{}",
-                                transcript
-                            ),
-                            OutputRole::System,
-                        );
-                        self.note_empty_voice_capture();
-                    } else if submit_to_agent {
-                        self.voice_no_speech_count = 0;
-                        self.push_output(
-                            format!("Voice reply transcript:\n{transcript}"),
-                            OutputRole::System,
-                        );
-                        self.process_input(&transcript);
-                    } else {
-                        self.voice_no_speech_count = 0;
-                        self.push_output(
-                            format!("Voice transcript:\n{transcript}"),
-                            OutputRole::System,
-                        );
-                    }
-                    self.needs_redraw = true;
-                }
-                AgentResponse::VoiceCaptureFailed {
-                    error,
-                    continuous_session,
-                } => {
-                    if continuous_session {
-                        self.voice_continuous_active = false;
-                        self.voice_no_speech_count = 0;
-                        self.push_output(
-                            format!("{error}\nContinuous voice stopped to avoid a restart loop."),
-                            OutputRole::Error,
-                        );
-                    } else {
-                        self.push_output(error, OutputRole::Error);
-                    }
-                    self.needs_redraw = true;
-                }
-                AgentResponse::VoicePlaybackFinished => {
-                    self.voice_playback_active = false;
-                    if self.voice_continuous_active && !self.is_processing {
-                        self.maybe_restart_continuous_voice_session(
-                            "Spoken reply finished. Listening again for continuous voice...",
-                        );
-                    }
-                    self.needs_redraw = true;
-                }
-                AgentResponse::BackgroundPromptComplete {
-                    task_num,
-                    task_id,
-                    prompt_preview,
-                    response,
-                } => {
-                    self.background_tasks_active.remove(&task_id);
-                    let body = if response.trim().is_empty() {
-                        "(No response generated)".to_string()
-                    } else {
-                        response
-                    };
-                    self.push_output(
-                        format!(
-                            "EdgeCrab (background #{task_num})\nTask ID: {task_id}\nPrompt: \"{prompt_preview}\"\n\n{body}"
-                        ),
-                        OutputRole::Assistant,
-                    );
-                }
-                AgentResponse::BackgroundPromptProgress { task_id, text, .. } => {
-                    if let Some(status) = self.background_tasks_active.get_mut(&task_id) {
-                        self.progress_seq = self.progress_seq.saturating_add(1);
-                        status.last_progress = Some(text.clone());
-                        status.last_seq = self.progress_seq;
-                        self.push_output(text, OutputRole::System);
-                    }
-                }
-                AgentResponse::BackgroundPromptFailed {
-                    task_num,
-                    task_id,
-                    error,
-                } => {
-                    self.background_tasks_active.remove(&task_id);
-                    self.push_output(
-                        format!(
-                            "Background task #{task_num} failed\nTask ID: {task_id}\nError: {error}"
-                        ),
-                        OutputRole::Error,
-                    );
-                }
-                AgentResponse::SideQuestionComplete { question, response } => {
-                    let body = if response.trim().is_empty() {
-                        "(No response generated)".to_string()
-                    } else {
-                        response
-                    };
-                    self.push_output(
-                        format!(
-                            "/btw {}\n\n{body}",
-                            edgecrab_core::safe_truncate(question.trim(), 72)
-                        ),
-                        OutputRole::Assistant,
-                    );
-                }
-                AgentResponse::SideQuestionFailed { question, error } => {
-                    self.push_output(
-                        format!(
-                            "/btw {}\nError: {error}",
-                            edgecrab_core::safe_truncate(question.trim(), 72)
-                        ),
-                        OutputRole::Error,
-                    );
-                }
-            }
-        }
-
-        // Drain cron job completion notifications from the background scheduler.
-        // These arrive as pre-formatted markdown strings and are shown as
-        // assistant-style output so the user knows a job completed.
-        while let Ok(msg) = self.cron_rx.try_recv() {
-            self.push_output(msg, OutputRole::Assistant);
-            self.needs_redraw = true;
-        }
-    }
-
     /// Auto-update status bar after each agent response.
     fn auto_update_status(&mut self) {
         if let Some(agent) = self.agent.clone() {
@@ -13784,395 +9805,6 @@ impl App {
             if let Some(usd) = cost_result.amount_usd {
                 self.session_cost = usd;
             }
-        }
-    }
-
-    /// Handle a key event when the approval overlay is active.
-    ///
-    /// Choice order: [Once, Session, Always, Deny] (indices 0–3).
-    /// ← / → navigate; Enter confirms; 'v' toggles full-command view; Esc = Deny.
-    fn handle_approval_key(&mut self, key: crossterm::event::KeyEvent) {
-        const CHOICES: usize = 4; // Once / Session / Always / Deny
-
-        // Extract mutable fields we need while avoiding the borrow-checker
-        let (selected, show_full) = if let DisplayState::WaitingForApproval {
-            ref mut selected,
-            ref mut show_full,
-            ..
-        } = self.display_state
-        {
-            (*selected, *show_full)
-        } else {
-            return;
-        };
-
-        match key.code {
-            KeyCode::Left | KeyCode::Char('h') => {
-                if let DisplayState::WaitingForApproval {
-                    ref mut selected, ..
-                } = self.display_state
-                    && *selected > 0
-                {
-                    *selected -= 1;
-                }
-            }
-            KeyCode::Right | KeyCode::Char('l') => {
-                if let DisplayState::WaitingForApproval {
-                    ref mut selected, ..
-                } = self.display_state
-                    && *selected + 1 < CHOICES
-                {
-                    *selected += 1;
-                }
-            }
-            KeyCode::Char('v') => {
-                if let DisplayState::WaitingForApproval {
-                    ref mut show_full, ..
-                } = self.display_state
-                {
-                    *show_full = !*show_full;
-                }
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if let DisplayState::WaitingForApproval {
-                    ref mut scroll_offset,
-                    ..
-                } = self.display_state
-                {
-                    *scroll_offset = scroll_offset.saturating_add(1);
-                }
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if let DisplayState::WaitingForApproval {
-                    ref mut scroll_offset,
-                    ..
-                } = self.display_state
-                {
-                    *scroll_offset = scroll_offset.saturating_sub(1);
-                }
-            }
-            KeyCode::Enter => {
-                let choice = match selected {
-                    0 => edgecrab_core::ApprovalChoice::Once,
-                    1 => edgecrab_core::ApprovalChoice::Session,
-                    2 => edgecrab_core::ApprovalChoice::Always,
-                    _ => edgecrab_core::ApprovalChoice::Deny,
-                };
-                self.apply_approval_choice(choice);
-            }
-            KeyCode::Esc => {
-                self.apply_approval_choice(edgecrab_core::ApprovalChoice::Deny);
-            }
-            _ => {}
-        }
-
-        let _ = (selected, show_full); // suppress unused warnings
-        self.needs_redraw = true;
-    }
-
-    /// Handle a key press when the secret-capture overlay is active.
-    ///
-    /// - Printable characters are appended to the buffer.
-    /// - Backspace deletes the last character.
-    /// - Enter sends the buffer to the agent and returns to `Idle`.
-    /// - Esc sends an empty string (abort) and returns to `Idle`.
-    fn handle_secret_capture_key(&mut self, key: crossterm::event::KeyEvent) {
-        match key.code {
-            KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                if let DisplayState::SecretCapture { ref mut buffer, .. } = self.display_state {
-                    buffer.push(c);
-                }
-            }
-            KeyCode::Backspace => {
-                if let DisplayState::SecretCapture { ref mut buffer, .. } = self.display_state {
-                    buffer.pop();
-                }
-            }
-            KeyCode::Enter => {
-                let secret = if let DisplayState::SecretCapture { ref mut buffer, .. } =
-                    self.display_state
-                {
-                    let s = buffer.clone();
-                    // Zero the buffer immediately for security.
-                    buffer.clear();
-                    s
-                } else {
-                    String::new()
-                };
-                if let Some(tx) = self.secret_pending_tx.take() {
-                    let _ = tx.send(secret);
-                }
-                self.display_state = DisplayState::AwaitingFirstToken {
-                    frame: 0,
-                    started: std::time::Instant::now(),
-                };
-            }
-            KeyCode::Esc => {
-                // Esc = abort (send empty string)
-                if let DisplayState::SecretCapture { ref mut buffer, .. } = self.display_state {
-                    buffer.clear();
-                }
-                if let Some(tx) = self.secret_pending_tx.take() {
-                    let _ = tx.send(String::new());
-                }
-                self.display_state = DisplayState::Idle;
-            }
-            _ => {}
-        }
-        self.needs_redraw = true;
-    }
-
-    fn handle_value_capture_key(&mut self, key: crossterm::event::KeyEvent) {
-        match key.code {
-            KeyCode::Char(c)
-                if !key
-                    .modifiers
-                    .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) =>
-            {
-                if let DisplayState::ValueCapture { ref mut buffer, .. } = self.display_state {
-                    buffer.push(c);
-                }
-            }
-            KeyCode::Backspace => {
-                if let DisplayState::ValueCapture { ref mut buffer, .. } = self.display_state {
-                    buffer.pop();
-                }
-            }
-            KeyCode::Enter => {
-                let (action, value) = match &mut self.display_state {
-                    DisplayState::ValueCapture { action, buffer, .. } => {
-                        (action.clone(), buffer.trim().to_string())
-                    }
-                    _ => return,
-                };
-                self.display_state = DisplayState::Idle;
-                self.apply_value_capture_action(action, value);
-            }
-            KeyCode::Esc => {
-                self.display_state = DisplayState::Idle;
-                self.needs_redraw = true;
-            }
-            _ => {}
-        }
-        self.needs_redraw = true;
-    }
-
-    fn apply_value_capture_action(&mut self, action: ValueCaptureAction, value: String) {
-        let refresh_gateway = matches!(
-            &action,
-            ValueCaptureAction::BindAddress
-                | ValueCaptureAction::HomeChannel(_)
-                | ValueCaptureAction::AllowedUsers(_)
-                | ValueCaptureAction::PrimaryField(_)
-        );
-
-        match action {
-            ValueCaptureAction::BindAddress => {
-                let trimmed = value.trim();
-                let bind = if trimmed.eq_ignore_ascii_case("clear") || trimmed.is_empty() {
-                    "127.0.0.1:8080".to_string()
-                } else {
-                    trimmed.to_string()
-                };
-                let Some((host, port)) = bind.rsplit_once(':') else {
-                    self.push_output(
-                        "Bind must use host:port format, for example 127.0.0.1:8080",
-                        OutputRole::Error,
-                    );
-                    return;
-                };
-                let Ok(port) = port.parse::<u16>() else {
-                    self.push_output("Gateway port must be a valid TCP port.", OutputRole::Error);
-                    return;
-                };
-                if port == 0 {
-                    self.push_output(
-                        "Gateway port must be between 1 and 65535.",
-                        OutputRole::Error,
-                    );
-                    return;
-                }
-                let mut config = self.load_runtime_config();
-                config.gateway.host = host.trim().to_string();
-                config.gateway.port = port;
-                match config.save() {
-                    Ok(()) => self.push_output(
-                        format!(
-                            "Gateway bind set to {}:{}",
-                            config.gateway.host, config.gateway.port
-                        ),
-                        OutputRole::System,
-                    ),
-                    Err(error) => self.push_output(
-                        format!("Failed to save gateway bind: {error}"),
-                        OutputRole::Error,
-                    ),
-                }
-            }
-            ValueCaptureAction::HomeChannel(platform) => {
-                let mut config = self.load_runtime_config();
-                let channel = if value.is_empty() || value.eq_ignore_ascii_case("clear") {
-                    None
-                } else {
-                    Some(value)
-                };
-                match self.set_home_channel_in_config(&mut config, &platform, channel.clone()) {
-                    Ok(()) => match config.save() {
-                        Ok(()) => self.push_output(
-                            match channel {
-                                Some(channel) => {
-                                    format!("Home channel for {platform} set to: {channel}")
-                                }
-                                None => format!("Home channel for {platform} cleared."),
-                            },
-                            OutputRole::System,
-                        ),
-                        Err(error) => self.push_output(
-                            format!("Failed to save {platform} home channel: {error}"),
-                            OutputRole::Error,
-                        ),
-                    },
-                    Err(error) => self.push_output(error.to_string(), OutputRole::Error),
-                }
-            }
-            ValueCaptureAction::AllowedUsers(platform) => {
-                let values = if value.is_empty() || value.eq_ignore_ascii_case("clear") {
-                    Vec::new()
-                } else {
-                    value
-                        .split(',')
-                        .map(str::trim)
-                        .filter(|entry| !entry.is_empty())
-                        .map(ToString::to_string)
-                        .collect::<Vec<_>>()
-                };
-                let mut config = self.load_runtime_config();
-                let env_key = format!("{}_ALLOWED_USERS", platform.to_ascii_uppercase());
-                let save_result: Result<(), String> = match platform.as_str() {
-                    "telegram" => {
-                        config.gateway.telegram.allowed_users = values.clone();
-                        config.save().map_err(|error| error.to_string())
-                    }
-                    "discord" => {
-                        config.gateway.discord.allowed_users = values.clone();
-                        config.save().map_err(|error| error.to_string())
-                    }
-                    "slack" => {
-                        config.gateway.slack.allowed_users = values.clone();
-                        config.save().map_err(|error| error.to_string())
-                    }
-                    "signal" => {
-                        config.gateway.signal.allowed_users = values.clone();
-                        config.save().map_err(|error| error.to_string())
-                    }
-                    "whatsapp" => {
-                        config.gateway.whatsapp.allowed_users = values.clone();
-                        config.save().map_err(|error| error.to_string())
-                    }
-                    _ => if values.is_empty() {
-                        crate::gateway_setup::remove_env_key(&env_key)
-                    } else {
-                        crate::gateway_setup::save_env_key(&env_key, &values.join(","))
-                    }
-                    .map_err(|error| error.to_string()),
-                };
-                match save_result {
-                    Ok(()) => self.push_output(
-                        if values.is_empty() {
-                            format!("{platform} allowlist cleared.")
-                        } else {
-                            format!("{platform} allowlist updated ({} entrie(s)).", values.len())
-                        },
-                        OutputRole::System,
-                    ),
-                    Err(error) => self.push_output(
-                        format!("Failed to save {platform} allowlist: {error}"),
-                        OutputRole::Error,
-                    ),
-                }
-            }
-            ValueCaptureAction::PrimaryField(field) => {
-                if !self.save_gateway_primary_field(&field, &value) {
-                    return;
-                }
-            }
-            ValueCaptureAction::ProfileCreate => {
-                let tokens = match shell_words::split(&value) {
-                    Ok(tokens) => tokens,
-                    Err(err) => {
-                        self.push_output(format!("profile create: {err}"), OutputRole::Error);
-                        return;
-                    }
-                };
-                let Some(name) = tokens.first() else {
-                    self.push_output(
-                        "profile create: enter a name, for example `research --clone-from work`.",
-                        OutputRole::Error,
-                    );
-                    return;
-                };
-                let clone = tokens.iter().any(|token| token == "--clone");
-                let clone_all = tokens.iter().any(|token| token == "--clone-all");
-                let clone_from = tokens
-                    .windows(2)
-                    .find_map(|window| (window[0] == "--clone-from").then_some(window[1].as_str()));
-                self.execute_profile_create(name, clone, clone_all, clone_from);
-            }
-            ValueCaptureAction::ProfileRename(old_name) => {
-                if value.is_empty() {
-                    self.push_output(
-                        "profile rename: enter the new profile name.",
-                        OutputRole::Error,
-                    );
-                    return;
-                }
-                self.execute_profile_rename(&old_name, &value);
-            }
-            ValueCaptureAction::ProfileDeleteConfirm(name) => {
-                if value != name {
-                    self.push_output(
-                        format!("profile delete: type `{name}` exactly to confirm."),
-                        OutputRole::Error,
-                    );
-                    return;
-                }
-                self.execute_profile_delete(&name);
-            }
-            ValueCaptureAction::ProfileAlias(name) => {
-                if value.eq_ignore_ascii_case("clear") || value.is_empty() {
-                    self.execute_profile_alias(&name, true, None);
-                } else {
-                    self.execute_profile_alias(&name, false, Some(value.as_str()));
-                }
-            }
-            ValueCaptureAction::ProfileExport(name) => {
-                let output = (!value.is_empty()).then_some(value.as_str());
-                self.execute_profile_export(&name, output);
-            }
-            ValueCaptureAction::ProfileImport => {
-                let tokens = match shell_words::split(&value) {
-                    Ok(tokens) => tokens,
-                    Err(err) => {
-                        self.push_output(format!("profile import: {err}"), OutputRole::Error);
-                        return;
-                    }
-                };
-                let Some(archive) = tokens.first() else {
-                    self.push_output(
-                        "profile import: enter an archive path and optional target name.",
-                        OutputRole::Error,
-                    );
-                    return;
-                };
-                self.execute_profile_import(archive, tokens.get(1).map(String::as_str));
-            }
-        }
-        if refresh_gateway {
-            self.refresh_gateway_browser();
         }
     }
 
@@ -14298,10 +9930,17 @@ impl App {
             || self.voice_continuous_active
         {
             self.voice_presence_frame_idx =
-                self.voice_presence_frame_idx.wrapping_add(1) % VOICE_RECORD_FRAMES.len();
+                self.voice_presence_frame_idx.wrapping_add(1) % voice_presence_frame_count();
             animated = true;
         }
         if !animated {
+            if self.is_processing && self.turn_activity.enabled {
+                self.turn_activity.tick_long_run_hints(Instant::now());
+                self.maybe_shelf_onboarding();
+                if self.shelf_coalescer.should_paint(Instant::now()) {
+                    return true;
+                }
+            }
             return false;
         }
         if advance_verb {
@@ -14320,20 +9959,20 @@ impl App {
         //
         // Performance: pending_tool_lines is usually 0–3 entries; the span rebuild
         // is a pure string transform (no I/O), so this is negligible at ~10fps.
-        if !self.pending_tool_lines.is_empty() {
+        if !self.turn_activity.enabled && !self.pending_tool_lines.is_empty() {
             // Collect updates first to avoid borrow conflicts.
             let updates: Vec<(String, usize, String, String, Option<String>, u64)> = self
                 .pending_tool_lines
                 .iter()
                 .filter_map(|(id, entry)| {
-                    let elapsed = self.active_tools.get(id)?.started_at.elapsed().as_secs();
+                    let elapsed = self.turn_activity.tool_elapsed_secs(id)?;
                     if elapsed < 3 {
                         return None; // Nothing new to show yet.
                     }
                     let detail = self
-                        .active_tools
-                        .get(id)
-                        .and_then(|s| s.last_detail.clone());
+                        .turn_activity
+                        .tool_row(id)
+                        .and_then(|row| row.detail.clone());
                     Some((
                         id.clone(),
                         entry.line_idx,
@@ -14398,44 +10037,244 @@ impl App {
     // Handlers (unchanged from before, just methods on the new App)
     // ────────────────────────────────────────────────────────────────
 
-    fn handle_model_switch(&mut self, model: String) {
+    fn session_blocks_model_transfer(&self) -> bool {
+        matches!(
+            self.display_state,
+            DisplayState::AwaitingFirstToken { .. }
+                | DisplayState::Thinking { .. }
+                | DisplayState::Streaming { .. }
+                | DisplayState::ToolExec { .. }
+                | DisplayState::WaitingForClarify
+                | DisplayState::WaitingForApproval { .. }
+                | DisplayState::SecretCapture { .. }
+        )
+    }
+
+    fn spawn_fast_model_switch(&mut self, target: String) {
         let Some(agent) = self.require_agent() else {
             return;
         };
-        let (provider_str, model_name) = match model.split_once('/') {
-            Some((p, m)) => (p, m),
-            None => {
-                self.push_output(
-                    format!("Invalid format: use 'provider/model-name' (e.g. copilot/gpt-4.1-mini). Got: '{model}'"),
-                    OutputRole::Error,
-                );
-                return;
-            }
-        };
-        let canonical = edgecrab_tools::vision_models::normalize_provider_name(provider_str);
-        let new_provider = match edgecrab_tools::create_provider_for_model(&canonical, model_name) {
-            Ok(p) => p,
-            Err(e) => {
-                self.push_output(
-                    format!("Failed to create provider '{provider_str}': {e}"),
-                    OutputRole::Error,
-                );
-                return;
-            }
-        };
-        let model_clone = model.clone();
+        if self.session_blocks_model_transfer() {
+            self.push_output(
+                edgecrab_core::MODEL_TRANSFER_BUSY_MESSAGE,
+                OutputRole::Error,
+            );
+            return;
+        }
         let tx = self.response_tx.clone();
         self.display_state = DisplayState::BgOp {
-            label: format!("Switching to {}…", model),
+            label: "Switching model…".into(),
             frame: 0,
             started: Instant::now(),
         };
         self.needs_redraw = true;
         self.rt_handle.spawn(async move {
-            agent.swap_model(model_clone.clone(), new_provider).await;
-            let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::ModelSwitchDone {
-                model: model_clone,
-            }));
+            match agent.switch_model_fast(&target).await {
+                Ok(outcome) => {
+                    let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::ModelChangeDone {
+                        outcome: edgecrab_core::ModelChangeOutcome::Fast(outcome),
+                    }));
+                }
+                Err(err) => {
+                    let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::SystemMsg(
+                        edgecrab_core::format_model_change_error(&err),
+                    )));
+                }
+            }
+        });
+    }
+
+    fn spawn_model_transfer(&mut self, target: String) {
+        let Some(agent) = self.require_agent() else {
+            return;
+        };
+        if self.session_blocks_model_transfer() {
+            self.push_output(
+                edgecrab_core::MODEL_TRANSFER_BUSY_MESSAGE,
+                OutputRole::Error,
+            );
+            return;
+        }
+        let tx = self.response_tx.clone();
+        self.display_state = DisplayState::BgOp {
+            label: "Transferring model…".into(),
+            frame: 0,
+            started: Instant::now(),
+        };
+        self.needs_redraw = true;
+        self.rt_handle.spawn(async move {
+            match agent.perform_model_transfer(&target, None).await {
+                Ok(outcome) => {
+                    let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::ModelChangeDone {
+                        outcome: edgecrab_core::ModelChangeOutcome::Transfer(outcome),
+                    }));
+                }
+                Err(err) => {
+                    let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::SystemMsg(
+                        edgecrab_core::format_model_change_error(&err),
+                    )));
+                }
+            }
+        });
+    }
+
+    fn apply_model_switch_intent(&mut self, model: String, intent: ModelSwitchIntent) {
+        match intent {
+            ModelSwitchIntent::Primary => self.spawn_fast_model_switch(model),
+            ModelSwitchIntent::Cheap => self.handle_set_cheap_model(model),
+            ModelSwitchIntent::MoaAggregator => self.handle_set_moa_aggregator(model),
+        }
+    }
+
+    fn try_model_switch(&mut self, model: String, intent: ModelSwitchIntent) {
+        if let Some(reason) =
+            edgecrab_core::copilot_model_policy::copilot_model_id_reject_reason(&model)
+        {
+            self.push_output(format!("⚠ Invalid model\n{reason}"), OutputRole::Error);
+            return;
+        }
+        if let Some(warning) = edgecrab_core::expensive_model_warning(&model) {
+            self.model_selector_stage = ModelPickerStage::ExpensiveConfirm {
+                model,
+                message: warning.message,
+                intent,
+            };
+            self.needs_redraw = true;
+            return;
+        }
+        self.apply_model_switch_intent(model, intent);
+    }
+
+    fn handle_model_switch(&mut self, model: String) {
+        self.try_model_switch(model, ModelSwitchIntent::Primary);
+    }
+
+    fn handle_transfer_model(&mut self, target: String) {
+        self.spawn_model_transfer(target);
+    }
+
+    fn handle_session_handoff(&mut self, platform_raw: String) {
+        let Some(agent) = self.require_agent() else {
+            return;
+        };
+        if matches!(
+            self.display_state,
+            DisplayState::AwaitingFirstToken { .. }
+                | DisplayState::Thinking { .. }
+                | DisplayState::Streaming { .. }
+                | DisplayState::ToolExec { .. }
+                | DisplayState::WaitingForClarify
+                | DisplayState::WaitingForApproval { .. }
+                | DisplayState::SecretCapture { .. }
+        ) {
+            self.push_output(
+                edgecrab_core::SESSION_HANDOFF_BUSY_MESSAGE,
+                OutputRole::Error,
+            );
+            return;
+        }
+
+        let platform = platform_raw.trim().to_ascii_lowercase();
+        let config = self.load_runtime_config();
+        let parsed = edgecrab_core::handoff_platform_from_name(&platform);
+        let home =
+            parsed.and_then(|p| edgecrab_core::resolve_gateway_home_channel(&config.gateway, p));
+        if parsed.is_none() {
+            self.push_output(
+                format!(
+                    "Unknown platform '{platform}'. Supported: {}.",
+                    edgecrab_core::HANDOFF_PLATFORM_HINT
+                ),
+                OutputRole::Error,
+            );
+            return;
+        }
+        if home.as_deref().unwrap_or("").trim().is_empty() {
+            self.push_output(
+                format!("No home channel configured for {platform}. Set one with /sethome first."),
+                OutputRole::Error,
+            );
+            return;
+        }
+
+        let tx = self.response_tx.clone();
+        self.display_state = DisplayState::BgOp {
+            label: format!("Handoff to {platform}…"),
+            frame: 0,
+            started: Instant::now(),
+        };
+        self.needs_redraw = true;
+        self.rt_handle.spawn(async move {
+            let session_id = match agent.ensure_persisted_session().await {
+                Ok(id) => id,
+                Err(err) => {
+                    let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::SystemMsg(format!(
+                        "Handoff failed: could not persist session: {err}"
+                    ))));
+                    return;
+                }
+            };
+            let Some(db) = agent.state_db().await else {
+                let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::SystemMsg(
+                    "Handoff failed: no state database configured.".into(),
+                )));
+                return;
+            };
+            let session_title = db
+                .get_session(&session_id)
+                .ok()
+                .flatten()
+                .and_then(|r| r.title)
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or_else(|| session_id[..session_id.len().min(8)].to_string());
+
+            match db.request_session_handoff(&session_id, &platform) {
+                Ok(true) => {}
+                Ok(false) => {
+                    let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::SystemMsg(
+                        "Session is already in flight for handoff. Wait, then retry.".into(),
+                    )));
+                    return;
+                }
+                Err(err) => {
+                    let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::SystemMsg(format!(
+                        "Handoff failed: {err}"
+                    ))));
+                    return;
+                }
+            }
+
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+            while std::time::Instant::now() < deadline {
+                match db.get_session_handoff_status(&session_id) {
+                    Ok(Some(status)) if status.state == "completed" => {
+                        let message = edgecrab_core::format_session_handoff_cli_success(
+                            &platform,
+                            &session_title,
+                        );
+                        let _ = tx.send(AgentResponse::BgOp(
+                            BackgroundOpResult::SessionHandoffDone { message },
+                        ));
+                        return;
+                    }
+                    Ok(Some(status)) if status.state == "failed" => {
+                        let err = status.error.unwrap_or_else(|| "unknown error".into());
+                        let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::SystemMsg(
+                            format!(
+                                "Handoff failed: {err}\nYour CLI session is intact — retry /handoff or /resume on the platform."
+                            ),
+                        )));
+                        return;
+                    }
+                    _ => {}
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            let _ = db.fail_session_handoff(&session_id, "timed out waiting for gateway");
+            let _ = tx.send(AgentResponse::BgOp(BackgroundOpResult::SystemMsg(
+                "Timed out waiting for the gateway. Is `edgecrab gateway` running?\nYour CLI session is intact."
+                    .into(),
+            )));
         });
     }
 
@@ -16602,6 +12441,159 @@ impl App {
         }
     }
 
+    fn handle_details_command(&mut self, args: String) {
+        let trimmed = args.trim();
+        if trimmed.is_empty()
+            || matches!(
+                trimmed.to_ascii_lowercase().as_str(),
+                "open" | "browse" | "panel" | "status" | "show"
+            )
+        {
+            self.open_details_panel();
+            return;
+        }
+        let msg = self.shelf_details.handle_command(trimmed);
+        self.persist_shelf_details_change(&msg);
+    }
+
+    fn open_details_panel(&mut self) {
+        self.details_panel.open(&self.shelf_details);
+        self.needs_redraw = true;
+    }
+
+    fn persist_shelf_details_change(&mut self, msg: &str) {
+        if let Err(e) = persist_shelf_details(&self.shelf_details) {
+            self.push_output(
+                format!("(warning: failed to persist /details: {e})"),
+                OutputRole::System,
+            );
+        }
+        self.needs_redraw = true;
+        if !msg.is_empty() {
+            self.push_output(msg.to_string(), OutputRole::System);
+        }
+    }
+
+    fn handle_indicator_command(&mut self, args: String) {
+        use crate::status_indicator::StatusIndicatorStyle;
+        let trimmed = args.trim();
+        if trimmed.is_empty() || matches!(trimmed.to_ascii_lowercase().as_str(), "status" | "show")
+        {
+            self.push_output(
+                format!("indicator: {}", self.status_indicator.as_str()),
+                OutputRole::System,
+            );
+            return;
+        }
+        let Some(style) = StatusIndicatorStyle::parse(trimmed) else {
+            self.push_output(
+                format!(
+                    "usage: /indicator [{}]",
+                    StatusIndicatorStyle::ALL.join("|")
+                ),
+                OutputRole::System,
+            );
+            return;
+        };
+        self.status_indicator = style;
+        if let Err(e) = persist_status_indicator(style) {
+            self.push_output(
+                format!("(warning: failed to persist /indicator: {e})"),
+                OutputRole::System,
+            );
+        }
+        self.push_output(
+            format!("indicator → {}", style.as_str()),
+            OutputRole::System,
+        );
+        self.needs_redraw = true;
+    }
+
+    fn handle_web_command(&mut self, args: String) {
+        let first = args.trim().to_ascii_lowercase();
+        let first = first.split_whitespace().next().unwrap_or("");
+        match first {
+            "help" => {
+                self.push_output(edgecrab_tools::web_command_usage(), OutputRole::System);
+            }
+            "status" | "hub" => self.open_web_hub_overlay("status"),
+            "chain" | "fallback" | "fallbacks" => self.open_web_hub_overlay("chain"),
+            "doctor" | "diag" | "diagnostics" => self.open_web_hub_overlay("doctor"),
+            "providers" | "list" => self.open_web_hub_overlay("providers"),
+            "setup" | "configure" | "edit" => self.open_web_config(),
+            "" => self.open_web_config(),
+            _ => {
+                self.push_output(
+                    format!("Unknown /web subcommand `{first}`. Try /web help."),
+                    OutputRole::System,
+                );
+            }
+        }
+    }
+
+    /// Open the proxy setup TUI (`/proxy`) or text subcommands.
+    fn open_proxy_config(&mut self) {
+        self.document_overlay = None;
+        self.web_setup.close();
+        self.proxy_setup.open();
+        self.needs_redraw = true;
+    }
+
+    fn handle_proxy_command(&mut self, args: String) {
+        let trimmed = args.trim();
+        let first = trimmed.to_ascii_lowercase();
+        let first = first.split_whitespace().next().unwrap_or("");
+        match first {
+            "help" => {
+                self.push_output(crate::proxy_hub::usage(), OutputRole::System);
+            }
+            "status" => match crate::proxy_cmd::ProxySession::load() {
+                Ok(session) => self.open_report_overlay(
+                    "OpenAI Proxy",
+                    crate::proxy_hub::listen_url(session.proxy()),
+                    crate::proxy_hub::format_status(&session),
+                ),
+                Err(e) => self.push_output(format!("Proxy: {e}"), OutputRole::Error),
+            },
+            "doctor" | "diag" => match crate::proxy_cmd::ProxySession::load() {
+                Ok(session) => {
+                    let (_, body) = crate::proxy_hub::format_doctor(&session);
+                    self.open_report_overlay("Proxy Doctor", "Preflight checks", body);
+                }
+                Err(e) => self.push_output(format!("Proxy: {e}"), OutputRole::Error),
+            },
+            "client" => match crate::proxy_cmd::ProxySession::load() {
+                Ok(session) => match crate::proxy_hub::client_report(&session, false) {
+                    Ok(body) => self.open_report_overlay(
+                        "Proxy Client",
+                        "OPENAI_API_BASE / model (token redacted)",
+                        body,
+                    ),
+                    Err(e) => self.push_output(format!("Proxy: {e}"), OutputRole::Error),
+                },
+                Err(e) => self.push_output(format!("Proxy: {e}"), OutputRole::Error),
+            },
+            "enable" => {
+                let preset = trimmed.split_whitespace().nth(1).unwrap_or("grok");
+                match crate::proxy_cmd::ProxySession::load() {
+                    Ok(mut session) => match crate::proxy_hub::enable_by_name(&mut session, preset)
+                    {
+                        Ok(msg) => self.push_output(msg, OutputRole::System),
+                        Err(e) => self.push_output(format!("Proxy: {e}"), OutputRole::Error),
+                    },
+                    Err(e) => self.push_output(format!("Proxy: {e}"), OutputRole::Error),
+                }
+            }
+            "setup" | "configure" | "edit" | "" => self.open_proxy_config(),
+            _ => {
+                self.push_output(
+                    format!("Unknown /proxy subcommand `{first}`. Try /proxy help."),
+                    OutputRole::System,
+                );
+            }
+        }
+    }
+
     fn current_worktree_status(&self) -> crate::worktree::WorktreeRuntimeStatus {
         let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
         crate::worktree::inspect_runtime(&cwd, self.load_runtime_config().worktree)
@@ -17055,12 +13047,26 @@ impl App {
     /// on the stored handle is safe.
     fn block_on_agent<F, T>(&self, future: F) -> T
     where
-        F: std::future::Future<Output = T>,
+        F: std::future::Future<Output = T> + Send + 'static,
+        T: Send + 'static,
     {
-        if tokio::runtime::Handle::try_current().is_ok() {
-            tokio::task::block_in_place(|| self.rt_handle.block_on(future))
-        } else {
-            self.rt_handle.block_on(future)
+        match tokio::runtime::Handle::try_current().map(|h| h.runtime_flavor()) {
+            Ok(tokio::runtime::RuntimeFlavor::MultiThread) => {
+                tokio::task::block_in_place(|| self.rt_handle.block_on(future))
+            }
+            Ok(_) => {
+                let (tx, rx) = std::sync::mpsc::sync_channel(1);
+                std::thread::spawn(move || {
+                    let rt = tokio::runtime::Builder::new_multi_thread()
+                        .enable_all()
+                        .worker_threads(1)
+                        .build()
+                        .expect("block_on_agent helper runtime");
+                    let _ = tx.send(rt.block_on(future));
+                });
+                rx.recv().expect("block_on_agent helper thread result")
+            }
+            Err(_) => self.rt_handle.block_on(future),
         }
     }
 
@@ -17165,7 +13171,9 @@ impl App {
         };
         let trimmed = args.trim().to_string();
         if trimmed.is_empty() {
-            let result = self.rt_handle.block_on(async move { agent.subgoal_list().await });
+            let result = self
+                .rt_handle
+                .block_on(async move { agent.subgoal_list().await });
             match result {
                 Ok(msg) => self.push_output(msg, OutputRole::System),
                 Err(err) => self.push_output(format!("Subgoal error: {err}"), OutputRole::Error),
@@ -17176,7 +13184,10 @@ impl App {
 
         let tokens: Vec<&str> = trimmed.split_whitespace().collect();
         let verb = tokens[0].to_ascii_lowercase();
-        let rest = tokens.get(1..).map(|parts| parts.join(" ")).unwrap_or_default();
+        let rest = tokens
+            .get(1..)
+            .map(|parts| parts.join(" "))
+            .unwrap_or_default();
 
         let result = self.rt_handle.block_on(async move {
             match verb.as_str() {
@@ -17184,9 +13195,15 @@ impl App {
                     let idx = rest
                         .split_whitespace()
                         .next()
-                        .ok_or_else(|| edgecrab_types::AgentError::Config("Usage: /subgoal remove <n>".into()))?
+                        .ok_or_else(|| {
+                            edgecrab_types::AgentError::Config("Usage: /subgoal remove <n>".into())
+                        })?
                         .parse::<usize>()
-                        .map_err(|_| edgecrab_types::AgentError::Config("/subgoal remove: <n> must be an integer (1-based index).".into()))?;
+                        .map_err(|_| {
+                            edgecrab_types::AgentError::Config(
+                                "/subgoal remove: <n> must be an integer (1-based index).".into(),
+                            )
+                        })?;
                     agent.subgoal_remove(idx).await
                 }
                 "clear" => agent.subgoal_clear().await,
@@ -17229,7 +13246,9 @@ impl App {
         let Some(agent) = self.require_agent() else {
             return;
         };
-        let result = self.rt_handle.block_on(async move { agent.subgoal_done().await });
+        let result = self
+            .rt_handle
+            .block_on(async move { agent.subgoal_done().await });
         match result {
             Ok(msg) => self.push_output(msg, OutputRole::System),
             Err(err) => self.push_output(format!("Done error: {err}"), OutputRole::Error),
@@ -17765,9 +13784,7 @@ impl App {
                 );
                 self.refresh_goal_status_chip();
                 if self.goal_status_chip.is_some() {
-                    let status = self.rt_handle.block_on(async {
-                        agent.goal_status().await
-                    });
+                    let status = self.rt_handle.block_on(async { agent.goal_status().await });
                     if let Ok(line) = status {
                         self.push_output(line, OutputRole::System);
                     }
@@ -18287,26 +14304,6 @@ impl App {
         }
     }
 
-    fn open_value_capture(
-        &mut self,
-        title: impl Into<String>,
-        prompt: impl Into<String>,
-        placeholder: impl Into<String>,
-        masked: bool,
-        buffer: impl Into<String>,
-        action: ValueCaptureAction,
-    ) {
-        self.display_state = DisplayState::ValueCapture {
-            title: title.into(),
-            prompt: prompt.into(),
-            placeholder: placeholder.into(),
-            masked,
-            buffer: buffer.into(),
-            action,
-        };
-        self.needs_redraw = true;
-    }
-
     fn open_profile_create_editor(&mut self) {
         self.open_value_capture(
             "Create Profile",
@@ -18547,7 +14544,6 @@ impl App {
         self.streaming_line = None;
         self.reasoning_line = None;
         self.in_flight_tool_count = 0;
-        self.active_tools.clear();
         self.active_subagents.clear();
         self.pending_tool_lines.clear();
         self.prompt_queue.clear();
@@ -19079,6 +15075,24 @@ impl App {
         self.show_status_bar = enabled;
         self.needs_redraw = true;
         persist_display_preferences(None, None, None, Some(enabled))
+    }
+
+    fn should_render_in_flight_tool_in_transcript(
+        &mut self,
+        tool_name: &str,
+        args_json: &str,
+    ) -> bool {
+        if self.turn_activity.enabled {
+            return false;
+        }
+        self.should_render_tool_call(tool_name, args_json)
+    }
+
+    fn should_show_tool_done_in_transcript(&self, hidden: bool, minimal_done: bool) -> bool {
+        if self.turn_activity.enabled {
+            return self.tool_progress_mode != ToolProgressMode::Off;
+        }
+        !hidden && !minimal_done
     }
 
     fn should_render_tool_call(&mut self, tool_name: &str, args_json: &str) -> bool {
@@ -20319,6 +16333,8 @@ impl App {
             provider: None,
             tool_registry: None,
             delegate_depth: 0,
+            delegate_agent_id: None,
+            delegate_parent_id: None,
             sub_agent_runner: None,
             delegation_event_tx: None,
             clarify_tx: None,
@@ -20896,10 +16912,7 @@ impl App {
             text.push_str(&format!("  Cache read:     {}\n", snap.cache_read_tokens));
         }
         if snap.cache_write_tokens > 0 {
-            text.push_str(&format!(
-                "  Cache write:    {}\n",
-                snap.cache_write_tokens
-            ));
+            text.push_str(&format!("  Cache write:    {}\n", snap.cache_write_tokens));
         }
         text.push_str(&format!("  Output tokens:  {}\n", snap.output_tokens));
         text.push_str(&format!("  Total tokens:   {}\n", snap.total_tokens()));
@@ -20914,6 +16927,21 @@ impl App {
             "  Est. cost:      ${:.4}\n",
             cost.amount_usd.unwrap_or(0.0)
         ));
+
+        if let Some(session_id) = snap.session_id.as_deref()
+            && let Some(db) = self.rt_handle.block_on(async { agent.state_db().await })
+        {
+            match db.list_model_transfers(session_id) {
+                Ok(handoffs) => {
+                    text.push_str(&edgecrab_core::format_model_transfer_insights_section(
+                        &handoffs,
+                    ));
+                }
+                Err(e) => {
+                    text.push_str(&format!("\n  (Handoff history unavailable: {e})\n"));
+                }
+            }
+        }
 
         // ── Historical window ──────────────────────────────────────────
         let db_opt = self.rt_handle.block_on(async { agent.state_db().await });
@@ -21006,7 +17034,157 @@ impl App {
         action_result
     }
 
-    fn run_login_target_with_terminal_handoff(&mut self, raw_target: &str) {
+    fn open_grok_auth_overlay(&mut self, screen: crate::grok_auth_tui::GrokAuthScreen) {
+        self.grok_auth.open(screen);
+        if self.grok_auth.screen == crate::grok_auth_tui::GrokAuthScreen::Start {
+            self.run_grok_oauth_start();
+        }
+        self.needs_redraw = true;
+    }
+
+    fn run_grok_oauth_start(&mut self) {
+        self.grok_auth.busy = true;
+        self.grok_auth.error = None;
+        self.needs_redraw = true;
+        let no_browser = self.grok_auth.no_browser;
+        let result = self
+            .rt_handle
+            .block_on(async { crate::auth_cmd::grok_auth_start_for_ui(no_browser).await });
+        match result {
+            Ok((url, path)) => match crate::auth_cmd::open_grok_authorize_url(&url) {
+                Ok(()) => {
+                    self.grok_auth.set_start_result(url, path);
+                    self.push_output(
+                        "Grok: x.ai opened in your browser. Copy the code, then press Enter in the overlay.",
+                        OutputRole::System,
+                    );
+                }
+                Err(e) => {
+                    self.grok_auth.set_start_result(url, path);
+                    self.grok_auth.set_error(format!(
+                        "Could not open browser: {e}. Press o to retry, or open the URL from step 2."
+                    ));
+                }
+            },
+            Err(e) => self.grok_auth.set_error(e.to_string()),
+        }
+        self.needs_redraw = true;
+    }
+
+    fn resolve_grok_auth_code_for_finish(&mut self) -> anyhow::Result<String> {
+        if let Some(code) = self.grok_auth.pending_code.take() {
+            return Ok(code);
+        }
+        if let Ok(code) = crate::auth_cmd::grok_read_clipboard_code() {
+            return Ok(code);
+        }
+        self.with_tui_suspended(crate::auth_cmd::prompt_and_read_grok_code)
+    }
+
+    fn exchange_grok_auth_code(&mut self, code: String) {
+        self.grok_auth.active = true;
+        self.grok_auth.screen = crate::grok_auth_tui::GrokAuthScreen::Finish;
+        self.grok_auth.busy = true;
+        self.grok_auth.error = None;
+        self.needs_redraw = true;
+        let result = self
+            .rt_handle
+            .block_on(async { crate::auth_cmd::grok_auth_finish_for_ui(code).await });
+        match result {
+            Ok(msg) => {
+                self.grok_auth.set_finish_success(msg);
+                self.push_output(
+                    "Grok OAuth saved. Use /proxy to enable the preset or `edgecrab proxy start --provider xai`.",
+                    OutputRole::System,
+                );
+            }
+            Err(e) => {
+                let msg = e.to_string();
+                if crate::auth_cmd::is_grok_pending_expired_error(&msg) {
+                    self.run_grok_oauth_start();
+                    self.push_output(
+                        "Grok session expired — opened a fresh x.ai sign-in in your browser. Paste the new code and press Enter.",
+                        OutputRole::System,
+                    );
+                } else {
+                    self.grok_auth.set_error(msg);
+                }
+            }
+        }
+        self.needs_redraw = true;
+    }
+
+    fn handle_grok_auth_key(&mut self, key: crossterm::event::KeyEvent) {
+        use crate::grok_auth_tui::GrokAuthAction;
+
+        let action = self.grok_auth.handle_key(key);
+        match action {
+            GrokAuthAction::None => {}
+            GrokAuthAction::Close => {
+                self.grok_auth.close();
+                self.needs_redraw = true;
+            }
+            GrokAuthAction::OpenBrowser => {
+                if let Some(url) = self.grok_auth.authorize_url.clone() {
+                    if let Err(e) = crate::auth_cmd::open_grok_authorize_url(&url) {
+                        self.grok_auth.set_error(e.to_string());
+                    }
+                } else {
+                    self.run_grok_oauth_start();
+                }
+                self.needs_redraw = true;
+            }
+            GrokAuthAction::RunStart => {
+                self.run_grok_oauth_start();
+            }
+            GrokAuthAction::LoadClipboard => match crate::auth_cmd::grok_read_clipboard_code() {
+                Ok(code) => {
+                    self.grok_auth.set_pending_code(code);
+                    self.needs_redraw = true;
+                }
+                Err(e) => {
+                    self.grok_auth.set_error(e.to_string());
+                    self.needs_redraw = true;
+                }
+            },
+            GrokAuthAction::RunFinish => {
+                if !crate::auth_cmd::grok_has_valid_pending_session() {
+                    self.run_grok_oauth_start();
+                    self.needs_redraw = true;
+                    return;
+                }
+                match self.resolve_grok_auth_code_for_finish() {
+                    Ok(code) => self.exchange_grok_auth_code(code),
+                    Err(e) => {
+                        let msg = e.to_string();
+                        if crate::auth_cmd::is_grok_pending_expired_error(&msg) {
+                            self.run_grok_oauth_start();
+                        } else if let Some(url) = self.grok_auth.authorize_url.clone() {
+                            let _ = crate::auth_cmd::open_grok_authorize_url(&url);
+                            self.grok_auth.set_error(format!(
+                                "{msg}\nReopened x.ai — paste your code and press Enter again."
+                            ));
+                        } else {
+                            self.grok_auth.active = true;
+                            self.grok_auth.set_error(msg);
+                        }
+                        self.needs_redraw = true;
+                    }
+                }
+            }
+        }
+    }
+
+    fn run_login_target_with_terminal_handoff(
+        &mut self,
+        raw_target: &str,
+        no_browser: bool,
+        manual_paste: bool,
+    ) {
+        if crate::auth_cmd::is_grok_auth_target(raw_target) {
+            self.open_grok_auth_overlay(crate::grok_auth_tui::GrokAuthScreen::Start);
+            return;
+        }
         let target = raw_target.trim().to_string();
         let handle = self.rt_handle.clone();
         let result = self.with_tui_suspended(|stdout| {
@@ -21015,7 +17193,16 @@ impl App {
                 "EdgeCrab login",
                 "Requesting a fresh login code...",
             )?;
-            handle.block_on(async { crate::auth_cmd::login_target_capture(&target).await })
+            handle.block_on(async {
+                crate::auth_cmd::login_target_capture(
+                    &target,
+                    no_browser,
+                    manual_paste,
+                    false,
+                    None,
+                )
+                .await
+            })
         });
 
         match result {
@@ -21054,6 +17241,23 @@ impl App {
     }
 
     fn handle_paste_clipboard(&mut self) {
+        if self.grok_auth.active
+            && self.grok_auth.screen == crate::grok_auth_tui::GrokAuthScreen::Finish
+        {
+            match crate::auth_cmd::grok_read_clipboard_code() {
+                Ok(code) => {
+                    self.grok_auth.set_pending_code(code);
+                    self.push_output(
+                        "Grok sign-in: code loaded from clipboard — press Enter to save.",
+                        OutputRole::System,
+                    );
+                }
+                Err(e) => self.grok_auth.set_error(e.to_string()),
+            }
+            self.needs_redraw = true;
+            return;
+        }
+
         // Try text first
         match arboard::Clipboard::new().and_then(|mut cb| cb.get_text()) {
             Ok(text) if !text.is_empty() => {
@@ -21116,47 +17320,40 @@ impl App {
 
     // ─── Rollback / Checkpoint ──────────────────────────────────────
     //
-    // WHY: hermes-agent wires /rollback to the checkpoint tool via the
-    // agent. We mirror this by sending a natural-language request to the
-    // agent which calls checkpoint(action="list") or checkpoint(action=
-    // "restore", name=<name>) as appropriate.
+    // Direct Hermes-style rollback — no LLM round-trip.
 
     fn handle_rollback_checkpoint(&mut self, args: String) {
-        let prompt = match args.trim() {
-            "" | "list" => {
-                "Please list all available checkpoints by calling the checkpoint tool with action='list'.".to_string()
-            }
-            name => {
-                format!(
-                    "Please restore the checkpoint named '{}' by calling the checkpoint tool \
-                     with action='restore', name='{}'.",
-                    name, name
-                )
-            }
-        };
-        let Some(agent) = self.require_agent() else {
-            return;
-        };
-        let tx = self.response_tx.clone();
-        self.push_output(
-            if args.trim().is_empty() || args.trim() == "list" {
-                "Listing checkpoints...".into()
-            } else {
-                format!("Restoring checkpoint '{}'...", args.trim())
-            },
-            OutputRole::System,
+        let config = self.load_runtime_config();
+        let cwd = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+        let cfg = edgecrab_tools::CheckpointConfig::from_home(
+            edgecrab_core::edgecrab_home(),
+            config.checkpoints.enabled,
+            config.checkpoints.max_snapshots,
+            config.checkpoints.max_total_size_mb,
+            config.checkpoints.max_file_size_mb,
         );
-        self.rt_handle.spawn(async move {
-            match agent.chat(&prompt).await {
-                Ok(resp) => {
-                    let _ = tx.send(AgentResponse::Token(resp));
-                    let _ = tx.send(AgentResponse::Done);
-                }
-                Err(e) => {
-                    let _ = tx.send(AgentResponse::Error(format!("Rollback error: {e}")));
-                }
+
+        match edgecrab_tools::handle_rollback_command(&args, &cwd, cfg) {
+            edgecrab_tools::RollbackOutcome::Disabled => {
+                self.push_output(
+                    "Checkpoints are disabled. Set checkpoints.enabled: true in config.yaml.",
+                    OutputRole::System,
+                );
             }
-        });
+            edgecrab_tools::RollbackOutcome::System(msg) => {
+                self.push_output(msg, OutputRole::System);
+            }
+            edgecrab_tools::RollbackOutcome::Error(msg) => {
+                self.push_output(msg, OutputRole::Error);
+            }
+            edgecrab_tools::RollbackOutcome::Report {
+                title,
+                subtitle,
+                body,
+            } => {
+                self.open_report_overlay(&title, &subtitle, body);
+            }
+        }
     }
 
     // ─── MCP Reload ─────────────────────────────────────────────────
@@ -21507,6 +17704,171 @@ impl App {
     //
     // EdgeCrab now supports deterministic local microphone capture in the TUI
     // using controlled recorder backends plus the existing STT/TTS tools.
+
+    fn handle_computer_command(&mut self, args: String) {
+        let runtime = self.load_runtime_config();
+        let status_cfg = edgecrab_tools::ComputerUseStatusConfig {
+            enabled: runtime.computer_use.enabled,
+            keep_last_n_screenshots: runtime.computer_use.keep_last_n_screenshots,
+            confirm_destructive: runtime.computer_use.confirm_destructive,
+            cua_driver_cmd: runtime.computer_use.cua_driver_cmd.clone(),
+        };
+        let mut ctx = edgecrab_tools::ComputerUseReportContext {
+            enabled_toolsets: runtime.tools.enabled_toolsets.clone().unwrap_or_default(),
+            disabled_toolsets: runtime.tools.disabled_toolsets.clone().unwrap_or_default(),
+            auxiliary_provider: runtime.auxiliary.provider.clone(),
+            auxiliary_model: runtime.auxiliary.model.clone(),
+            auxiliary_base_url: runtime.auxiliary.base_url.clone(),
+            ..Default::default()
+        };
+        if let Some(agent) = self.agent.as_ref() {
+            ctx.active_model = self.block_on_agent({
+                let agent = Arc::clone(agent);
+                async move { agent.model().await }
+            });
+            let (enabled, disabled, _, _) = self.current_tool_filters();
+            ctx.enabled_toolsets = enabled;
+            ctx.disabled_toolsets = disabled;
+        }
+
+        let sub = args.trim().to_ascii_lowercase();
+        let sub = if sub.is_empty() {
+            "status".to_string()
+        } else {
+            sub
+        };
+        let first = sub.split_whitespace().next().unwrap_or("status");
+        let summary = edgecrab_tools::computer_status_one_liner(&status_cfg, &ctx);
+
+        match first {
+            "enable" | "on" | "disable" | "off" => {
+                let enabled = matches!(first, "enable" | "on");
+                if let Some(agent) = self.agent.as_ref() {
+                    let agent = Arc::clone(agent);
+                    self.block_on_agent(
+                        async move { agent.set_computer_use_enabled(enabled).await },
+                    );
+                }
+                let persist_result =
+                    edgecrab_core::AppConfig::persist_computer_use_enabled(enabled);
+                let saved = persist_result.is_ok();
+                let body = edgecrab_tools::format_computer_enable_result(
+                    enabled,
+                    saved,
+                    persist_result.err().map(|e| e.to_string()).as_deref(),
+                );
+                let line = if saved {
+                    if enabled {
+                        "🖥 Computer Use enabled — saved to ~/.edgecrab/config.yaml"
+                    } else {
+                        "🖥 Computer Use disabled — saved to ~/.edgecrab/config.yaml"
+                    }
+                } else {
+                    "🖥 Computer Use — failed to save config (see report)"
+                };
+                self.push_output(line, OutputRole::System);
+                self.open_computer_overlay(
+                    if enabled {
+                        "Computer Use Enabled"
+                    } else {
+                        "Computer Use Disabled"
+                    },
+                    "Configuration saved to ~/.edgecrab/config.yaml",
+                    body,
+                );
+            }
+            "setup" => {
+                let install = edgecrab_tools::install_cua_driver(&status_cfg.cua_driver_cmd, false);
+                let persist_result = edgecrab_core::AppConfig::persist_computer_use_enabled(true);
+                if persist_result.is_ok() {
+                    if let Some(agent) = self.agent.as_ref() {
+                        let agent = Arc::clone(agent);
+                        self.block_on_agent(
+                            async move { agent.set_computer_use_enabled(true).await },
+                        );
+                    }
+                    if !ctx
+                        .enabled_toolsets
+                        .iter()
+                        .any(|t| t.eq_ignore_ascii_case("computer_use"))
+                    {
+                        ctx.enabled_toolsets.push("computer_use".into());
+                    }
+                }
+                let open_notes = edgecrab_tools::open_computer_use_settings();
+                let body = edgecrab_tools::format_computer_setup_report(
+                    &status_cfg,
+                    &ctx,
+                    &install,
+                    Some(persist_result.is_ok()),
+                    &open_notes,
+                );
+                let summary = edgecrab_tools::computer_status_one_liner(&status_cfg, &ctx);
+                self.push_output(
+                    format!(
+                        "🖥 Computer Use setup — driver install {}, config {}\n{summary}",
+                        if install.ok() {
+                            "ok"
+                        } else {
+                            "needs attention"
+                        },
+                        if persist_result.is_ok() {
+                            "saved"
+                        } else {
+                            "not saved"
+                        },
+                    ),
+                    OutputRole::System,
+                );
+                self.open_computer_overlay(
+                    "Computer Use — Setup Wizard",
+                    "Install → enable → permissions → checklist",
+                    body,
+                );
+            }
+            "help" => {
+                self.push_output(summary, OutputRole::System);
+                self.open_computer_overlay(
+                    "Computer Use — Help",
+                    "Background macOS desktop control via cua-driver",
+                    edgecrab_tools::computer_command_usage(),
+                );
+            }
+            other if edgecrab_tools::parse_install_args(other).0 => {
+                let upgrade = edgecrab_tools::parse_install_args(other).1;
+                let result =
+                    edgecrab_tools::install_cua_driver(&status_cfg.cua_driver_cmd, upgrade);
+                let body = edgecrab_tools::render_install_report(&result);
+                self.push_output(
+                    format!(
+                        "🖥 cua-driver {} — {}",
+                        if upgrade { "upgrade" } else { "install" },
+                        if result.ok() {
+                            "completed"
+                        } else {
+                            "see report for details"
+                        }
+                    ),
+                    OutputRole::System,
+                );
+                self.open_computer_overlay(
+                    if upgrade {
+                        "Computer Use — Upgrade"
+                    } else {
+                        "Computer Use — Install"
+                    },
+                    "cua-driver from GitHub (trycua/cua)",
+                    body,
+                );
+            }
+            _ => {
+                let (title, subtitle, body) =
+                    edgecrab_tools::computer_command_overlay(&sub, &status_cfg, &ctx);
+                self.push_output(summary, OutputRole::System);
+                self.open_computer_overlay(title, subtitle, body);
+            }
+        }
+    }
 
     fn handle_lsp_mode(&mut self, args: String) {
         let normalized = args.trim().to_ascii_lowercase();
@@ -22495,7775 +18857,6 @@ impl App {
             );
         }
     }
-
-    // ─── Rendering ──────────────────────────────────────────────────
-
-    /// Render the full application frame.
-    pub fn render(&mut self, frame: &mut Frame) {
-        // Cache terminal width for event handlers that build tool display spans
-        self.last_terminal_width = frame.area().width;
-
-        let textarea_height = self.input_area_height_for_area(frame.area());
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(1),                                           // output area
-                Constraint::Length(1),                                        // separator
-                Constraint::Length(if self.show_status_bar { 1 } else { 0 }), // status bar
-                Constraint::Length(textarea_height), // input area (dynamic height)
-            ])
-            .split(frame.area());
-
-        self.render_output(frame, chunks[0]);
-        // Thin horizontal separator between output and status
-        let sep = Paragraph::new(Line::from("─".repeat(chunks[1].width as usize)))
-            .style(Style::default().fg(Color::Rgb(60, 60, 70)));
-        frame.render_widget(sep, chunks[1]);
-        if self.show_status_bar {
-            self.render_status_bar(frame, chunks[2]);
-        }
-        self.render_input(frame, chunks[3]);
-
-        // Model selector overlay (full screen)
-        if self.model_selector.active {
-            self.render_model_selector(frame, frame.area());
-        }
-
-        // Vision-model selector overlay (full screen)
-        if self.vision_model_selector.active {
-            self.render_vision_model_selector(frame, frame.area());
-        }
-
-        // Image-model selector overlay (full screen)
-        if self.image_model_selector.active {
-            self.render_image_model_selector(frame, frame.area());
-        }
-
-        if self.moa_reference_selector.active {
-            self.render_moa_reference_selector(frame, frame.area());
-        }
-
-        // MCP selector overlay (full screen, same family as /model)
-        if self.mcp_selector.active {
-            self.render_mcp_selector(frame, frame.area());
-        }
-
-        if self.remote_mcp_browser.selector.active {
-            self.render_remote_mcp_selector(frame, frame.area());
-        }
-
-        if self.profile_selector.active {
-            self.render_profile_selector(frame, frame.area());
-        }
-
-        // Skill selector overlay (full screen, takes precedence over model selector)
-        if self.skill_selector.active {
-            self.render_skill_selector(frame, frame.area());
-        }
-
-        if self.tool_manager.active {
-            self.render_tool_manager(frame, frame.area());
-        }
-
-        if self.plugin_toggle.active {
-            self.render_plugin_toggle(frame, frame.area());
-        }
-
-        if self.remote_plugin_browser.selector.active {
-            self.render_remote_plugin_selector(frame, frame.area());
-        }
-
-        if self.remote_skill_browser.selector.active {
-            self.render_remote_skill_selector(frame, frame.area());
-        }
-
-        if self.config_selector.active {
-            self.render_config_selector(frame, frame.area());
-        }
-
-        if self.gateway_browser.active {
-            self.render_gateway_browser(frame, frame.area());
-        }
-
-        if self.diagnose_panel.active {
-            self.render_diagnose_panel(frame, frame.area());
-        }
-
-        if self.log_browser.active {
-            self.render_log_browser(frame, frame.area());
-        }
-
-        // Session browser overlay (full screen, same precedence as skill browser)
-        if self.session_browser.active {
-            self.render_session_browser(frame, frame.area());
-        }
-
-        if self.log_inspector.active() {
-            self.render_log_inspector(frame, frame.area());
-        }
-
-        if self.session_inspector.active() {
-            self.render_session_inspector(frame, frame.area());
-        }
-
-        // Skin browser overlay (full screen, same precedence as session browser)
-        if self.skin_browser.active {
-            self.render_skin_browser(frame, frame.area());
-        }
-
-        // Verbose / tool-progress picker overlay (compact centered popup)
-        if self.verbose_selector_active {
-            self.render_verbose_selector(frame, frame.area());
-        }
-
-        // Reasoning picker overlay (compact centered popup)
-        if self.reasoning_selector_active {
-            self.render_reasoning_selector(frame, frame.area());
-        }
-
-        // Personality picker overlay (compact centered popup)
-        if self.personality_selector_active {
-            self.render_personality_selector(frame, frame.area());
-        }
-
-        // Stream picker overlay (compact centered popup)
-        if self.stream_selector_active {
-            self.render_stream_selector(frame, frame.area());
-        }
-
-        // Status bar picker overlay (compact centered popup)
-        if self.statusbar_selector_active {
-            self.render_statusbar_selector(frame, frame.area());
-        }
-
-        // Shadow Judge picker overlay (compact centered popup)
-        if self.shadow_judge_selector_active {
-            self.render_shadow_judge_selector(frame, frame.area());
-        }
-
-        // Steering overlay (compact floating panel — lower screen half)
-        if self.steering_overlay_active {
-            self.render_steering_overlay(frame, frame.area());
-        }
-
-        if self.document_overlay.is_some() {
-            self.render_document_overlay(frame, frame.area());
-        }
-
-        // Approval overlay (full screen, highest precedence)
-        if matches!(self.display_state, DisplayState::WaitingForApproval { .. }) {
-            self.render_approval_overlay(frame, frame.area());
-        }
-
-        // Secret capture overlay (full screen, highest precedence — masks the secret)
-        if matches!(self.display_state, DisplayState::SecretCapture { .. }) {
-            self.render_secret_capture_overlay(frame, frame.area());
-        }
-        if matches!(self.display_state, DisplayState::ValueCapture { .. }) {
-            self.render_value_capture_overlay(frame, frame.area());
-        }
-    }
-
-    /// Render the scrollable output area with markdown formatting and a scrollbar.
-    fn render_output(&mut self, frame: &mut Frame, area: Rect) {
-        if !self.rich_transcript {
-            self.render_output_compact(frame, area);
-            return;
-        }
-
-        // ── Pass 1: ensure every OutputLine has a cached render ──────
-        for ol in &mut self.output {
-            if ol.rendered.is_none() {
-                let rendered = if let Some(ref spans) = ol.prebuilt_spans {
-                    // Pre-built spans (tool-done lines with emoji) — use directly.
-                    // Ratatui measures each Span's display width via unicode-width,
-                    // so emoji and wide characters align correctly.
-                    vec![Line::from(spans.clone())]
-                } else if ol.role == OutputRole::Assistant {
-                    markdown_render::render_markdown(&ol.text)
-                } else {
-                    let style = match ol.role {
-                        OutputRole::Assistant => unreachable!(),
-                        OutputRole::Tool => Style::default()
-                            .fg(Color::Rgb(255, 191, 0))
-                            .add_modifier(Modifier::DIM),
-                        OutputRole::System => Style::default()
-                            .fg(Color::Rgb(140, 140, 150))
-                            .add_modifier(Modifier::ITALIC),
-                        OutputRole::Reasoning => Style::default()
-                            .fg(Color::Rgb(170, 170, 190))
-                            .add_modifier(Modifier::ITALIC | Modifier::DIM),
-                        OutputRole::Error => Style::default().fg(Color::Rgb(239, 83, 80)),
-                        OutputRole::User => Style::default().fg(Color::Rgb(255, 248, 220)),
-                    };
-                    ol.text
-                        .lines()
-                        .map(|l| Line::from(Span::styled(l.to_string(), style)))
-                        .collect()
-                };
-                ol.rendered = Some(rendered);
-            }
-        }
-
-        // ── Pass 2: build visual lines with role bars + turn separators ─
-        // Each message gets a 2-char left accent: coloured "▎ " for most roles,
-        // "· " (dimmed dot) for system messages. User messages get a thin
-        // horizontal rule injected before them (except the very first).
-        let sep_style = Style::default()
-            .fg(Color::Rgb(45, 45, 58))
-            .add_modifier(Modifier::DIM);
-        // Dynamic separator width: fill the content column minus bar + scrollbar
-        let sep_width = (area.width.saturating_sub(4) as usize).max(10);
-
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        for (idx, ol) in self.output.iter().enumerate() {
-            // Turn separator: thin rule before each user message that follows
-            // at least one other message (marks start of a new conversation turn).
-            if ol.role == OutputRole::User && idx > 0 {
-                // Blank line + subtle separator rule
-                lines.push(Line::from(""));
-                lines.push(Line::from(vec![
-                    Span::styled("  ", Style::default()),
-                    Span::styled("─".repeat(sep_width), sep_style),
-                ]));
-                lines.push(Line::from(""));
-            }
-
-            // Role bar: the 2-char left accent column
-            let (bar, bar_style): (&'static str, Style) = match ol.role {
-                OutputRole::User => ("▎ ", Style::default().fg(Color::Rgb(255, 248, 220))),
-                OutputRole::Assistant => ("▎ ", Style::default().fg(Color::Rgb(77, 208, 225))),
-                OutputRole::Tool => ("▎ ", Style::default().fg(Color::Rgb(255, 191, 0))),
-                OutputRole::Error => ("▎ ", Style::default().fg(Color::Rgb(239, 83, 80))),
-                OutputRole::System => (". ", Style::default().fg(Color::Rgb(60, 60, 72))),
-                OutputRole::Reasoning => ("~ ", Style::default().fg(Color::Rgb(95, 95, 115))),
-            };
-
-            // Prepend bar to every rendered sub-line
-            for rendered_line in ol.rendered.as_ref().unwrap() {
-                let mut spans: Vec<Span<'static>> = vec![Span::styled(bar, bar_style)];
-                spans.extend(rendered_line.spans.clone());
-                lines.push(Line::from(spans));
-            }
-        }
-
-        // ── Ghost waiting line (FP45) ─────────────────────────────────
-        // During AwaitingFirstToken and Thinking (when no reasoning output is
-        // yet visible), inject a dim pulsing line at the bottom of the content
-        // area. This puts the waiting indicator AT THE USER'S FOCAL POINT
-        // (bottom of the conversation) rather than only in the peripheral
-        // status bar. The ghost line disappears naturally once real tokens arrive.
-        match &self.display_state {
-            DisplayState::AwaitingFirstToken { frame, started } => {
-                let spinner = compact_spinner_frame(*frame, self.terminal_glyph_profile);
-                let elapsed = started.elapsed().as_secs();
-                let ghost_text: String = if elapsed > 10 {
-                    format!("  {spinner}  awaiting response\u{2026}  {elapsed}s  (^C to stop)")
-                } else if elapsed > 3 {
-                    format!("  {spinner}  awaiting response\u{2026}  {elapsed}s")
-                } else {
-                    format!("  {spinner}  awaiting response\u{2026}")
-                };
-                lines.push(Line::from(vec![
-                    Span::styled(
-                        "\u{258e} ",
-                        Style::default()
-                            .fg(P::GUTTER_BAR)
-                            .add_modifier(Modifier::DIM), // decorative glyph — DIM OK
-                    ),
-                    Span::styled(
-                        ghost_text,
-                        Style::default()
-                            // WCAG AA: P::TERTIARY_COOL Rgb(125,138,162) CR=6.0:1.
-                            // DIM removed — this is semantic text the user must read.
-                            .fg(P::TERTIARY_COOL)
-                            .add_modifier(Modifier::ITALIC),
-                    ),
-                ]));
-            }
-            DisplayState::Thinking { frame, started }
-                // Only show when reasoning is not already streaming in the output
-                // area (show_reasoning=true with tokens arriving). When
-                // reasoning_line is Some, the user already sees live reasoning
-                // text — adding a ghost line would duplicate the signal.
-                if self.reasoning_line.is_none() => {
-                    let spinner = compact_spinner_frame(*frame, self.terminal_glyph_profile);
-                    let elapsed = started.elapsed().as_secs();
-                    let ghost_text: String = if elapsed > 3 {
-                        format!("  {spinner}  thinking\u{2026}  {elapsed}s")
-                    } else {
-                        format!("  {spinner}  thinking\u{2026}")
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled(
-                            "\u{258e} ",
-                            Style::default()
-                                .fg(P::GUTTER_BAR)
-                                .add_modifier(Modifier::DIM), // decorative glyph — DIM OK
-                        ),
-                        Span::styled(
-                            ghost_text,
-                            Style::default()
-                                // WCAG AA: P::SECONDARY_WARM CR=9.2:1. DIM removed.
-                                .fg(P::SECONDARY_WARM)
-                                .add_modifier(Modifier::ITALIC),
-                        ),
-                    ]));
-                }
-            _ => {}
-        }
-
-        // ── Scroll math ───────────────────────────────────────────────
-        //
-        // Scrollbar is on the LEFT (1 col).  Content starts at x+1.
-        // WHY left: the content's natural reading edge is the right margin;
-        // placing the scroll indicator on the left avoids it competing with
-        // text flow and emoji that may appear near the right edge.
-        //   area.x  ← scrollbar (1 col)
-        //   area.x+1 .. area.right()  ← text content (width − 1 cols)
-        //
-        // content_width: used for word-wrap row count estimation.
-        // Subtract 4 = 1 (scrollbar) + 1 (gap) + 2 (role bar "▎ ").
-        let content_width = area.width.saturating_sub(4) as usize;
-
-        let visual_rows: u16 = if content_width == 0 {
-            lines.len() as u16
-        } else {
-            lines
-                .iter()
-                .map(|l| {
-                    let w = l.width();
-                    if w == 0 {
-                        1u16
-                    } else {
-                        w.div_ceil(content_width) as u16
-                    }
-                })
-                .sum()
-        };
-
-        let visible_height = area.height;
-        let max_scroll = visual_rows.saturating_sub(visible_height);
-        if self.scroll_offset > max_scroll {
-            self.scroll_offset = max_scroll;
-        }
-        let scroll = self.scroll_offset;
-
-        self.output_visual_rows = visual_rows;
-        self.output_area_height = visible_height;
-        self.at_bottom = scroll == 0;
-
-        let top_row = visual_rows.saturating_sub(visible_height + scroll);
-
-        // ── Render: scrollbar LEFT, 1-col gap, then content ──────────
-        let scrollbar_area = Rect {
-            x: area.x,
-            y: area.y,
-            width: 1,
-            height: area.height,
-        };
-        // Content column: skip 1 col (scrollbar) + 1 col (breathing gap).
-        let content_area = Rect {
-            x: area.x + 2,
-            y: area.y,
-            width: area.width.saturating_sub(2),
-            height: area.height,
-        };
-
-        let paragraph = Paragraph::new(Text::from(lines))
-            .wrap(Wrap { trim: false })
-            .scroll((top_row, 0));
-        frame.render_widget(paragraph, content_area);
-
-        if visual_rows > visible_height {
-            let scrollbar_pos = max_scroll.saturating_sub(scroll) as usize;
-            let mut scrollbar_state =
-                ScrollbarState::new(max_scroll as usize).position(scrollbar_pos);
-            frame.render_stateful_widget(
-                Scrollbar::new(ScrollbarOrientation::VerticalLeft)
-                    .begin_symbol(None)
-                    .end_symbol(None)
-                    .track_symbol(Some("│"))
-                    .thumb_symbol("█"),
-                scrollbar_area,
-                &mut scrollbar_state,
-            );
-        }
-
-        // "Scrolled ↑" hint — anchored to right edge of the content area
-        // (not the scrollbar edge) so it stays readable.
-        if scroll > 0 {
-            let hint = format!(
-                " ↑{}  ^G=end  ↕scroll  {} ",
-                scroll,
-                self.paging_key_hint_label()
-            );
-            let hint_len = hint
-                .len()
-                .min(content_area.width.saturating_sub(1) as usize);
-            let hint_x = content_area.x + content_area.width.saturating_sub(hint_len as u16);
-            let hint_area = Rect::new(hint_x, area.y, hint_len as u16, 1);
-            frame.render_widget(
-                Paragraph::new(Span::styled(
-                    hint,
-                    Style::default()
-                        .fg(Color::Rgb(255, 210, 50))
-                        .bg(Color::Rgb(30, 30, 38))
-                        .add_modifier(Modifier::BOLD),
-                )),
-                hint_area,
-            );
-        }
-    }
-
-    fn render_output_compact(&mut self, frame: &mut Frame, area: Rect) {
-        let glyphs = self.terminal_glyph_profile;
-        let flatten_spans = |spans: &[Span<'static>]| -> String {
-            spans
-                .iter()
-                .map(|span| span.content.as_ref())
-                .collect::<String>()
-        };
-        let line_style = |role: OutputRole| match role {
-            OutputRole::Assistant => Style::default().fg(Color::Rgb(220, 228, 235)),
-            OutputRole::Tool => Style::default().fg(Color::Rgb(235, 200, 120)),
-            OutputRole::System => Style::default()
-                .fg(Color::Rgb(155, 165, 175))
-                .add_modifier(Modifier::DIM),
-            OutputRole::Reasoning => Style::default()
-                .fg(Color::Rgb(145, 150, 170))
-                .add_modifier(Modifier::DIM),
-            OutputRole::Error => Style::default().fg(Color::Rgb(239, 83, 80)),
-            OutputRole::User => Style::default().fg(Color::Rgb(255, 248, 220)),
-        };
-        let prefix_for = |role: OutputRole, ascii: bool| match (role, ascii) {
-            (OutputRole::Tool, true) => "[tool] ",
-            (OutputRole::Tool, false) => "› ",
-            (OutputRole::System, true) => "[note] ",
-            (OutputRole::System, false) => "· ",
-            (OutputRole::Reasoning, true) => "[think] ",
-            (OutputRole::Reasoning, false) => "~ ",
-            (OutputRole::Error, true) => "[error] ",
-            (OutputRole::Error, false) => "! ",
-            _ => "",
-        };
-
-        for ol in &mut self.output {
-            if ol.plain_rendered.is_none() {
-                let style = line_style(ol.role);
-                let prefix = prefix_for(ol.role, matches!(glyphs, TerminalGlyphProfile::Ascii));
-                let prefix_width = prefix.width();
-                let text = ol
-                    .prebuilt_spans
-                    .as_ref()
-                    .map(|spans| flatten_spans(spans))
-                    .unwrap_or_else(|| ol.text.clone());
-                let source_lines = if text.is_empty() {
-                    vec![String::new()]
-                } else {
-                    text.lines().map(str::to_string).collect::<Vec<_>>()
-                };
-                let mut rendered_lines = Vec::with_capacity(source_lines.len());
-                for (idx, content) in source_lines.into_iter().enumerate() {
-                    let leader = if idx == 0 {
-                        prefix.to_string()
-                    } else if prefix_width == 0 {
-                        String::new()
-                    } else {
-                        " ".repeat(prefix_width)
-                    };
-                    rendered_lines.push(Line::from(vec![
-                        Span::styled(leader, style),
-                        Span::styled(content, style),
-                    ]));
-                }
-                ol.plain_rendered = Some(rendered_lines);
-            }
-        }
-
-        let mut lines: Vec<Line<'static>> = Vec::new();
-        for ol in &self.output {
-            if let Some(rendered) = &ol.plain_rendered {
-                lines.extend(rendered.clone());
-            }
-        }
-
-        // ── Ghost waiting line (FP45) compact variant ─────────────────
-        match &self.display_state {
-            DisplayState::AwaitingFirstToken { frame, started } => {
-                let spinner = compact_spinner_frame(*frame, glyphs);
-                let elapsed = started.elapsed().as_secs();
-                let ghost: String = if elapsed > 3 {
-                    format!("  {spinner}  awaiting\u{2026}  {elapsed}s")
-                } else {
-                    format!("  {spinner}  awaiting\u{2026}")
-                };
-                lines.push(Line::from(Span::styled(
-                    ghost,
-                    Style::default()
-                        // WCAG AA: P::TERTIARY_COOL CR=6.0:1. DIM removed.
-                        .fg(P::TERTIARY_COOL)
-                        .add_modifier(Modifier::ITALIC),
-                )));
-            }
-            DisplayState::Thinking { frame, started } if self.reasoning_line.is_none() => {
-                let spinner = compact_spinner_frame(*frame, glyphs);
-                let elapsed = started.elapsed().as_secs();
-                let ghost: String = if elapsed > 3 {
-                    format!("  {spinner}  thinking\u{2026}  {elapsed}s")
-                } else {
-                    format!("  {spinner}  thinking\u{2026}")
-                };
-                lines.push(Line::from(Span::styled(
-                    ghost,
-                    Style::default()
-                        // WCAG AA: P::SECONDARY_WARM CR=9.2:1 (thinking = higher priority signal).
-                        // DIM removed.
-                        .fg(P::SECONDARY_WARM)
-                        .add_modifier(Modifier::ITALIC),
-                )));
-            }
-            _ => {}
-        }
-
-        let content_width = area.width.max(1) as usize;
-        let visual_rows: u16 = lines
-            .iter()
-            .map(|line| {
-                let width = line.width();
-                if width == 0 {
-                    1
-                } else {
-                    width.div_ceil(content_width) as u16
-                }
-            })
-            .sum();
-        let visible_height = area.height;
-        let max_scroll = visual_rows.saturating_sub(visible_height);
-        if self.scroll_offset > max_scroll {
-            self.scroll_offset = max_scroll;
-        }
-        let scroll = self.scroll_offset;
-        self.output_visual_rows = visual_rows;
-        self.output_area_height = visible_height;
-        self.at_bottom = scroll == 0;
-
-        let top_row = visual_rows.saturating_sub(visible_height + scroll);
-        let paragraph = Paragraph::new(Text::from(lines))
-            .wrap(Wrap { trim: false })
-            .scroll((top_row, 0));
-        frame.render_widget(paragraph, area);
-
-        if self.show_output_scrollbar && visual_rows > visible_height && area.width > 1 {
-            let scrollbar_area = Rect {
-                x: area.right().saturating_sub(1),
-                y: area.y,
-                width: 1,
-                height: area.height,
-            };
-            let scrollbar_pos = max_scroll.saturating_sub(scroll) as usize;
-            let mut scrollbar_state =
-                ScrollbarState::new(max_scroll as usize).position(scrollbar_pos);
-            frame.render_stateful_widget(
-                Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                    .begin_symbol(None)
-                    .end_symbol(None)
-                    .track_symbol(Some("|"))
-                    .thumb_symbol("#"),
-                scrollbar_area,
-                &mut scrollbar_state,
-            );
-        }
-
-        if scroll > 0 && area.width > 12 {
-            let hint =
-                self.paging_scroll_hint(scroll, matches!(glyphs, TerminalGlyphProfile::Ascii));
-            let hint_width = hint.width().min(area.width as usize) as u16;
-            let hint_area = Rect::new(
-                area.right().saturating_sub(hint_width),
-                area.y,
-                hint_width,
-                1,
-            );
-            frame.render_widget(
-                Paragraph::new(Span::styled(
-                    hint,
-                    Style::default()
-                        .fg(Color::Rgb(240, 210, 120))
-                        .bg(Color::Rgb(30, 30, 38))
-                        .add_modifier(Modifier::BOLD),
-                )),
-                hint_area,
-            );
-        }
-    }
-
-    /// Render the status bar with spinner and color-coded metrics.
-    fn render_status_bar(&self, frame: &mut Frame, area: Rect) {
-        if self.compact_status_bar {
-            self.render_compact_status_bar(frame, area);
-            return;
-        }
-
-        let mut left_spans = Vec::new();
-
-        // ── Brand badge ─────────────────────────────────────────────
-        // A small copper "EC" badge anchors the left side of the status bar.
-        left_spans.push(Span::styled(
-            " EC ",
-            Style::default()
-                .fg(Color::Rgb(205, 127, 50))
-                .add_modifier(Modifier::BOLD),
-        ));
-        left_spans.push(Span::styled(
-            "│",
-            Style::default().fg(Color::Rgb(50, 50, 65)),
-        ));
-        left_spans.push(Span::styled(
-            format!(" v{} ", crate::banner::VERSION),
-            Style::default().fg(Color::Rgb(120, 130, 150)),
-        ));
-        left_spans.push(Span::styled(
-            "│",
-            Style::default().fg(Color::Rgb(50, 50, 65)),
-        ));
-
-        // ── Spinner / state indicator ────────────────────────────────
-        match &self.display_state {
-            DisplayState::AwaitingFirstToken { frame: f, started } => {
-                let elapsed_secs = started.elapsed().as_secs();
-                let msg = format_waiting_first_token_status(
-                    &self.theme,
-                    self.terminal_glyph_profile,
-                    *f,
-                    self.thinking_verb_idx,
-                    self.kaomoji_frame_idx,
-                    elapsed_secs,
-                );
-                // FP46: urgency color ramp — amber (normal) → orange (slow) → red (stall)
-                let color = wait_urgency_color(elapsed_secs);
-                left_spans.push(Span::styled(format!(" {msg} "), Style::default().fg(color)));
-            }
-            DisplayState::Thinking { frame: f, started } => {
-                let elapsed_secs = started.elapsed().as_secs();
-                let msg = format_thinking_status(
-                    &self.theme,
-                    self.terminal_glyph_profile,
-                    *f,
-                    self.thinking_verb_idx,
-                    self.kaomoji_frame_idx,
-                    elapsed_secs,
-                );
-                // FP46: same urgency ramp for extended reasoning waits
-                let color = wait_urgency_color(elapsed_secs);
-                left_spans.push(Span::styled(format!(" {msg} "), Style::default().fg(color)));
-            }
-            DisplayState::Streaming {
-                token_count,
-                chars_written,
-                current_section,
-                started,
-            } => {
-                let elapsed = started.elapsed().as_secs_f64();
-                // Only show rate once enough tokens and time have elapsed to
-                // produce a meaningful estimate — avoids "1t/s" flicker on start.
-                let rate_str = if elapsed > 1.0 && *token_count > 5 {
-                    let rate = *token_count as f64 / elapsed;
-                    format!("  {rate:.0}t/s")
-                } else {
-                    String::new()
-                };
-                // Word estimate: ~4.5 chars per word, bucketed to nearest 10 for stability.
-                let words = words_estimate(*chars_written);
-                let word_str = if words > 0 {
-                    format!(" ~{words}w ")
-                } else {
-                    String::new()
-                };
-                // Show elapsed time after 5s of streaming so user knows how long they've waited.
-                let elapsed_str = format_elapsed_hint(started.elapsed(), 5);
-                // Show current section heading if we detected one.
-                let section_str = current_section
-                    .as_deref()
-                    .map(|s| format!(" │ {s}"))
-                    .unwrap_or_default();
-                left_spans.push(Span::styled(
-                    format!(" ▶{word_str}{section_str}{rate_str}{elapsed_str} "),
-                    Style::default().fg(Color::Rgb(100, 230, 100)),
-                ));
-            }
-            DisplayState::ToolExec {
-                name,
-                args_json,
-                detail,
-                frame: f,
-                started,
-                ..
-            } => {
-                let spinner = compact_spinner_frame(*f, self.terminal_glyph_profile);
-                let summary = summarize_active_tools(&self.active_tools);
-                let elapsed_secs = summary
-                    .as_ref()
-                    .map(|active| active.elapsed_secs)
-                    .unwrap_or_else(|| started.elapsed().as_secs());
-                // Show elapsed time after 3 s (mirrors Thinking state behaviour).
-                // Show the stop hint after 10 s for long-running tools.
-                let time_part = if elapsed_secs >= 3 {
-                    format!(" {elapsed_secs}s")
-                } else {
-                    String::new()
-                };
-                let stop_hint = if elapsed_secs >= 10 { "  ^C=stop" } else { "" };
-                let content = if let Some(active) = summary {
-                    format!(
-                        " {spinner} {} {} {}{time_part}{stop_hint} ",
-                        active.verb, active.icon, active.detail
-                    )
-                } else {
-                    let icon = tool_icon(name);
-                    let verb = tool_action_verb(name);
-                    let preview = detail
-                        .as_deref()
-                        .filter(|detail| !detail.trim().is_empty())
-                        .map(|detail| edgecrab_core::safe_truncate(detail.trim(), 60).to_string())
-                        .unwrap_or_else(|| {
-                            // Use width-adaptive preview — status bar has more room on wide terminals.
-                            let widths = DisplayWidths::from_terminal_width(
-                                self.last_terminal_width as usize,
-                            );
-                            tool_status_preview_width(name, args_json, widths.status_preview)
-                        });
-                    format!(" {spinner} {verb} {icon} {preview}{time_part}{stop_hint} ")
-                };
-                // FP48: Use semantic category color so the status bar matches the output area.
-                // FP50: Escalate color for slow (>=5s) and stalled (>=15s) tool calls.
-                let category_name = latest_active_tool_entry(&self.active_tools)
-                    .map(|(_, s)| s.name.as_str())
-                    .unwrap_or(name.as_str());
-                let base_color = tool_category(category_name).name_color();
-                let bar_color = if elapsed_secs >= 15 {
-                    Color::Rgb(255, 140, 50) // orange: stalled / very slow
-                } else if elapsed_secs >= 5 {
-                    Color::Rgb(255, 200, 80) // amber: slow
-                } else {
-                    base_color
-                };
-                left_spans.push(Span::styled(content, Style::default().fg(bar_color)));
-            }
-            DisplayState::BgOp {
-                label,
-                frame: f,
-                started,
-            } => {
-                let spinner = compact_spinner_frame(*f, self.terminal_glyph_profile);
-                let elapsed = started.elapsed().as_secs();
-                let msg = if elapsed > 3 {
-                    format!(" {spinner} {label} {elapsed}s ")
-                } else {
-                    format!(" {spinner} {label} ")
-                };
-                left_spans.push(Span::styled(
-                    msg,
-                    Style::default().fg(Color::Rgb(180, 180, 255)),
-                ));
-            }
-            DisplayState::Idle => {
-                if let Some(flash) = self.goal_flash_status.as_ref() {
-                    left_spans.push(Span::styled(
-                        format!(" {flash} "),
-                        goal_flash_badge_style(flash),
-                    ));
-                } else if let Some(outcome) = self.last_run_outcome.as_ref() {
-                    left_spans.push(Span::styled(
-                        format!(
-                            " {} {} ",
-                            outcome.state.emoji(),
-                            outcome.state.compact_label()
-                        ),
-                        run_outcome_badge_style(outcome),
-                    ));
-                } else {
-                    left_spans.push(Span::raw(" "));
-                }
-            }
-            DisplayState::WaitingForClarify => {
-                // Agent is paused waiting for a user reply to a clarifying question.
-                // Show a distinct amber label so the user knows input is expected.
-                left_spans.push(Span::styled(
-                    " ❓ Waiting for reply ",
-                    Style::default()
-                        .fg(Color::Rgb(255, 220, 80))
-                        .add_modifier(Modifier::BOLD),
-                ));
-            }
-            DisplayState::WaitingForApproval { command, .. } => {
-                // Agent is waiting for a risk-graduated approval from the user.
-                let short = if command.len() > 30 {
-                    format!("{}…", edgecrab_core::safe_truncate(command, 27))
-                } else {
-                    command.clone()
-                };
-                left_spans.push(Span::styled(
-                    format!(" ⚠  Approve: {short} "),
-                    Style::default()
-                        .fg(Color::Rgb(255, 140, 0))
-                        .add_modifier(Modifier::BOLD),
-                ));
-            }
-            DisplayState::SecretCapture {
-                var_name, is_sudo, ..
-            } => {
-                // Agent is waiting for a secret value from the user.
-                let label = if *is_sudo {
-                    format!(" 🔒 sudo: {var_name} ")
-                } else {
-                    format!(" 🔑 secret: {var_name} ")
-                };
-                left_spans.push(Span::styled(
-                    label,
-                    Style::default()
-                        .fg(Color::Rgb(255, 80, 80))
-                        .add_modifier(Modifier::BOLD),
-                ));
-            }
-            DisplayState::ValueCapture { title, .. } => {
-                left_spans.push(Span::styled(
-                    format!(" ⛵ Editing: {title} "),
-                    Style::default()
-                        .fg(Color::Rgb(120, 220, 200))
-                        .add_modifier(Modifier::BOLD),
-                ));
-            }
-        }
-
-        left_spans.push(Span::styled(
-            "│",
-            Style::default().fg(Color::Rgb(50, 50, 65)),
-        ));
-
-        if let Some(overlay) = self.document_overlay.as_ref() {
-            left_spans.push(Span::styled(
-                format!(" {} {} ", overlay.icon, unicode_trunc(&overlay.title, 28)),
-                Style::default()
-                    .fg(overlay.accent)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            left_spans.push(Span::styled(
-                "│",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-        }
-
-        if let Some(chip) = self.goal_status_chip.as_ref() {
-            left_spans.push(Span::styled(
-                format!(" {} ", chip.label),
-                goal_status_chip_style(chip.status),
-            ));
-            left_spans.push(Span::styled(
-                "│",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-        }
-
-        // Model name
-        left_spans.push(Span::styled(
-            format!(" {} ", self.model_name),
-            self.theme.status_bar_model,
-        ));
-
-        // Token count with color threshold.
-        // When context window is known, show a watermark: `12.4k / 200k (7%)`.
-        // Color: green → yellow → red at 50% / 80% of context window.
-        let ctx_pct = self
-            .context_window
-            .and_then(|cw| context_usage_ratio(self.total_tokens, Some(cw)));
-        let token_style = if ctx_pct.is_some_and(|p| p > 0.80) || self.total_tokens > 100_000 {
-            Style::default().fg(Color::Red)
-        } else if ctx_pct.is_some_and(|p| p > 0.50) || self.total_tokens > 50_000 {
-            Style::default().fg(Color::Yellow)
-        } else {
-            self.theme.status_bar_tokens
-        };
-        let token_display = if let (Some(cw), Some(pct)) = (self.context_window, ctx_pct) {
-            format!(
-                " {}/{} ({:.0}%)",
-                format_tokens(self.total_tokens),
-                format_tokens(cw),
-                pct * 100.0
-            )
-        } else {
-            format!(" {}", format_tokens(self.total_tokens))
-        };
-        left_spans.push(Span::styled(token_display, token_style));
-
-        // Cost with color threshold
-        let cost_style = if self.session_cost >= 1.0 {
-            Style::default().fg(Color::Red)
-        } else if self.session_cost >= 0.10 {
-            Style::default().fg(Color::Yellow)
-        } else {
-            self.theme.status_bar_cost
-        };
-        left_spans.push(Span::styled(
-            format!(" ${:.4}", self.session_cost),
-            cost_style,
-        ));
-
-        // ── Context pressure gauge ───────────────────────────────────
-        if self.context_window.is_some() {
-            left_spans.push(Span::styled(
-                " │ ",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-            let gauge_spans =
-                build_context_gauge(self.total_tokens, self.context_window.unwrap_or(0));
-            left_spans.extend(gauge_spans);
-        }
-
-        if let Some(presence) = self.voice_presence_state() {
-            left_spans.push(Span::styled(
-                " │ ",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-            let style = match presence {
-                VoicePresenceState::Recording { .. } => Style::default()
-                    .fg(Color::Rgb(30, 20, 20))
-                    .bg(Color::Rgb(240, 110, 90))
-                    .add_modifier(Modifier::BOLD),
-                VoicePresenceState::Speaking => Style::default()
-                    .fg(Color::Rgb(10, 24, 38))
-                    .bg(Color::Rgb(120, 210, 255))
-                    .add_modifier(Modifier::BOLD),
-                VoicePresenceState::Listening => Style::default()
-                    .fg(Color::Rgb(18, 32, 26))
-                    .bg(Color::Rgb(120, 225, 165))
-                    .add_modifier(Modifier::BOLD),
-            };
-            left_spans.push(Span::styled(
-                format_voice_presence_badge(presence, self.voice_presence_frame_idx),
-                style,
-            ));
-        }
-        if !self.active_subagents.is_empty() {
-            left_spans.push(Span::styled(
-                " │ ",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-            left_spans.push(Span::styled(
-                format!(" DG {} ", self.active_subagents.len()),
-                Style::default()
-                    .fg(Color::Rgb(10, 24, 38))
-                    .bg(Color::Rgb(95, 170, 255))
-                    .add_modifier(Modifier::BOLD),
-            ));
-            if let Some(summary) = format_subagent_status_summary(&self.active_subagents) {
-                left_spans.push(Span::styled(
-                    format!(" {summary} "),
-                    Style::default()
-                        .fg(Color::Rgb(165, 205, 245))
-                        .add_modifier(Modifier::DIM),
-                ));
-            }
-        }
-        if !self.background_tasks_active.is_empty() {
-            left_spans.push(Span::styled(
-                " │ ",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-            left_spans.push(Span::styled(
-                format!(" BG {} ", self.background_tasks_active.len()),
-                Style::default()
-                    .fg(Color::Rgb(20, 20, 28))
-                    .bg(Color::Rgb(110, 180, 255))
-                    .add_modifier(Modifier::BOLD),
-            ));
-            if let Some(summary) = format_background_status_summary(&self.background_tasks_active) {
-                left_spans.push(Span::styled(
-                    format!(" {summary} "),
-                    Style::default()
-                        .fg(Color::Rgb(180, 220, 255))
-                        .add_modifier(Modifier::DIM),
-                ));
-            }
-        }
-
-        // ── Steering indicator ────────────────────────────────────────────
-        // Show pending count in amber, or a brief "applied" flash in green
-        // (fades after 3 seconds).
-        if self.pending_steer_count > 0 {
-            left_spans.push(Span::styled(
-                " │ ",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-            left_spans.push(Span::styled(
-                format!(" ⛵ {} pending ", self.pending_steer_count),
-                Style::default()
-                    .fg(Color::Rgb(20, 20, 28))
-                    .bg(Color::Rgb(255, 190, 50))
-                    .add_modifier(Modifier::BOLD),
-            ));
-        } else if self
-            .steer_applied_at
-            .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(4))
-        {
-            left_spans.push(Span::styled(
-                " │ ",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-            left_spans.push(Span::styled(
-                " ⛵ applied ",
-                Style::default()
-                    .fg(Color::Rgb(18, 32, 26))
-                    .bg(Color::Rgb(100, 215, 140))
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
-
-        // ── Shadow Judge indicator ────────────────────────────────────────
-        // Show a compact " SJ " badge when the completion oracle is active.
-        if self.shadow_judge_enabled {
-            left_spans.push(Span::styled(
-                " │ ",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-            left_spans.push(Span::styled(
-                " SJ ",
-                Style::default()
-                    .fg(Color::Rgb(18, 32, 26))
-                    .bg(Color::Rgb(130, 200, 255))
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
-        if self
-            .shadow_judge_intervention_at
-            .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(10))
-        {
-            let confidence = self
-                .shadow_judge_intervention_confidence
-                .map(|c| (c * 100.0).clamp(0.0, 100.0));
-            let reason = self
-                .shadow_judge_intervention_text
-                .as_deref()
-                .map(|text| edgecrab_core::safe_truncate(text, 42).to_string())
-                .unwrap_or_else(|| "continuation requested".to_string());
-            left_spans.push(Span::styled(
-                " │ ",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-            left_spans.push(Span::styled(
-                if let Some(conf) = confidence {
-                    format!(" SJ veto {conf:.0}%: {reason} ")
-                } else {
-                    format!(" SJ veto: {reason} ")
-                },
-                Style::default()
-                    .fg(Color::Rgb(30, 22, 8))
-                    .bg(Color::Rgb(255, 200, 90))
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
-
-        // Right side: keyboard hints + turn counter
-        let mut right_spans = Vec::new();
-        if self.turn_count > 0 {
-            right_spans.push(Span::styled(
-                format!(" turn {} ", self.turn_count),
-                Style::default().fg(Color::Rgb(80, 90, 110)),
-            ));
-            right_spans.push(Span::styled(
-                "│",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-        }
-        if self.scroll_offset > 0 {
-            right_spans.push(Span::styled(
-                format!(
-                    " ↑SCROLLED  ^G=↓  ↕scroll  {} ",
-                    self.paging_key_hint_label()
-                ),
-                Style::default()
-                    .fg(Color::Rgb(255, 210, 50))
-                    .add_modifier(Modifier::BOLD),
-            ));
-        } else {
-            // ── Mode pill ─────────────────────────────────────────────────────
-            // Always visible so the user knows the active mode and the key to
-            // switch.  SCROLL (green) = mouse capture on, wheel scrolls output.
-            //           SELECT (amber) = mouse capture off, native drag=copy.
-            if self.mouse_capture_enabled {
-                right_spans.push(Span::styled(
-                    " SCROLL ",
-                    Style::default()
-                        .fg(Color::Rgb(20, 20, 28))
-                        .bg(Color::Rgb(60, 185, 105))
-                        .add_modifier(Modifier::BOLD),
-                ));
-            } else {
-                right_spans.push(Span::styled(
-                    " SELECT ",
-                    Style::default()
-                        .fg(Color::Rgb(20, 20, 28))
-                        .bg(Color::Rgb(255, 200, 50))
-                        .add_modifier(Modifier::BOLD),
-                ));
-            }
-            // ── State-specific hints ──────────────────────────────────────────
-            if !self.mouse_capture_enabled {
-                right_spans.push(Span::styled(
-                    " drag=copy  F6=scroll  Tab=complete  ^C=cancel ",
-                    Style::default()
-                        .fg(Color::Rgb(255, 210, 50))
-                        .add_modifier(Modifier::BOLD),
-                ));
-            } else if self.clarify_pending_tx.is_some() {
-                // Agent is awaiting a reply — emphasise the prompt so users know
-                // their next Enter submits an answer, not a new conversation turn.
-                right_spans.push(Span::styled(
-                    " ↵=send reply  ^C=cancel  ↕scroll ",
-                    Style::default()
-                        .fg(Color::Rgb(255, 220, 80))
-                        .add_modifier(Modifier::BOLD),
-                ));
-            } else if self.is_processing {
-                right_spans.push(Span::styled(
-                    " ^C=cancel  ^S=steer  ↕scroll ",
-                    Style::default().fg(Color::Rgb(70, 75, 95)),
-                ));
-            } else if matches!(self.editor_mode, InputEditorMode::ComposeInsert) {
-                right_spans.push(Span::styled(
-                    " COMPOSE ",
-                    Style::default()
-                        .fg(Color::Rgb(20, 20, 28))
-                        .bg(Color::Rgb(90, 200, 150))
-                        .add_modifier(Modifier::BOLD),
-                ));
-                right_spans.push(Span::styled(
-                    " INSERT  ↵=newline  ^S=send  Esc=normal ",
-                    Style::default().fg(Color::Rgb(90, 210, 170)),
-                ));
-            } else if matches!(self.editor_mode, InputEditorMode::ComposeNormal) {
-                right_spans.push(Span::styled(
-                    " COMPOSE ",
-                    Style::default()
-                        .fg(Color::Rgb(20, 20, 28))
-                        .bg(Color::Rgb(255, 191, 0))
-                        .add_modifier(Modifier::BOLD),
-                ));
-                right_spans.push(Span::styled(
-                    self.compose_normal_hint(),
-                    Style::default().fg(Color::Rgb(255, 210, 80)),
-                ));
-            } else if !self.active_skills.is_empty() {
-                // Show active skill names so the user knows which skills are loaded.
-                // Typing /skill_name again deactivates; /skills opens the browser.
-                let names = self.active_skills.join(" + ");
-                right_spans.push(Span::styled(
-                    format!(" 📚 {names}  F6=select  /skill off  ^C=cancel "),
-                    Style::default()
-                        .fg(Color::Rgb(100, 210, 120))
-                        .add_modifier(Modifier::BOLD),
-                ));
-            } else {
-                let voice_hint = if self.voice_push_to_talk_key.is_empty() {
-                    String::new()
-                } else {
-                    format!(" {}=voice ", self.voice_push_to_talk_key.to_uppercase())
-                };
-                right_spans.push(Span::styled(
-                    format!(
-                        " F6=select  F1=help  {}  F2=model  F3=skills  F7=vision{} Tab=complete  ^C=cancel ",
-                        self.inline_compose_hint(),
-                        voice_hint
-                    ),
-                    Style::default().fg(Color::Rgb(70, 75, 95)),
-                ));
-            }
-        }
-
-        // Build two-sided status bar
-        let right_line = Line::from(right_spans);
-        let right_text = right_line
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect::<String>();
-        // WHY .width() not .len(): multi-byte Unicode chars (↑↓↕ = 3 bytes, 📚 = 4 bytes)
-        // inflate .len() past the terminal column count, causing right_area.right() to
-        // exceed the ratatui buffer bounds → panic. UnicodeWidthStr gives display cols.
-        let right_width = (right_text.width() as u16).min(area.width);
-
-        let left_area = Rect {
-            width: area.width.saturating_sub(right_width),
-            ..area
-        };
-        let right_area = Rect {
-            x: area.x + area.width.saturating_sub(right_width),
-            width: right_width,
-            ..area
-        };
-
-        let status = Paragraph::new(Line::from(left_spans))
-            .style(Style::default().bg(Color::Rgb(30, 30, 38)));
-        frame.render_widget(status, left_area);
-
-        let right_status = Paragraph::new(right_line)
-            .style(Style::default().bg(Color::Rgb(30, 30, 38)))
-            .alignment(Alignment::Right);
-        frame.render_widget(right_status, right_area);
-    }
-
-    fn render_compact_status_bar(&self, frame: &mut Frame, area: Rect) {
-        let glyphs = self.terminal_glyph_profile;
-        let divider = " | ";
-        let state = match &self.display_state {
-            DisplayState::Idle => self
-                .goal_flash_status
-                .clone()
-                .or_else(|| {
-                    self.last_run_outcome.as_ref().map(|outcome| {
-                        format!(
-                            "{} {}",
-                            outcome.state.emoji(),
-                            outcome.state.compact_label()
-                        )
-                    })
-                })
-                .unwrap_or_else(|| "idle".to_string()),
-            DisplayState::AwaitingFirstToken { frame, started } => format!(
-                "{} wait {}s",
-                compact_spinner_frame(*frame, glyphs),
-                started.elapsed().as_secs()
-            ),
-            DisplayState::Thinking { frame, started } => format!(
-                "{} think {}s",
-                compact_spinner_frame(*frame, glyphs),
-                started.elapsed().as_secs()
-            ),
-            DisplayState::Streaming {
-                token_count,
-                chars_written,
-                started,
-                ..
-            } => {
-                let secs = started.elapsed().as_secs().max(1);
-                let words = words_estimate(*chars_written);
-                if words > 0 {
-                    format!("reply ~{}w {}t/s", words, token_count / secs)
-                } else {
-                    format!("reply {}tok {}t/s", token_count, token_count / secs)
-                }
-            }
-            DisplayState::ToolExec { frame, started, .. } => format!(
-                "{} tool {}s",
-                compact_spinner_frame(*frame, glyphs),
-                started.elapsed().as_secs()
-            ),
-            DisplayState::BgOp { frame, label, .. } => format!(
-                "{} {}",
-                compact_spinner_frame(*frame, glyphs),
-                edgecrab_core::safe_truncate(label, 18)
-            ),
-            DisplayState::WaitingForClarify => "reply needed".into(),
-            DisplayState::WaitingForApproval { .. } => "approval needed".into(),
-            DisplayState::SecretCapture { .. } => "secret input".into(),
-            DisplayState::ValueCapture { .. } => "editing".into(),
-        };
-        let token_display = if let (Some(cw), Some(pct)) = (
-            self.context_window,
-            context_usage_ratio(self.total_tokens, self.context_window),
-        ) {
-            format!(
-                "{}/{} {:.0}%",
-                format_tokens(self.total_tokens),
-                format_tokens(cw),
-                pct * 100.0
-            )
-        } else {
-            format_tokens(self.total_tokens)
-        };
-        let mode = if self.mouse_capture_enabled {
-            "scroll"
-        } else {
-            "select"
-        };
-        let transport = if self.remote_terminal_session {
-            "ssh"
-        } else {
-            "local"
-        };
-        let profile = match self.terminal_ui_profile {
-            TerminalUiProfile::Standard => "std",
-            TerminalUiProfile::ReducedMotion => "calm",
-            TerminalUiProfile::BasicCompat => "compat",
-        };
-        let right = format!(
-            "t{}{}{}{}",
-            self.turn_count,
-            divider,
-            mode,
-            if self.remote_terminal_session {
-                " ssh"
-            } else {
-                ""
-            }
-        );
-        let goal_part = self
-            .goal_status_chip
-            .as_ref()
-            .map(|chip| format!("{divider}{}", chip.label))
-            .unwrap_or_default();
-        let left = format!(
-            "{}{}{}{}{}{}{}${:.4}{}{}{}{}{}{}",
-            state,
-            goal_part,
-            divider,
-            edgecrab_core::safe_truncate(&self.model_name, 18),
-            divider,
-            token_display,
-            divider,
-            self.session_cost,
-            divider,
-            transport,
-            divider,
-            profile,
-            if self.shadow_judge_enabled {
-                " | SJ"
-            } else {
-                ""
-            },
-            if self
-                .shadow_judge_intervention_at
-                .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(10))
-            {
-                " | SJ veto"
-            } else {
-                ""
-            },
-        );
-        let right_width = right.width().min(area.width as usize) as u16;
-        let left_area = Rect {
-            width: area.width.saturating_sub(right_width),
-            ..area
-        };
-        let right_area = Rect {
-            x: area.right().saturating_sub(right_width),
-            width: right_width,
-            ..area
-        };
-        let bg = Style::default().bg(Color::Rgb(30, 30, 38));
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                edgecrab_core::safe_truncate(&left, left_area.width as usize),
-                bg.fg(Color::Rgb(200, 205, 215)),
-            ))
-            .style(bg),
-            left_area,
-        );
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                edgecrab_core::safe_truncate(&right, right_area.width as usize),
-                bg.fg(Color::Rgb(120, 130, 150)),
-            ))
-            .style(bg)
-            .alignment(Alignment::Right),
-            right_area,
-        );
-    }
-
-    fn render_model_like_selector(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        selector: &FuzzySelector<ModelEntry>,
-        detail_surface: DetailSurface,
-        chrome: SelectorChrome<'_>,
-    ) {
-        frame.render_widget(Clear, area);
-
-        let chunks = Self::browser_overlay_chunks(area);
-        let body = Self::browser_body_chunks(chunks[1]);
-        self.render_browser_header(
-            frame,
-            chunks[0],
-            &selector.query,
-            BrowserChrome {
-                title: chrome.title,
-                placeholder: chrome.placeholder,
-                icon: "◈",
-                icon_color: Color::Cyan,
-                border_color: Color::Cyan,
-            },
-        );
-
-        let max_visible = body[0].height as usize;
-        let filtered = &selector.filtered;
-        let selected = selector.selected;
-        let scroll_start = Self::browser_scroll_start(selected, max_visible);
-
-        let items: Vec<ListItem> = filtered
-            .iter()
-            .skip(scroll_start)
-            .take(max_visible)
-            .enumerate()
-            .map(|(vis_idx, &model_idx)| {
-                let entry = &selector.items[model_idx];
-                let (display, provider) = (&entry.display, &entry.provider);
-                let is_selected = vis_idx + scroll_start == selected;
-                let bg = if is_selected {
-                    Color::Rgb(50, 50, 70)
-                } else {
-                    Color::Rgb(20, 20, 28)
-                };
-                let style = if is_selected {
-                    Style::default()
-                        .bg(bg)
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::Rgb(200, 200, 200))
-                };
-                let provider_style = if is_selected {
-                    Style::default().bg(bg).fg(Color::Rgb(120, 120, 150))
-                } else {
-                    Style::default().fg(Color::Rgb(80, 80, 100))
-                };
-                let mut spans = vec![
-                    selector_marker(is_selected, Color::Cyan, Some(bg)),
-                    Span::styled(format!("  {:<12}", provider), provider_style),
-                    Span::styled(display.clone(), style),
-                ];
-                if !entry.detail.is_empty() && entry.detail != entry.model_name {
-                    let detail_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(160, 160, 180))
-                    } else {
-                        Style::default().fg(Color::Rgb(110, 110, 130))
-                    };
-                    spans.push(Span::raw("  "));
-                    spans.push(Span::styled(entry.detail.clone(), detail_style));
-                }
-                ListItem::new(Line::from(spans))
-            })
-            .collect();
-
-        let model_count = filtered.len();
-        let list = List::new(items).style(Style::default().bg(Color::Rgb(20, 20, 28)));
-        frame.render_widget(list, body[0]);
-
-        let mut detail_lines = Vec::new();
-        if let Some(entry) = selector.current() {
-            detail_lines.push(Line::from(Span::styled(
-                entry.display.clone(),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(vec![
-                Span::styled("Provider: ", Style::default().fg(Color::Rgb(145, 170, 170))),
-                Span::raw(entry.provider.clone()),
-            ]));
-            detail_lines.push(Line::from(vec![
-                Span::styled("Model: ", Style::default().fg(Color::Rgb(145, 170, 170))),
-                Span::raw(entry.model_name.clone()),
-            ]));
-            if !entry.detail.is_empty() {
-                detail_lines.push(Line::from(vec![
-                    Span::styled(
-                        "Inventory: ",
-                        Style::default().fg(Color::Rgb(145, 170, 170)),
-                    ),
-                    Span::raw(entry.detail.clone()),
-                ]));
-            }
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "Use Enter to switch immediately. Plain typing keeps refining the list without triggering actions.",
-            ));
-        } else if selector.query.trim().is_empty() {
-            detail_lines.push(Line::from(Span::styled(
-                chrome.title.to_string(),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "Browse models with fuzzy search over provider, model name, and discovery source.",
-            ));
-            if let Some(note) = chrome.status_note {
-                detail_lines.push(Line::from(""));
-                detail_lines.push(Line::from(note.to_string()));
-            }
-        } else {
-            detail_lines.push(Line::from("No models matched this query."));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "Try a broader provider name or a shorter model fragment.",
-            ));
-        }
-        if self.detail_fullscreen_active(detail_surface) {
-            self.render_fullscreen_browser_detail(
-                frame,
-                area,
-                FullscreenBrowserChrome {
-                    query: &selector.query,
-                    header: BrowserChrome {
-                        title: chrome.title,
-                        placeholder: chrome.placeholder,
-                        icon: "◈",
-                        icon_color: Color::Cyan,
-                        border_color: Color::Cyan,
-                    },
-                    detail: ScrollableDetailChrome {
-                        title: "Details",
-                        border_color: Color::Cyan,
-                        focused: true,
-                        requested_scroll: self.detail_fullscreen_scroll(detail_surface),
-                    },
-                    help: Line::from(vec![
-                        Span::styled(" ↑↓ ", Style::default().fg(Color::Cyan)),
-                        Span::styled("change item  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("type ", Style::default().fg(Color::Cyan)),
-                        Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-                        self.paging_key_help_span(Color::Cyan),
-                        Span::styled("scroll detail  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Enter ", Style::default().fg(Color::Cyan)),
-                        Span::styled("select  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Z ", Style::default().fg(Color::Cyan)),
-                        Span::styled("split view  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Esc ", Style::default().fg(Color::Cyan)),
-                        Span::styled("close  ", Style::default().fg(Color::DarkGray)),
-                    ]),
-                },
-                detail_lines,
-            );
-            return;
-        }
-        self.render_standard_split_detail(
-            frame,
-            body[1],
-            detail_surface,
-            Color::Cyan,
-            detail_lines,
-        );
-
-        let mut help_spans = vec![
-            Span::styled(" ↑↓ ", Style::default().fg(Color::Cyan)),
-            Span::styled("browse  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("type ", Style::default().fg(Color::Cyan)),
-            Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-        ];
-        help_spans.extend(self.focus_pane_help_spans(Color::Cyan));
-        help_spans.extend(self.page_or_scroll_help_spans(Color::Cyan));
-        help_spans.extend([
-            Span::styled("Enter ", Style::default().fg(Color::Cyan)),
-            Span::styled("select  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Z ", Style::default().fg(Color::Cyan)),
-            Span::styled("detail  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(Color::Cyan)),
-            Span::styled("cancel  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!(
-                    "{model_count} {} · {} pane",
-                    chrome.count_label,
-                    self.simple_split_focus_label(detail_surface)
-                ),
-                Style::default().fg(Color::Rgb(80, 80, 100)),
-            ),
-            Span::styled(
-                chrome
-                    .status_note
-                    .map(|note| format!("  {note}"))
-                    .unwrap_or_default(),
-                Style::default().fg(Color::Yellow),
-            ),
-        ]);
-        let help = Paragraph::new(Line::from(help_spans));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    /// Render the full-screen model selector overlay.
-    fn render_model_selector(&self, frame: &mut Frame, area: Rect) {
-        let base_title = match self.model_selector_target {
-            ModelSelectorTarget::Primary => "Select Model",
-            ModelSelectorTarget::Cheap => "Select Cheap Model",
-            ModelSelectorTarget::MoaAggregator => "Select MoA Aggregator",
-        };
-        let title = if self.model_selector_refresh_in_flight {
-            format!("{base_title} · refreshing live inventory")
-        } else {
-            base_title.to_string()
-        };
-        let placeholder = if self.model_selector_refresh_in_flight {
-            "Type to filter models... live discovery updates in place (Esc to cancel)"
-        } else {
-            "Type to filter models... (Esc to cancel)"
-        };
-        self.render_model_like_selector(
-            frame,
-            area,
-            &self.model_selector,
-            DetailSurface::ModelSelector,
-            SelectorChrome {
-                title: &title,
-                placeholder,
-                count_label: "models",
-                status_note: self
-                    .model_selector_refresh_in_flight
-                    .then_some("live discovery running"),
-            },
-        );
-    }
-
-    /// Render the full-screen vision-model selector overlay.
-    fn render_vision_model_selector(&self, frame: &mut Frame, area: Rect) {
-        self.render_model_like_selector(
-            frame,
-            area,
-            &self.vision_model_selector,
-            DetailSurface::VisionModelSelector,
-            SelectorChrome {
-                title: "Select Vision Model",
-                placeholder: "Type to filter vision backends... (Esc to cancel)",
-                count_label: "options",
-                status_note: None,
-            },
-        );
-    }
-
-    fn render_image_model_selector(&self, frame: &mut Frame, area: Rect) {
-        self.render_model_like_selector(
-            frame,
-            area,
-            &self.image_model_selector,
-            DetailSurface::ImageModelSelector,
-            SelectorChrome {
-                title: "Select Image Model",
-                placeholder: "Type to filter image-generation backends... (Esc to cancel)",
-                count_label: "image backends",
-                status_note: None,
-            },
-        );
-    }
-
-    fn render_moa_reference_selector(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
-
-        let (title, placeholder, action_hint, count_hint) = match self.moa_reference_selector_mode {
-            MoaReferenceSelectorMode::EditRoster => (
-                " Select MoA Experts ",
-                "Type to filter expert models…",
-                "Space toggle  ",
-                format!("{} selected", self.moa_reference_selected.len()),
-            ),
-            MoaReferenceSelectorMode::AddExpert => (
-                " Add MoA Expert ",
-                "Type to find an expert to add…",
-                "Enter add  ",
-                format!("{} configured", self.moa_reference_selected.len()),
-            ),
-            MoaReferenceSelectorMode::RemoveExpert => (
-                " Remove MoA Expert ",
-                "Type to find a configured expert…",
-                "Enter remove  ",
-                format!("{} configured", self.moa_reference_selected.len()),
-            ),
-        };
-
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Min(1),
-                Constraint::Length(1),
-            ])
-            .split(area);
-
-        let search_text = if self.moa_reference_selector.query.is_empty() {
-            placeholder.to_string()
-        } else {
-            self.moa_reference_selector.query.clone()
-        };
-        let search_style = if self.moa_reference_selector.query.is_empty() {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        let search = Paragraph::new(Line::from(vec![
-            Span::styled("  🧠 ", Style::default().fg(Color::Rgb(130, 210, 255))),
-            Span::styled(search_text, search_style),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(130, 210, 255)))
-                .title(title),
-        );
-        frame.render_widget(search, chunks[0]);
-
-        let filtered = &self.moa_reference_selector.filtered;
-        let selected = self.moa_reference_selector.selected;
-        let max_visible = chunks[1].height as usize;
-        let scroll_start = if selected >= max_visible {
-            selected - max_visible + 1
-        } else {
-            0
-        };
-
-        let items: Vec<ListItem> = filtered
-            .iter()
-            .skip(scroll_start)
-            .take(max_visible)
-            .enumerate()
-            .map(|(vis_idx, &entry_idx)| {
-                let entry = &self.moa_reference_selector.items[entry_idx];
-                let is_selected = vis_idx + scroll_start == selected;
-                let is_checked = self.moa_reference_selected.contains(&entry.display);
-                let bg = if is_selected {
-                    Color::Rgb(22, 36, 44)
-                } else {
-                    Color::Rgb(18, 22, 28)
-                };
-                let prefix = match self.moa_reference_selector_mode {
-                    MoaReferenceSelectorMode::EditRoster => {
-                        format!("  [{}] ", if is_checked { "x" } else { " " })
-                    }
-                    MoaReferenceSelectorMode::AddExpert => "  [+] ".to_string(),
-                    MoaReferenceSelectorMode::RemoveExpert => "  [-] ".to_string(),
-                };
-                let prefix_color = match self.moa_reference_selector_mode {
-                    MoaReferenceSelectorMode::EditRoster => {
-                        if is_checked {
-                            Color::Green
-                        } else {
-                            Color::DarkGray
-                        }
-                    }
-                    MoaReferenceSelectorMode::AddExpert => Color::Rgb(120, 220, 160),
-                    MoaReferenceSelectorMode::RemoveExpert => Color::Rgb(255, 130, 130),
-                };
-                ListItem::new(Line::from(vec![
-                    selector_marker(is_selected, Color::Rgb(130, 210, 255), Some(bg)),
-                    Span::styled(prefix, Style::default().bg(bg).fg(prefix_color)),
-                    Span::styled(
-                        unicode_pad_right(&entry.display, 38),
-                        Style::default().bg(bg).fg(if is_selected {
-                            Color::Rgb(130, 210, 255)
-                        } else {
-                            Color::Rgb(220, 232, 240)
-                        }),
-                    ),
-                    Span::styled(
-                        unicode_trunc(&entry.detail, 44),
-                        Style::default().bg(bg).fg(Color::Rgb(125, 140, 150)),
-                    ),
-                ]))
-            })
-            .collect();
-        frame.render_widget(
-            List::new(items).style(Style::default().bg(Color::Rgb(18, 22, 28))),
-            chunks[1],
-        );
-
-        let help = Paragraph::new(Line::from(vec![
-            Span::styled(" ↑↓ ", Style::default().fg(Color::Cyan)),
-            Span::styled("navigate  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                if self.moa_reference_selector_mode == MoaReferenceSelectorMode::EditRoster {
-                    "Space "
-                } else {
-                    "Enter "
-                },
-                Style::default().fg(Color::Cyan),
-            ),
-            Span::styled(action_hint, Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                if self.moa_reference_selector_mode == MoaReferenceSelectorMode::EditRoster {
-                    "Enter "
-                } else {
-                    ""
-                },
-                Style::default().fg(Color::Cyan),
-            ),
-            Span::styled(
-                if self.moa_reference_selector_mode == MoaReferenceSelectorMode::EditRoster {
-                    "save  "
-                } else {
-                    ""
-                },
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled("Esc ", Style::default().fg(Color::Cyan)),
-            Span::styled("cancel  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(count_hint, Style::default().fg(Color::Rgb(80, 80, 100))),
-        ]));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    fn browser_overlay_chunks(area: Rect) -> std::rc::Rc<[Rect]> {
-        Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Min(1),
-                Constraint::Length(1),
-            ])
-            .split(area)
-    }
-
-    fn browser_body_chunks(area: Rect) -> std::rc::Rc<[Rect]> {
-        Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(62), Constraint::Percentage(38)])
-            .split(area)
-    }
-
-    fn browser_list_visible_rows(area: Rect, bordered: bool) -> usize {
-        let reserved_rows = if bordered { 2 } else { 0 };
-        area.height.saturating_sub(reserved_rows).max(1) as usize
-    }
-
-    fn browser_scroll_start(selected: usize, max_visible: usize) -> usize {
-        if selected >= max_visible {
-            selected - max_visible + 1
-        } else {
-            0
-        }
-    }
-
-    fn best_session_message_selection(
-        items: &[SessionMessageEntry],
-        matched_role: Option<&str>,
-        matched_snippet: Option<&str>,
-    ) -> usize {
-        let mut best_index = 0usize;
-        let mut best_score = 0usize;
-
-        for (index, entry) in items.iter().enumerate() {
-            let score = entry.browser_match_score(matched_role, matched_snippet);
-            if score > best_score {
-                best_score = score;
-                best_index = index;
-            }
-        }
-
-        best_index
-    }
-
-    fn render_browser_header(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        query: &str,
-        chrome: BrowserChrome<'_>,
-    ) {
-        let search_text = if query.is_empty() {
-            chrome.placeholder.to_string()
-        } else {
-            query.to_string()
-        };
-        let search_style = if query.is_empty() {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        let search = Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!("  {} ", chrome.icon),
-                Style::default().fg(chrome.icon_color),
-            ),
-            Span::styled(search_text, search_style),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(chrome.border_color))
-                .title(format!(" {} ", chrome.title)),
-        );
-        frame.render_widget(search, area);
-    }
-
-    fn render_scrollable_browser_detail(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        chrome: ScrollableDetailChrome<'_>,
-        detail_lines: Vec<Line<'static>>,
-    ) {
-        let border_style = if chrome.focused {
-            Style::default()
-                .fg(chrome.border_color)
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Rgb(60, 80, 84))
-        };
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(border_style)
-            .title(format!(" {} ", chrome.title));
-        let inner = block.inner(area);
-        frame.render_widget(block, area);
-
-        if inner.width == 0 || inner.height == 0 {
-            return;
-        }
-
-        let visual_rows_for_width = |content_width: usize| -> u16 {
-            detail_lines
-                .iter()
-                .map(|line| {
-                    let width = line.width();
-                    if width == 0 {
-                        1
-                    } else {
-                        width.div_ceil(content_width.max(1)) as u16
-                    }
-                })
-                .sum()
-        };
-
-        let full_width = inner.width.max(1) as usize;
-        let mut content_width = full_width;
-        let mut visual_rows = visual_rows_for_width(content_width);
-        let needs_scrollbar = visual_rows > inner.height;
-        if needs_scrollbar && inner.width > 1 {
-            content_width = inner.width.saturating_sub(1).max(1) as usize;
-            visual_rows = visual_rows_for_width(content_width);
-        }
-        let max_scroll = visual_rows.saturating_sub(inner.height);
-        let scroll = chrome.requested_scroll.min(max_scroll);
-
-        let paragraph = Paragraph::new(Text::from(detail_lines))
-            .wrap(Wrap { trim: false })
-            .scroll((scroll, 0));
-        let content_area = Rect {
-            x: inner.x,
-            y: inner.y,
-            width: if needs_scrollbar && inner.width > 1 {
-                inner.width.saturating_sub(1)
-            } else {
-                inner.width
-            },
-            height: inner.height,
-        };
-        frame.render_widget(paragraph, content_area);
-
-        if needs_scrollbar {
-            let mut scrollbar_state =
-                ScrollbarState::new(max_scroll as usize).position(scroll as usize);
-            let scrollbar_area = Rect {
-                x: inner.right().saturating_sub(1),
-                y: inner.y,
-                width: 1,
-                height: inner.height,
-            };
-            frame.render_stateful_widget(
-                Scrollbar::new(ScrollbarOrientation::VerticalRight)
-                    .begin_symbol(None)
-                    .end_symbol(None)
-                    .track_symbol(Some("│"))
-                    .thumb_symbol("█"),
-                scrollbar_area,
-                &mut scrollbar_state,
-            );
-        }
-    }
-
-    fn detail_fullscreen_active(&self, surface: DetailSurface) -> bool {
-        self.detail_fullscreen
-            .is_some_and(|state| state.surface == surface)
-    }
-
-    fn split_detail_scroll(&self, surface: DetailSurface) -> u16 {
-        match surface {
-            DetailSurface::GatewayBrowser => self.gateway_browser_pane.scroll,
-            DetailSurface::LogBrowser => self.log_browser_pane.scroll,
-            DetailSurface::SessionBrowser => self.session_browser_pane.scroll,
-            DetailSurface::SessionInspector => self.session_inspector.pane.scroll,
-            DetailSurface::LogInspector => self.log_inspector.pane.scroll,
-            _ => self.simple_detail_state.scroll_for(surface),
-        }
-    }
-
-    fn set_split_detail_scroll(&mut self, surface: DetailSurface, scroll: u16) {
-        match surface {
-            DetailSurface::GatewayBrowser => self.gateway_browser_pane.scroll = scroll,
-            DetailSurface::LogBrowser => self.log_browser_pane.scroll = scroll,
-            DetailSurface::SessionBrowser => self.session_browser_pane.scroll = scroll,
-            DetailSurface::SessionInspector => self.session_inspector.pane.scroll = scroll,
-            DetailSurface::LogInspector => self.log_inspector.pane.scroll = scroll,
-            _ => self.simple_detail_state.set_scroll(surface, scroll),
-        }
-    }
-
-    fn reset_split_detail_scroll(&mut self, surface: DetailSurface) {
-        match surface {
-            DetailSurface::GatewayBrowser => self.gateway_browser_pane.reset_scroll(),
-            DetailSurface::LogBrowser => self.log_browser_pane.reset_scroll(),
-            DetailSurface::SessionBrowser => self.session_browser_pane.reset_scroll(),
-            DetailSurface::SessionInspector => self.session_inspector.pane.reset_scroll(),
-            DetailSurface::LogInspector => self.log_inspector.pane.reset_scroll(),
-            _ => self.simple_detail_state.reset(surface),
-        }
-        self.needs_redraw = true;
-    }
-
-    fn page_up_split_detail(&mut self, surface: DetailSurface, step: u16) {
-        let scroll = self
-            .split_detail_scroll(surface)
-            .saturating_sub(step.max(1));
-        self.set_split_detail_scroll(surface, scroll);
-        self.needs_redraw = true;
-    }
-
-    fn page_down_split_detail(&mut self, surface: DetailSurface, step: u16) {
-        let scroll = self
-            .split_detail_scroll(surface)
-            .saturating_add(step.max(1));
-        self.set_split_detail_scroll(surface, scroll);
-        self.needs_redraw = true;
-    }
-
-    fn render_standard_split_detail(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        surface: DetailSurface,
-        border_color: Color,
-        detail_lines: Vec<Line<'static>>,
-    ) {
-        self.render_scrollable_browser_detail(
-            frame,
-            area,
-            ScrollableDetailChrome {
-                title: "Details",
-                border_color,
-                focused: if Self::simple_split_focus_supported(surface) {
-                    self.simple_split_focus(surface) == SplitPaneFocus::Detail
-                } else {
-                    true
-                },
-                requested_scroll: self.split_detail_scroll(surface),
-            },
-            detail_lines,
-        );
-    }
-
-    fn toggle_detail_fullscreen(&mut self, surface: DetailSurface, initial_scroll: u16) {
-        if self.detail_fullscreen_active(surface) {
-            let scroll = self.detail_fullscreen_scroll(surface);
-            self.set_split_detail_scroll(surface, scroll);
-            self.detail_fullscreen = None;
-        } else {
-            self.detail_fullscreen = Some(DetailFullscreenState {
-                surface,
-                scroll: initial_scroll,
-            });
-        }
-        self.needs_redraw = true;
-    }
-
-    fn close_detail_fullscreen(&mut self, surface: DetailSurface) -> bool {
-        if self.detail_fullscreen_active(surface) {
-            let scroll = self.detail_fullscreen_scroll(surface);
-            self.set_split_detail_scroll(surface, scroll);
-            self.detail_fullscreen = None;
-            self.needs_redraw = true;
-            true
-        } else {
-            false
-        }
-    }
-
-    fn reset_detail_fullscreen_scroll(&mut self, surface: DetailSurface) {
-        if let Some(state) = self.detail_fullscreen.as_mut()
-            && state.surface == surface
-        {
-            state.scroll = 0;
-            self.needs_redraw = true;
-        }
-    }
-
-    fn page_up_detail_fullscreen(&mut self, surface: DetailSurface) {
-        if let Some(state) = self.detail_fullscreen.as_mut()
-            && state.surface == surface
-        {
-            state.scroll = state.scroll.saturating_sub(8);
-            self.needs_redraw = true;
-        }
-    }
-
-    fn page_down_detail_fullscreen(&mut self, surface: DetailSurface) {
-        if let Some(state) = self.detail_fullscreen.as_mut()
-            && state.surface == surface
-        {
-            state.scroll = state.scroll.saturating_add(8);
-            self.needs_redraw = true;
-        }
-    }
-
-    fn page_simple_selector_list(&mut self, surface: DetailSurface, intent: PagingIntent) {
-        match surface {
-            DetailSurface::ModelSelector => match intent {
-                PagingIntent::Up => self.model_selector.page_up(),
-                PagingIntent::Down => self.model_selector.page_down(),
-            },
-            DetailSurface::VisionModelSelector => match intent {
-                PagingIntent::Up => self.vision_model_selector.page_up(),
-                PagingIntent::Down => self.vision_model_selector.page_down(),
-            },
-            DetailSurface::ImageModelSelector => match intent {
-                PagingIntent::Up => self.image_model_selector.page_up(),
-                PagingIntent::Down => self.image_model_selector.page_down(),
-            },
-            DetailSurface::McpSelector => match intent {
-                PagingIntent::Up => self.mcp_selector.page_up(),
-                PagingIntent::Down => self.mcp_selector.page_down(),
-            },
-            DetailSurface::RemoteMcpBrowser => match intent {
-                PagingIntent::Up => self.remote_mcp_browser.selector.page_up(),
-                PagingIntent::Down => self.remote_mcp_browser.selector.page_down(),
-            },
-            DetailSurface::RemoteSkillBrowser => match intent {
-                PagingIntent::Up => self.remote_skill_browser.selector.page_up(),
-                PagingIntent::Down => self.remote_skill_browser.selector.page_down(),
-            },
-            DetailSurface::RemotePluginBrowser => match intent {
-                PagingIntent::Up => self.remote_plugin_browser.selector.page_up(),
-                PagingIntent::Down => self.remote_plugin_browser.selector.page_down(),
-            },
-            DetailSurface::ProfileSelector => match intent {
-                PagingIntent::Up => self.profile_selector.page_up(),
-                PagingIntent::Down => self.profile_selector.page_down(),
-            },
-            DetailSurface::SkillSelector => match intent {
-                PagingIntent::Up => self.skill_selector.page_up(),
-                PagingIntent::Down => self.skill_selector.page_down(),
-            },
-            DetailSurface::ToolManager => match intent {
-                PagingIntent::Up => self.tool_manager.page_up(),
-                PagingIntent::Down => self.tool_manager.page_down(),
-            },
-            DetailSurface::PluginToggle => match intent {
-                PagingIntent::Up => self.plugin_toggle.page_up(),
-                PagingIntent::Down => self.plugin_toggle.page_down(),
-            },
-            DetailSurface::ConfigSelector => match intent {
-                PagingIntent::Up => self.config_selector.page_up(),
-                PagingIntent::Down => self.config_selector.page_down(),
-            },
-            DetailSurface::GatewayBrowser
-            | DetailSurface::SessionBrowser
-            | DetailSurface::SessionInspector
-            | DetailSurface::LogBrowser
-            | DetailSurface::LogInspector => return,
-        }
-
-        self.reset_split_detail_scroll(surface);
-        self.reset_detail_fullscreen_scroll(surface);
-        self.needs_redraw = true;
-    }
-
-    fn apply_simple_selector_paging(&mut self, surface: DetailSurface, intent: PagingIntent) {
-        if self.detail_fullscreen_active(surface) {
-            match intent {
-                PagingIntent::Up => self.page_up_detail_fullscreen(surface),
-                PagingIntent::Down => self.page_down_detail_fullscreen(surface),
-            }
-        } else if self.simple_split_detail_focused(surface) {
-            match intent {
-                PagingIntent::Up => self.page_up_split_detail(surface, 8),
-                PagingIntent::Down => self.page_down_split_detail(surface, 8),
-            }
-        } else {
-            self.page_simple_selector_list(surface, intent);
-        }
-    }
-
-    fn detail_fullscreen_scroll(&self, surface: DetailSurface) -> u16 {
-        self.detail_fullscreen
-            .filter(|state| state.surface == surface)
-            .map_or(0, |state| state.scroll)
-    }
-
-    fn render_fullscreen_browser_detail(
-        &self,
-        frame: &mut Frame,
-        area: Rect,
-        chrome: FullscreenBrowserChrome<'_>,
-        detail_lines: Vec<Line<'static>>,
-    ) {
-        frame.render_widget(Clear, area);
-        let chunks = Self::browser_overlay_chunks(area);
-        let header_title = format!("{} · Detail", chrome.header.title);
-        self.render_browser_header(
-            frame,
-            chunks[0],
-            chrome.query,
-            BrowserChrome {
-                title: &header_title,
-                placeholder: chrome.header.placeholder,
-                icon: chrome.header.icon,
-                icon_color: chrome.header.icon_color,
-                border_color: chrome.header.border_color,
-            },
-        );
-        self.render_scrollable_browser_detail(frame, chunks[1], chrome.detail, detail_lines);
-        frame.render_widget(
-            Paragraph::new(self.normalize_paging_help_line(chrome.help)),
-            chunks[2],
-        );
-    }
-
-    fn render_mcp_selector(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
-
-        let chunks = Self::browser_overlay_chunks(area);
-        let body = Self::browser_body_chunks(chunks[1]);
-        self.render_browser_header(
-            frame,
-            chunks[0],
-            &self.mcp_selector.query,
-            BrowserChrome {
-                title: "MCP Browser",
-                placeholder: "Search configured MCP servers and the official catalog.",
-                icon: "⛓",
-                icon_color: Color::Rgb(110, 220, 210),
-                border_color: Color::Rgb(110, 220, 210),
-            },
-        );
-
-        let max_visible = body[0].height as usize;
-        let filtered = &self.mcp_selector.filtered;
-        let selected = self.mcp_selector.selected;
-        let scroll_start = Self::browser_scroll_start(selected, max_visible);
-
-        let items: Vec<ListItem> = if filtered.is_empty() {
-            let empty_text = if self.mcp_selector.query.trim().is_empty() {
-                "  No configured servers or catalog entries are available."
-            } else {
-                "  No MCP entries matched this query."
-            };
-            vec![ListItem::new(Line::from(Span::styled(
-                empty_text.to_string(),
-                Style::default().fg(Color::Rgb(120, 120, 135)),
-            )))]
-        } else {
-            filtered
-                .iter()
-                .skip(scroll_start)
-                .take(max_visible)
-                .enumerate()
-                .map(|(vis_idx, &preset_idx)| {
-                    let entry = &self.mcp_selector.items[preset_idx];
-                    let is_selected = vis_idx + scroll_start == selected;
-                    let bg = if is_selected {
-                        Color::Rgb(24, 36, 44)
-                    } else {
-                        Color::Rgb(18, 24, 26)
-                    };
-                    let row_style = if is_selected {
-                        Style::default()
-                            .bg(bg)
-                            .fg(Color::Rgb(110, 220, 210))
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Rgb(210, 220, 220))
-                    };
-                    let source_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(145, 170, 170))
-                    } else {
-                        Style::default().fg(Color::Rgb(100, 120, 120))
-                    };
-                    let action_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(210, 240, 175))
-                    } else {
-                        Style::default().fg(Color::Rgb(135, 165, 110))
-                    };
-                    let detail_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(160, 180, 180))
-                    } else {
-                        Style::default().fg(Color::Rgb(120, 140, 140))
-                    };
-                    ListItem::new(Line::from(vec![
-                        selector_marker(is_selected, Color::Rgb(110, 220, 210), Some(bg)),
-                        Span::styled(format!("  {:<12}", entry.source), source_style),
-                        Span::styled(format!("{:<9}", entry.action_label), action_style),
-                        Span::styled(unicode_trunc(&entry.display_title(), 38), row_style),
-                        Span::raw("  "),
-                        Span::styled(unicode_trunc(&entry.detail, 38), detail_style),
-                    ]))
-                })
-                .collect()
-        };
-
-        frame.render_widget(
-            List::new(items).style(Style::default().bg(Color::Rgb(18, 24, 26))),
-            body[0],
-        );
-
-        let mut detail_lines = Vec::new();
-        if let Some(entry) = self.mcp_selector.current() {
-            detail_lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{} ", entry.source),
-                    Style::default()
-                        .fg(Color::Rgb(110, 220, 210))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(entry.title.clone()),
-            ]));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(vec![
-                Span::styled(
-                    "Default action: ",
-                    Style::default().fg(Color::Rgb(145, 170, 170)),
-                ),
-                Span::raw(entry.action_label.clone()),
-            ]));
-            detail_lines.push(Line::from(""));
-            for line in entry.detail_view.lines() {
-                detail_lines.push(Line::from(line.to_string()));
-            }
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(entry.detail_actions_line()));
-        } else if self.mcp_selector.query.trim().is_empty() {
-            detail_lines.push(Line::from(Span::styled(
-                "MCP Browser",
-                Style::default()
-                    .fg(Color::Rgb(110, 220, 210))
-                    .add_modifier(Modifier::BOLD),
-            )));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from("Browse two sources in one place:"));
-            detail_lines.push(Line::from(
-                "- configured MCP servers from your local config",
-            ));
-            detail_lines.push(Line::from(
-                "- the cached official MCP catalog with installable presets",
-            ));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "Use fuzzy search to jump by server name, package, tags, transport, env vars, or docs source.",
-            ));
-        } else {
-            detail_lines.push(Line::from("No results for the current query."));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "Try broader terms like github, browser, database, time, filesystem, oauth, or http.",
-            ));
-        }
-
-        if self.detail_fullscreen_active(DetailSurface::McpSelector) {
-            self.render_fullscreen_browser_detail(
-                frame,
-                area,
-                FullscreenBrowserChrome {
-                    query: &self.mcp_selector.query,
-                    header: BrowserChrome {
-                        title: "MCP Browser",
-                        placeholder: "Search configured MCP servers and the official catalog.",
-                        icon: "⛓",
-                        icon_color: Color::Rgb(110, 220, 210),
-                        border_color: Color::Rgb(110, 220, 210),
-                    },
-                    detail: ScrollableDetailChrome {
-                        title: "Details",
-                        border_color: Color::Rgb(110, 220, 210),
-                        focused: true,
-                        requested_scroll: self.detail_fullscreen_scroll(DetailSurface::McpSelector),
-                    },
-                    help: Line::from(vec![
-                        Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("change item  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("type ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-                        self.paging_key_help_span(Color::Rgb(110, 220, 210)),
-                        Span::styled("scroll detail  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Space ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("toggle  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Enter ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("default action  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Z ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("split view  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Esc ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("close  ", Style::default().fg(Color::DarkGray)),
-                    ]),
-                },
-                detail_lines,
-            );
-            return;
-        }
-
-        self.render_standard_split_detail(
-            frame,
-            body[1],
-            DetailSurface::McpSelector,
-            Color::Rgb(110, 220, 210),
-            detail_lines,
-        );
-
-        let mut help_spans = vec![
-            Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("browse  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("type ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-        ];
-        help_spans.extend(self.focus_pane_help_spans(Color::Rgb(110, 220, 210)));
-        help_spans.extend(self.page_or_scroll_help_spans(Color::Rgb(110, 220, 210)));
-        help_spans.extend([
-            Span::styled("Enter ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("default action  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Space ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("toggle active  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("I ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("install  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("T ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("test  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("C ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("check  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Z ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("detail  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("V ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("view  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("D ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("remove  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("R ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("refresh  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("cancel  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!(
-                    "{} entries · {} pane",
-                    filtered.len(),
-                    self.simple_split_focus_label(DetailSurface::McpSelector)
-                ),
-                Style::default().fg(Color::Rgb(100, 120, 120)),
-            ),
-        ]);
-        let help = Paragraph::new(Line::from(help_spans));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    fn render_remote_mcp_selector(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
-
-        let chunks = Self::browser_overlay_chunks(area);
-        let body = Self::browser_body_chunks(chunks[1]);
-
-        let browser = &self.remote_mcp_browser;
-        let query = browser.current_query();
-        self.render_browser_header(
-            frame,
-            chunks[0],
-            &browser.selector.query,
-            BrowserChrome {
-                title: if browser.inflight_request_id.is_some() {
-                    "Remote MCP · Searching…"
-                } else {
-                    "Remote MCP"
-                },
-                placeholder: "Type to search official MCP sources and the official MCP Registry",
-                icon: "⛓",
-                icon_color: Color::Rgb(90, 190, 220),
-                border_color: if browser.inflight_request_id.is_some() {
-                    Color::Rgb(110, 220, 210)
-                } else {
-                    Color::Rgb(90, 190, 220)
-                },
-            },
-        );
-
-        let filtered = &browser.selector.filtered;
-        let selected = browser.selector.selected;
-        let max_visible = body[0].height as usize;
-        let scroll_start = Self::browser_scroll_start(selected, max_visible);
-
-        let items: Vec<ListItem> = if filtered.is_empty() {
-            let empty_text = if query.is_empty() {
-                "  Start typing to search official MCP sources."
-            } else if browser.inflight_request_id.is_some() {
-                "  Searching official MCP sources…"
-            } else {
-                "  No MCP servers matched this query."
-            };
-            vec![ListItem::new(Line::from(Span::styled(
-                empty_text.to_string(),
-                Style::default().fg(Color::Rgb(120, 120, 135)),
-            )))]
-        } else {
-            filtered
-                .iter()
-                .skip(scroll_start)
-                .take(max_visible)
-                .enumerate()
-                .map(|(vis_idx, &entry_idx)| {
-                    let entry = &browser.selector.items[entry_idx];
-                    let is_selected = vis_idx + scroll_start == selected;
-                    let bg = if is_selected {
-                        Color::Rgb(24, 36, 44)
-                    } else {
-                        Color::Rgb(18, 24, 26)
-                    };
-                    let source_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(145, 170, 170))
-                    } else {
-                        Style::default().fg(Color::Rgb(100, 120, 120))
-                    };
-                    let action_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(210, 240, 175))
-                    } else {
-                        Style::default().fg(Color::Rgb(135, 165, 110))
-                    };
-                    let main_style = if is_selected {
-                        Style::default()
-                            .bg(bg)
-                            .fg(Color::Rgb(110, 220, 210))
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Rgb(210, 220, 220))
-                    };
-                    let desc_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(160, 180, 180))
-                    } else {
-                        Style::default().fg(Color::Rgb(120, 140, 140))
-                    };
-                    ListItem::new(Line::from(vec![
-                        selector_marker(is_selected, Color::Rgb(110, 220, 210), Some(bg)),
-                        Span::styled(format!("  {:<12}", entry.source_label), source_style),
-                        Span::styled(format!("{:<8}", entry.action().label()), action_style),
-                        Span::styled(unicode_trunc(&entry.id, 40), main_style),
-                        Span::raw("  "),
-                        Span::styled(unicode_trunc(&entry.description, 34), desc_style),
-                    ]))
-                })
-                .collect()
-        };
-
-        frame.render_widget(
-            List::new(items).style(Style::default().bg(Color::Rgb(18, 24, 26))),
-            body[0],
-        );
-
-        let mut detail_lines = Vec::new();
-        if let Some(entry) = browser.selector.current() {
-            detail_lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{} ", entry.source_label),
-                    Style::default()
-                        .fg(Color::Rgb(110, 220, 210))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(entry.id.clone()),
-            ]));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(entry.description.clone()));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(vec![
-                Span::styled("Origin: ", Style::default().fg(Color::Rgb(145, 170, 170))),
-                Span::raw(entry.origin.clone()),
-            ]));
-            detail_lines.push(Line::from(vec![
-                Span::styled("Action: ", Style::default().fg(Color::Rgb(145, 170, 170))),
-                Span::raw(match entry.action() {
-                    RemoteMcpAction::Install => "Default action: install",
-                    RemoteMcpAction::View => "Default action: view",
-                }),
-            ]));
-            if let Some(transport) = &entry.transport {
-                detail_lines.push(Line::from(vec![
-                    Span::styled(
-                        "Transport: ",
-                        Style::default().fg(Color::Rgb(145, 170, 170)),
-                    ),
-                    Span::raw(transport.clone()),
-                ]));
-            }
-            if let Some(crate::mcp_catalog::McpInstallPlan::Http {
-                required_headers, ..
-            }) = &entry.install
-                && !required_headers.is_empty()
-            {
-                detail_lines.push(Line::from(vec![
-                    Span::styled("Auth: ", Style::default().fg(Color::Rgb(145, 170, 170))),
-                    Span::raw(format!(
-                        "manual header setup required: {}",
-                        required_headers.join(", ")
-                    )),
-                ]));
-            }
-            if !entry.tags.is_empty() {
-                detail_lines.push(Line::from(vec![
-                    Span::styled("Tags: ", Style::default().fg(Color::Rgb(145, 170, 170))),
-                    Span::raw(entry.tags.join(", ")),
-                ]));
-            }
-            if entry.install.is_none() {
-                detail_lines.push(Line::from(""));
-                detail_lines.push(Line::from(Span::styled(
-                    "This entry is searchable but not auto-installable with the current EdgeCrab MCP transport support.",
-                    Style::default().fg(Color::Rgb(255, 180, 120)),
-                )));
-            }
-        } else if query.is_empty() {
-            detail_lines.push(Line::from(Span::styled(
-                "Official Sources",
-                Style::default()
-                    .fg(Color::Rgb(110, 220, 210))
-                    .add_modifier(Modifier::BOLD),
-            )));
-            detail_lines.push(Line::from("- MCP Reference"));
-            detail_lines.push(Line::from("- Official Apps"));
-            detail_lines.push(Line::from("- Archived"));
-            detail_lines.push(Line::from("- MCP Registry"));
-        } else if browser.inflight_request_id.is_some() {
-            detail_lines.push(Line::from("Searching official MCP sources…"));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "The selector stays responsive while live registry results are fetched in the background.",
-            ));
-        } else {
-            detail_lines.push(Line::from("No results for the current query."));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "Try a broader term like github, database, browser, time, or auth.",
-            ));
-        }
-
-        if !browser.notices.is_empty() {
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(Span::styled(
-                "Source Notes",
-                Style::default()
-                    .fg(Color::Rgb(255, 191, 0))
-                    .add_modifier(Modifier::BOLD),
-            )));
-            for notice in &browser.notices {
-                detail_lines.push(Line::from(format!("- {notice}")));
-            }
-        }
-
-        if self.detail_fullscreen_active(DetailSurface::RemoteMcpBrowser) {
-            self.render_fullscreen_browser_detail(
-                frame,
-                area,
-                FullscreenBrowserChrome {
-                    query: &browser.selector.query,
-                    header: BrowserChrome {
-                        title: if browser.inflight_request_id.is_some() {
-                            "Remote MCP · Searching…"
-                        } else {
-                            "Remote MCP"
-                        },
-                        placeholder:
-                            "Type to search official MCP sources and the official MCP Registry",
-                        icon: "⛓",
-                        icon_color: Color::Rgb(90, 190, 220),
-                        border_color: if browser.inflight_request_id.is_some() {
-                            Color::Rgb(110, 220, 210)
-                        } else {
-                            Color::Rgb(90, 190, 220)
-                        },
-                    },
-                    detail: ScrollableDetailChrome {
-                        title: "Details",
-                        border_color: Color::Rgb(90, 190, 220),
-                        focused: true,
-                        requested_scroll: self
-                            .detail_fullscreen_scroll(DetailSurface::RemoteMcpBrowser),
-                    },
-                    help: Line::from(vec![
-                        Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("change item  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("type ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-                        self.paging_key_help_span(Color::Rgb(110, 220, 210)),
-                        Span::styled("scroll detail  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Enter ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("default action  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Z ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("split view  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Esc ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("close  ", Style::default().fg(Color::DarkGray)),
-                    ]),
-                },
-                detail_lines,
-            );
-            return;
-        }
-
-        self.render_standard_split_detail(
-            frame,
-            body[1],
-            DetailSurface::RemoteMcpBrowser,
-            Color::Rgb(90, 190, 220),
-            detail_lines,
-        );
-
-        let status_text = if browser.inflight_request_id.is_some() {
-            "searching"
-        } else if !query.is_empty() && filtered.is_empty() {
-            "no matches"
-        } else {
-            "matches"
-        };
-        let mut help_spans = vec![
-            Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("browse  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("type ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-        ];
-        help_spans.extend(self.focus_pane_help_spans(Color::Rgb(110, 220, 210)));
-        help_spans.extend(self.page_or_scroll_help_spans(Color::Rgb(110, 220, 210)));
-        help_spans.extend([
-            Span::styled("Enter ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("default action  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("I ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("install  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("V ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("view  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Z ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("detail  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("R ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("refresh  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("L ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("local browser  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("cancel  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!(
-                    "{} {} · {} pane",
-                    filtered.len(),
-                    status_text,
-                    self.simple_split_focus_label(DetailSurface::RemoteMcpBrowser)
-                ),
-                Style::default().fg(Color::Rgb(100, 120, 120)),
-            ),
-        ]);
-        let help = Paragraph::new(Line::from(help_spans));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    fn profile_browser_title(&self) -> &'static str {
-        match self.profile_detail_mode {
-            ProfileDetailMode::Summary => "Browse Profiles",
-            ProfileDetailMode::Config => "Browse Profiles · Config",
-            ProfileDetailMode::Soul => "Browse Profiles · SOUL",
-            ProfileDetailMode::Memory => "Browse Profiles · Memory",
-            ProfileDetailMode::Tools => "Browse Profiles · Tools",
-            ProfileDetailMode::Help => "Browse Profiles · Help",
-        }
-    }
-
-    fn profile_help_text(&self) -> String {
-        [
-            "Profiles",
-            "",
-            "Enter  switch to the selected profile",
-            "V      summary view",
-            "C      config.yaml view",
-            "S      SOUL.md view",
-            "M      memory files view",
-            "T      tool policy view",
-            "A      alias editor",
-            "E      export editor",
-            "D      delete confirmation",
-            "N      create editor",
-            "I      import editor",
-            "O      rename editor",
-            "Tab / Right  next detail tab",
-            "Shift-Tab / Left  previous detail tab",
-            "Home / End  jump to first or last match",
-            "PgUp / PgDn  jump through matches in split view",
-            "Z      toggle split/full detail",
-            "Esc    close overlay",
-            "",
-            "Slash command entry points:",
-            "/profile",
-            "/profile show <name>",
-            "/profile config <name>",
-            "/profile soul <name>",
-            "/profile memory <name>",
-            "/profile tools <name>",
-            "/profile create ...",
-            "/profile rename ...",
-            "/profile delete ...",
-            "/profile alias ...",
-            "/profile export ...",
-            "/profile import ...",
-        ]
-        .join("\n")
-    }
-
-    fn render_profile_detail_text(&self, entry: Option<&ProfileEntry>) -> String {
-        let Some(entry) = entry else {
-            return match self.profile_detail_mode {
-                ProfileDetailMode::Help => self.profile_help_text(),
-                _ => "No profiles matched this query.".into(),
-            };
-        };
-
-        let manager = ProfileManager::new();
-        match self.profile_detail_mode {
-            ProfileDetailMode::Summary => {
-                format!("{}\n\n{}", entry.detail_view, entry.detail_actions_line())
-            }
-            ProfileDetailMode::Config => manager
-                .render_config(&entry.name)
-                .unwrap_or_else(|err| format!("profile config: {err}")),
-            ProfileDetailMode::Soul => manager
-                .render_soul(&entry.name)
-                .unwrap_or_else(|err| format!("profile soul: {err}")),
-            ProfileDetailMode::Memory => manager
-                .render_memory(&entry.name)
-                .unwrap_or_else(|err| format!("profile memory: {err}")),
-            ProfileDetailMode::Tools => manager
-                .render_tools_report(&entry.name)
-                .unwrap_or_else(|err| format!("profile tools: {err}")),
-            ProfileDetailMode::Help => {
-                format!(
-                    "{}\n\nCurrent selection: {}",
-                    self.profile_help_text(),
-                    entry.name
-                )
-            }
-        }
-    }
-
-    /// Render the full-screen skill browser overlay.
-    ///
-    /// UX mirrors `render_model_selector` — same search-box + list + help-line
-    /// layout — so users get a consistent experience between `/model` and `/skills`.
-    fn render_profile_selector(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
-
-        let chunks = Self::browser_overlay_chunks(area);
-        let body = Self::browser_body_chunks(chunks[1]);
-        self.render_browser_header(
-            frame,
-            chunks[0],
-            &self.profile_selector.query,
-            BrowserChrome {
-                title: self.profile_browser_title(),
-                placeholder: "Search profiles by name, model, path, or status.",
-                icon: "👤",
-                icon_color: Color::Rgb(120, 205, 255),
-                border_color: Color::Rgb(120, 205, 255),
-            },
-        );
-
-        let max_visible = body[0].height as usize;
-        let filtered = &self.profile_selector.filtered;
-        let selected = self.profile_selector.selected;
-        let scroll_start = Self::browser_scroll_start(selected, max_visible);
-
-        let items: Vec<ListItem> = filtered
-            .iter()
-            .skip(scroll_start)
-            .take(max_visible)
-            .enumerate()
-            .map(|(vis_idx, &profile_idx)| {
-                let entry = &self.profile_selector.items[profile_idx];
-                let is_selected = vis_idx + scroll_start == selected;
-                let bg = if is_selected {
-                    Color::Rgb(18, 36, 48)
-                } else {
-                    Color::Rgb(20, 20, 28)
-                };
-                ListItem::new(Line::from(vec![
-                    selector_marker(is_selected, Color::Rgb(120, 205, 255), Some(bg)),
-                    Span::styled(
-                        format!("  {:<7}", entry.status_label()),
-                        if is_selected {
-                            Style::default().bg(bg).fg(Color::Rgb(165, 225, 255))
-                        } else {
-                            Style::default().fg(Color::Rgb(90, 130, 155))
-                        },
-                    ),
-                    Span::styled(
-                        format!("{:<8}", entry.kind_label()),
-                        if is_selected {
-                            Style::default().bg(bg).fg(Color::Rgb(110, 170, 210))
-                        } else {
-                            Style::default().fg(Color::Rgb(70, 100, 120))
-                        },
-                    ),
-                    Span::styled(
-                        unicode_trunc(&entry.display_title(), 24),
-                        if is_selected {
-                            Style::default()
-                                .bg(bg)
-                                .fg(Color::Rgb(180, 235, 255))
-                                .add_modifier(Modifier::BOLD)
-                        } else {
-                            Style::default().fg(Color::Rgb(135, 200, 225))
-                        },
-                    ),
-                    Span::raw("  "),
-                    Span::styled(
-                        unicode_trunc(&entry.detail, 48),
-                        if is_selected {
-                            Style::default().bg(bg).fg(Color::Rgb(135, 180, 205))
-                        } else {
-                            Style::default().fg(Color::Rgb(85, 110, 130))
-                        },
-                    ),
-                ]))
-            })
-            .collect();
-        frame.render_widget(
-            List::new(items).style(Style::default().bg(Color::Rgb(20, 20, 28))),
-            body[0],
-        );
-
-        let mut detail_lines = Vec::new();
-        if let Some(entry) = self.profile_selector.current() {
-            detail_lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{} ", entry.status_label().to_uppercase()),
-                    Style::default()
-                        .fg(Color::Rgb(120, 205, 255))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(entry.display_title()),
-                Span::styled(
-                    format!("  [{}]", self.profile_detail_mode.title()),
-                    Style::default().fg(Color::Rgb(90, 150, 180)),
-                ),
-            ]));
-        } else {
-            detail_lines.push(Line::from(Span::styled(
-                format!("Detail Mode: {}", self.profile_detail_mode.title()),
-                Style::default()
-                    .fg(Color::Rgb(120, 205, 255))
-                    .add_modifier(Modifier::BOLD),
-            )));
-        }
-        detail_lines.push(Line::from(""));
-        for line in self
-            .render_profile_detail_text(self.profile_selector.current())
-            .lines()
-        {
-            detail_lines.push(Line::from(line.to_string()));
-        }
-
-        if self.detail_fullscreen_active(DetailSurface::ProfileSelector) {
-            self.render_fullscreen_browser_detail(
-                frame,
-                area,
-                FullscreenBrowserChrome {
-                    query: &self.profile_selector.query,
-                    header: BrowserChrome {
-                        title: self.profile_browser_title(),
-                        placeholder: "Search profiles by name, model, path, or status.",
-                        icon: "👤",
-                        icon_color: Color::Rgb(120, 205, 255),
-                        border_color: Color::Rgb(120, 205, 255),
-                    },
-                    detail: ScrollableDetailChrome {
-                        title: "Details",
-                        border_color: Color::Rgb(120, 205, 255),
-                        focused: true,
-                        requested_scroll: self
-                            .detail_fullscreen_scroll(DetailSurface::ProfileSelector),
-                    },
-                    help: Line::from(vec![
-                        Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(120, 205, 255))),
-                        Span::styled("change item  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("type ", Style::default().fg(Color::Rgb(120, 205, 255))),
-                        Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-                        self.paging_key_help_span(Color::Rgb(120, 205, 255)),
-                        Span::styled("scroll detail  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Enter ", Style::default().fg(Color::Rgb(120, 205, 255))),
-                        Span::styled("switch profile  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("C ", Style::default().fg(Color::Rgb(120, 205, 255))),
-                        Span::styled("config  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("S ", Style::default().fg(Color::Rgb(120, 205, 255))),
-                        Span::styled("SOUL  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("M ", Style::default().fg(Color::Rgb(120, 205, 255))),
-                        Span::styled("memory  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("T ", Style::default().fg(Color::Rgb(120, 205, 255))),
-                        Span::styled("tools  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("V ", Style::default().fg(Color::Rgb(120, 205, 255))),
-                        Span::styled("view summary  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("A/E ", Style::default().fg(Color::Rgb(120, 205, 255))),
-                        Span::styled("alias/export  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("D/N/I/O ", Style::default().fg(Color::Rgb(120, 205, 255))),
-                        Span::styled(
-                            "delete/new/import/rename  ",
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                        Span::styled("Tab/←→ ", Style::default().fg(Color::Rgb(120, 205, 255))),
-                        Span::styled("cycle views  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Home/End ", Style::default().fg(Color::Rgb(120, 205, 255))),
-                        Span::styled("jump  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Z ", Style::default().fg(Color::Rgb(120, 205, 255))),
-                        Span::styled("split view  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Esc ", Style::default().fg(Color::Rgb(120, 205, 255))),
-                        Span::styled("close  ", Style::default().fg(Color::DarkGray)),
-                    ]),
-                },
-                detail_lines,
-            );
-            return;
-        }
-
-        self.render_standard_split_detail(
-            frame,
-            body[1],
-            DetailSurface::ProfileSelector,
-            Color::Rgb(120, 205, 255),
-            detail_lines,
-        );
-
-        let help = Paragraph::new(Line::from(vec![
-            Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(120, 205, 255))),
-            Span::styled("browse  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("type ", Style::default().fg(Color::Rgb(120, 205, 255))),
-            Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-            self.paging_key_help_span(Color::Rgb(120, 205, 255)),
-            Span::styled("jump list  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter ", Style::default().fg(Color::Rgb(120, 205, 255))),
-            Span::styled("switch  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("C/S/M/T ", Style::default().fg(Color::Rgb(120, 205, 255))),
-            Span::styled("inspect  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("V ", Style::default().fg(Color::Rgb(120, 205, 255))),
-            Span::styled("summary  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("A/E ", Style::default().fg(Color::Rgb(120, 205, 255))),
-            Span::styled("alias/export  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("D/N/I/O ", Style::default().fg(Color::Rgb(120, 205, 255))),
-            Span::styled("manage  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Tab/←→ ", Style::default().fg(Color::Rgb(120, 205, 255))),
-            Span::styled("views  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Home/End ", Style::default().fg(Color::Rgb(120, 205, 255))),
-            Span::styled("jump  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Z ", Style::default().fg(Color::Rgb(120, 205, 255))),
-            Span::styled("detail  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("R ", Style::default().fg(Color::Rgb(120, 205, 255))),
-            Span::styled("refresh  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(Color::Rgb(120, 205, 255))),
-            Span::styled("close  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("{} profile(s)", filtered.len()),
-                Style::default().fg(Color::Rgb(80, 100, 120)),
-            ),
-        ]));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    fn render_skill_selector(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
-
-        let chunks = Self::browser_overlay_chunks(area);
-        let body = Self::browser_body_chunks(chunks[1]);
-        self.render_browser_header(
-            frame,
-            chunks[0],
-            &self.skill_selector.query,
-            BrowserChrome {
-                title: "Browse Skills",
-                placeholder: "Search local skills by name, category, path, preview, or support files.",
-                icon: "📚",
-                icon_color: Color::Rgb(255, 191, 0),
-                border_color: Color::Rgb(255, 191, 0),
-            },
-        );
-
-        let max_visible = body[0].height as usize;
-        let filtered = &self.skill_selector.filtered;
-        let selected = self.skill_selector.selected;
-        let scroll_start = Self::browser_scroll_start(selected, max_visible);
-
-        let items: Vec<ListItem> = filtered
-            .iter()
-            .skip(scroll_start)
-            .take(max_visible)
-            .enumerate()
-            .map(|(vis_idx, &skill_idx)| {
-                let entry = &self.skill_selector.items[skill_idx];
-                let is_selected = vis_idx + scroll_start == selected;
-
-                let bg = if is_selected {
-                    Color::Rgb(40, 35, 15)
-                } else {
-                    Color::Rgb(20, 20, 28)
-                };
-                let state_style = if is_selected {
-                    Style::default().bg(bg).fg(Color::Rgb(150, 140, 90))
-                } else {
-                    Style::default().fg(Color::Rgb(90, 80, 45))
-                };
-                let name_style = if is_selected {
-                    Style::default()
-                        .bg(bg)
-                        .fg(Color::Rgb(255, 215, 0))
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default().fg(Color::Rgb(220, 200, 100))
-                };
-                let desc_style = if is_selected {
-                    Style::default().bg(bg).fg(Color::Rgb(160, 150, 90))
-                } else {
-                    Style::default().fg(Color::Rgb(100, 95, 55))
-                };
-
-                ListItem::new(Line::from(vec![
-                    selector_marker(is_selected, Color::Rgb(255, 191, 0), Some(bg)),
-                    Span::styled(
-                        format!("  {:<7}", if entry.active { "active" } else { "ready" }),
-                        state_style,
-                    ),
-                    Span::styled(
-                        format!("{:<7}", entry.kind_label()),
-                        if is_selected {
-                            Style::default().bg(bg).fg(Color::Rgb(120, 110, 60))
-                        } else {
-                            Style::default().fg(Color::Rgb(80, 75, 40))
-                        },
-                    ),
-                    Span::styled(unicode_trunc(&entry.display_title(), 34), name_style),
-                    Span::raw("  "),
-                    Span::styled(unicode_trunc(&entry.list_detail(), 42), desc_style),
-                ]))
-            })
-            .collect();
-
-        let skill_count = filtered.len();
-        let list = List::new(items).style(Style::default().bg(Color::Rgb(20, 20, 28)));
-        frame.render_widget(list, body[0]);
-
-        let mut detail_lines = Vec::new();
-        if let Some(entry) = self.skill_selector.current() {
-            detail_lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{} ", if entry.active { "ACTIVE" } else { "READY" }),
-                    Style::default()
-                        .fg(Color::Rgb(255, 191, 0))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(entry.display_title()),
-            ]));
-            detail_lines.push(Line::from(""));
-            for line in entry.detail_view.lines() {
-                detail_lines.push(Line::from(line.to_string()));
-            }
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(entry.detail_actions_line()));
-        } else if self.skill_selector.query.trim().is_empty() {
-            detail_lines.push(Line::from(Span::styled(
-                "Local Skills",
-                Style::default()
-                    .fg(Color::Rgb(255, 191, 0))
-                    .add_modifier(Modifier::BOLD),
-            )));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "Browse installed skills with fuzzy search across names, categories, previews, and supporting files.",
-            ));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "Space toggles whether a skill is injected into your next prompt.",
-            ));
-            detail_lines.push(Line::from(
-                "Enter inserts `/skill-name` into the composer if you want the explicit slash flow instead.",
-            ));
-        } else {
-            detail_lines.push(Line::from("No local skills matched this query."));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "Try a broader term, a category name, or press R to search remote sources.",
-            ));
-        }
-        if self.detail_fullscreen_active(DetailSurface::SkillSelector) {
-            self.render_fullscreen_browser_detail(
-                frame,
-                area,
-                FullscreenBrowserChrome {
-                    query: &self.skill_selector.query,
-                    header: BrowserChrome {
-                        title: "Browse Skills",
-                        placeholder:
-                            "Search local skills by name, category, path, preview, or support files.",
-                        icon: "📚",
-                        icon_color: Color::Rgb(255, 191, 0),
-                        border_color: Color::Rgb(255, 191, 0),
-                    },
-                    detail: ScrollableDetailChrome {
-                        title: "Details",
-                        border_color: Color::Rgb(255, 191, 0),
-                        focused: true,
-                        requested_scroll: self
-                            .detail_fullscreen_scroll(DetailSurface::SkillSelector),
-                    },
-                    help: Line::from(vec![
-                        Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(255, 191, 0))),
-                        Span::styled("change item  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("type ", Style::default().fg(Color::Rgb(255, 191, 0))),
-                        Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-                        self.paging_key_help_span(Color::Rgb(255, 191, 0)),
-                        Span::styled("scroll detail  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Space ", Style::default().fg(Color::Rgb(255, 191, 0))),
-                        Span::styled("toggle active  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Enter ", Style::default().fg(Color::Rgb(255, 191, 0))),
-                        Span::styled("insert /skill  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Z ", Style::default().fg(Color::Rgb(255, 191, 0))),
-                        Span::styled("split view  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Esc ", Style::default().fg(Color::Rgb(255, 191, 0))),
-                        Span::styled("close  ", Style::default().fg(Color::DarkGray)),
-                    ]),
-                },
-                detail_lines,
-            );
-            return;
-        }
-        self.render_standard_split_detail(
-            frame,
-            body[1],
-            DetailSurface::SkillSelector,
-            Color::Rgb(255, 191, 0),
-            detail_lines,
-        );
-
-        let mut help_spans = vec![
-            Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(255, 191, 0))),
-            Span::styled("browse  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("type ", Style::default().fg(Color::Rgb(255, 191, 0))),
-            Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-        ];
-        help_spans.extend(self.focus_pane_help_spans(Color::Rgb(255, 191, 0)));
-        help_spans.extend(self.page_or_scroll_help_spans(Color::Rgb(255, 191, 0)));
-        help_spans.extend([
-            Span::styled("Space ", Style::default().fg(Color::Rgb(255, 191, 0))),
-            Span::styled("toggle active  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter ", Style::default().fg(Color::Rgb(255, 191, 0))),
-            Span::styled("insert /skill-name  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Z ", Style::default().fg(Color::Rgb(255, 191, 0))),
-            Span::styled("detail  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("R ", Style::default().fg(Color::Rgb(255, 191, 0))),
-            Span::styled("remote search  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(Color::Rgb(255, 191, 0))),
-            Span::styled("cancel  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!(
-                    "{skill_count} skill(s) · {} pane",
-                    self.simple_split_focus_label(DetailSurface::SkillSelector)
-                ),
-                Style::default().fg(Color::Rgb(80, 75, 40)),
-            ),
-        ]);
-        let help = Paragraph::new(Line::from(help_spans));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    fn render_remote_skill_selector(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
-
-        let chunks = Self::browser_overlay_chunks(area);
-        let body = Self::browser_body_chunks(chunks[1]);
-
-        let browser = &self.remote_skill_browser;
-        let query = browser.current_query();
-        self.render_browser_header(
-            frame,
-            chunks[0],
-            &browser.selector.query,
-            BrowserChrome {
-                title: if browser.inflight_request_id.is_some() {
-                    "Remote Skills · Searching…"
-                } else {
-                    "Remote Skills"
-                },
-                placeholder: "Type to search remote skills from EdgeCrab, Hermes, OpenAI, Anthropic, skills.sh, or a well-known URL",
-                icon: "🌐",
-                icon_color: Color::Rgb(110, 220, 210),
-                border_color: if browser.inflight_request_id.is_some() {
-                    Color::Rgb(110, 220, 210)
-                } else {
-                    Color::Rgb(255, 191, 0)
-                },
-            },
-        );
-
-        let filtered = &browser.selector.filtered;
-        let selected = browser.selector.selected;
-        let max_visible = body[0].height as usize;
-        let scroll_start = Self::browser_scroll_start(selected, max_visible);
-
-        let items: Vec<ListItem> = if filtered.is_empty() {
-            let empty_text = if query.is_empty() {
-                "  Start typing to search remote skills."
-            } else if browser.inflight_request_id.is_some() {
-                "  Searching remote sources…"
-            } else {
-                "  No remote skills matched this query."
-            };
-            vec![ListItem::new(Line::from(Span::styled(
-                empty_text.to_string(),
-                Style::default().fg(Color::Rgb(120, 120, 135)),
-            )))]
-        } else {
-            filtered
-                .iter()
-                .skip(scroll_start)
-                .take(max_visible)
-                .enumerate()
-                .map(|(vis_idx, &entry_idx)| {
-                    let entry = &browser.selector.items[entry_idx];
-                    let is_selected = vis_idx + scroll_start == selected;
-                    let bg = if is_selected {
-                        Color::Rgb(24, 40, 44)
-                    } else {
-                        Color::Rgb(18, 24, 26)
-                    };
-                    let source_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(145, 170, 170))
-                    } else {
-                        Style::default().fg(Color::Rgb(100, 120, 120))
-                    };
-                    let action_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(210, 240, 175))
-                    } else {
-                        Style::default().fg(Color::Rgb(135, 165, 110))
-                    };
-                    let main_style = if is_selected {
-                        Style::default()
-                            .bg(bg)
-                            .fg(Color::Rgb(110, 220, 210))
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Rgb(210, 220, 220))
-                    };
-                    let desc_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(160, 180, 180))
-                    } else {
-                        Style::default().fg(Color::Rgb(120, 140, 140))
-                    };
-                    ListItem::new(Line::from(vec![
-                        selector_marker(is_selected, Color::Rgb(110, 220, 210), Some(bg)),
-                        Span::styled(format!("  {:<11}", entry.source_label), source_style),
-                        Span::styled(format!("{:<8}", entry.action.label()), action_style),
-                        Span::styled(unicode_trunc(&entry.identifier, 44), main_style),
-                        Span::raw("  "),
-                        Span::styled(unicode_trunc(&entry.description, 36), desc_style),
-                    ]))
-                })
-                .collect()
-        };
-
-        frame.render_widget(
-            List::new(items).style(Style::default().bg(Color::Rgb(18, 24, 26))),
-            body[0],
-        );
-
-        let mut detail_lines = Vec::new();
-        if let Some(entry) = browser.selector.current() {
-            let status_line = match entry.action {
-                RemoteSkillAction::Install => "Default action: install".to_string(),
-                RemoteSkillAction::Update => format!(
-                    "Default action: update ({})",
-                    entry.installed_name.as_deref().unwrap_or(&entry.name)
-                ),
-                RemoteSkillAction::Replace => {
-                    "Default action: replace existing local skill".to_string()
-                }
-            };
-            detail_lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{} ", entry.source_label),
-                    Style::default()
-                        .fg(Color::Rgb(110, 220, 210))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("[{}]", entry.trust_level),
-                    Style::default().fg(Color::Rgb(160, 180, 180)),
-                ),
-            ]));
-            detail_lines.push(Line::from(entry.identifier.clone()));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(entry.description.clone()));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(vec![
-                Span::styled("Origin: ", Style::default().fg(Color::Rgb(145, 170, 170))),
-                Span::raw(entry.origin.clone()),
-            ]));
-            detail_lines.push(Line::from(vec![
-                Span::styled("Action: ", Style::default().fg(Color::Rgb(145, 170, 170))),
-                Span::raw(status_line),
-            ]));
-            if !entry.tags.is_empty() {
-                detail_lines.push(Line::from(vec![
-                    Span::styled("Tags: ", Style::default().fg(Color::Rgb(145, 170, 170))),
-                    Span::raw(entry.tags.join(", ")),
-                ]));
-            }
-            if entry.action == RemoteSkillAction::Replace {
-                detail_lines.push(Line::from(""));
-                detail_lines.push(Line::from(Span::styled(
-                    "Warning: this source would replace an existing local skill with the same name.",
-                    Style::default().fg(Color::Rgb(255, 180, 120)),
-                )));
-            }
-        } else if query.is_empty() {
-            detail_lines.push(Line::from(Span::styled(
-                "Curated Sources",
-                Style::default()
-                    .fg(Color::Rgb(110, 220, 210))
-                    .add_modifier(Modifier::BOLD),
-            )));
-            for source in edgecrab_tools::tools::skills_hub::curated_source_summaries() {
-                detail_lines.push(Line::from(format!(
-                    "- {} [{}]",
-                    source.label, source.trust_level
-                )));
-            }
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "Paste an https:// URL to search a .well-known skills endpoint too.",
-            ));
-        } else if browser.inflight_request_id.is_some() {
-            detail_lines.push(Line::from("Searching remote sources…"));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "You can keep typing while results refresh. Slow or failing sources are reported here without blocking the UI.",
-            ));
-        } else {
-            detail_lines.push(Line::from("No results for the current query."));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "Try a broader term, a source name like 'edgecrab', or a full https:// URL for well-known skill discovery.",
-            ));
-        }
-
-        if !browser.notices.is_empty() {
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(Span::styled(
-                "Source Notes",
-                Style::default()
-                    .fg(Color::Rgb(255, 191, 0))
-                    .add_modifier(Modifier::BOLD),
-            )));
-            for notice in &browser.notices {
-                detail_lines.push(Line::from(format!("- {notice}")));
-            }
-        }
-
-        if let Some(action) = &browser.action_in_flight {
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(Span::styled(
-                format!("Running: {action}"),
-                Style::default().fg(Color::Rgb(210, 240, 175)),
-            )));
-        }
-
-        if self.detail_fullscreen_active(DetailSurface::RemoteSkillBrowser) {
-            self.render_fullscreen_browser_detail(
-                frame,
-                area,
-                FullscreenBrowserChrome {
-                    query: &browser.selector.query,
-                    header: BrowserChrome {
-                        title: if browser.inflight_request_id.is_some() {
-                            "Remote Skills · Searching…"
-                        } else {
-                            "Remote Skills"
-                        },
-                        placeholder: "Type to search remote skills from EdgeCrab, Hermes, OpenAI, Anthropic, skills.sh, or a well-known URL",
-                        icon: "🌐",
-                        icon_color: Color::Rgb(110, 220, 210),
-                        border_color: if browser.inflight_request_id.is_some() {
-                            Color::Rgb(110, 220, 210)
-                        } else {
-                            Color::Rgb(255, 191, 0)
-                        },
-                    },
-                    detail: ScrollableDetailChrome {
-                        title: "Details",
-                        border_color: Color::Rgb(255, 191, 0),
-                        focused: true,
-                        requested_scroll: self
-                            .detail_fullscreen_scroll(DetailSurface::RemoteSkillBrowser),
-                    },
-                    help: Line::from(vec![
-                        Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("change item  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("type ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-                        self.paging_key_help_span(Color::Rgb(110, 220, 210)),
-                        Span::styled("scroll detail  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Enter ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("default action  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Z ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("split view  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Esc ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("close  ", Style::default().fg(Color::DarkGray)),
-                    ]),
-                },
-                detail_lines,
-            );
-            return;
-        }
-
-        self.render_standard_split_detail(
-            frame,
-            body[1],
-            DetailSurface::RemoteSkillBrowser,
-            Color::Rgb(255, 191, 0),
-            detail_lines,
-        );
-
-        let mut help_spans = vec![
-            Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("browse  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("type ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-        ];
-        help_spans.extend(self.focus_pane_help_spans(Color::Rgb(110, 220, 210)));
-        help_spans.extend(self.page_or_scroll_help_spans(Color::Rgb(110, 220, 210)));
-        help_spans.extend([
-            Span::styled("Enter ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("default action  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("I ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("install/update  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("U ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("force update  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Z ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("detail  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("R ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("refresh  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("L ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("local browser  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("cancel  ", Style::default().fg(Color::DarkGray)),
-        ]);
-        let status_text = if browser.inflight_request_id.is_some() {
-            "searching"
-        } else if !query.is_empty() && filtered.is_empty() {
-            "no matches"
-        } else {
-            "matches"
-        };
-        help_spans.push(Span::styled(
-            format!(
-                "{} {} · {} pane",
-                filtered.len(),
-                status_text,
-                self.simple_split_focus_label(DetailSurface::RemoteSkillBrowser)
-            ),
-            Style::default().fg(Color::Rgb(100, 120, 120)),
-        ));
-        let help = Paragraph::new(Line::from(help_spans));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    fn render_remote_plugin_selector(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
-
-        let chunks = Self::browser_overlay_chunks(area);
-        let body = Self::browser_body_chunks(chunks[1]);
-
-        let browser = &self.remote_plugin_browser;
-        let query = browser.current_query();
-        let title = if let Some(source) = browser.source_filter.as_deref() {
-            if browser.inflight_request_id.is_some() {
-                format!("Remote Plugins · {source} · Searching…")
-            } else {
-                format!("Remote Plugins · {source}")
-            }
-        } else if browser.inflight_request_id.is_some() {
-            "Remote Plugins · Searching…".to_string()
-        } else {
-            "Remote Plugins".to_string()
-        };
-        self.render_browser_header(
-            frame,
-            chunks[0],
-            &browser.selector.query,
-            BrowserChrome {
-                title: &title,
-                placeholder:
-                    "Type to search official and configured plugin registries, or use /plugins search --source <name> <query>",
-                icon: "🔌",
-                icon_color: Color::Rgb(210, 190, 110),
-                border_color: if browser.inflight_request_id.is_some() {
-                    Color::Rgb(210, 190, 110)
-                } else {
-                    Color::Rgb(255, 191, 0)
-                },
-            },
-        );
-
-        let filtered = &browser.selector.filtered;
-        let selected = browser.selector.selected;
-        let max_visible = body[0].height as usize;
-        let scroll_start = Self::browser_scroll_start(selected, max_visible);
-
-        let items: Vec<ListItem> = if filtered.is_empty() {
-            let empty_text = if query.is_empty() {
-                "  Start typing to search remote plugins."
-            } else if browser.inflight_request_id.is_some() {
-                "  Searching remote plugin registries…"
-            } else {
-                "  No remote plugins matched this query."
-            };
-            vec![ListItem::new(Line::from(Span::styled(
-                empty_text.to_string(),
-                Style::default().fg(Color::Rgb(120, 120, 135)),
-            )))]
-        } else {
-            filtered
-                .iter()
-                .skip(scroll_start)
-                .take(max_visible)
-                .enumerate()
-                .map(|(vis_idx, &entry_idx)| {
-                    let entry = &browser.selector.items[entry_idx];
-                    let is_selected = vis_idx + scroll_start == selected;
-                    let bg = if is_selected {
-                        Color::Rgb(42, 34, 18)
-                    } else {
-                        Color::Rgb(24, 22, 16)
-                    };
-                    let source_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(205, 190, 140))
-                    } else {
-                        Style::default().fg(Color::Rgb(155, 140, 105))
-                    };
-                    let action_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(210, 240, 175))
-                    } else {
-                        Style::default().fg(Color::Rgb(135, 165, 110))
-                    };
-                    let kind_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(150, 165, 205))
-                    } else {
-                        Style::default().fg(Color::Rgb(110, 125, 160))
-                    };
-                    let main_style = if is_selected {
-                        Style::default()
-                            .bg(bg)
-                            .fg(Color::Rgb(255, 236, 175))
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Rgb(220, 220, 210))
-                    };
-                    let desc_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(185, 180, 165))
-                    } else {
-                        Style::default().fg(Color::Rgb(140, 135, 125))
-                    };
-                    ListItem::new(Line::from(vec![
-                        selector_marker(is_selected, Color::Rgb(255, 210, 110), Some(bg)),
-                        Span::styled(format!("  {:<11}", entry.source_label), source_style),
-                        Span::styled(format!("{:<8}", entry.action.label()), action_style),
-                        Span::styled(unicode_pad_right(&entry.kind, 8), kind_style),
-                        Span::raw("  "),
-                        Span::styled(unicode_trunc(&entry.identifier, 40), main_style),
-                        Span::raw("  "),
-                        Span::styled(unicode_trunc(&entry.description, 28), desc_style),
-                    ]))
-                })
-                .collect()
-        };
-
-        frame.render_widget(
-            List::new(items).style(Style::default().bg(Color::Rgb(24, 22, 16))),
-            body[0],
-        );
-
-        let mut detail_lines = Vec::new();
-        if let Some(entry) = browser.selector.current() {
-            let status_line = match entry.action {
-                RemotePluginAction::Install => "Default action: install".to_string(),
-                RemotePluginAction::Update => format!(
-                    "Default action: update ({})",
-                    entry.installed_name.as_deref().unwrap_or(&entry.name)
-                ),
-                RemotePluginAction::Replace => {
-                    "Default action: replace existing local plugin".to_string()
-                }
-            };
-            detail_lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{} ", entry.source_label),
-                    Style::default()
-                        .fg(Color::Rgb(255, 236, 175))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("[{}]", entry.trust_level),
-                    Style::default().fg(Color::Rgb(185, 180, 165)),
-                ),
-            ]));
-            detail_lines.push(Line::from(entry.identifier.clone()));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(entry.description.clone()));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(vec![
-                Span::styled("Kind: ", Style::default().fg(Color::Rgb(205, 190, 140))),
-                Span::raw(entry.kind.clone()),
-            ]));
-            detail_lines.push(Line::from(vec![
-                Span::styled("Origin: ", Style::default().fg(Color::Rgb(205, 190, 140))),
-                Span::raw(entry.origin.clone()),
-            ]));
-            detail_lines.push(Line::from(vec![
-                Span::styled("Action: ", Style::default().fg(Color::Rgb(205, 190, 140))),
-                Span::raw(status_line),
-            ]));
-            if !entry.requires_env.is_empty() {
-                detail_lines.push(Line::from(vec![
-                    Span::styled(
-                        "Requires env: ",
-                        Style::default().fg(Color::Rgb(205, 190, 140)),
-                    ),
-                    Span::raw(entry.requires_env.join(", ")),
-                ]));
-            }
-            if !entry.tags.is_empty() {
-                detail_lines.push(Line::from(vec![
-                    Span::styled("Tags: ", Style::default().fg(Color::Rgb(205, 190, 140))),
-                    Span::raw(entry.tags.join(", ")),
-                ]));
-            }
-            if entry.action == RemotePluginAction::Replace {
-                detail_lines.push(Line::from(""));
-                detail_lines.push(Line::from(Span::styled(
-                    "Warning: this source would replace an existing local plugin with the same name.",
-                    Style::default().fg(Color::Rgb(255, 180, 120)),
-                )));
-            }
-        } else if query.is_empty() {
-            detail_lines.push(Line::from(Span::styled(
-                "Registry Sources",
-                Style::default()
-                    .fg(Color::Rgb(255, 236, 175))
-                    .add_modifier(Modifier::BOLD),
-            )));
-            let config = self.load_runtime_config();
-            for source in edgecrab_plugins::hub_source_summaries(&config.plugins) {
-                detail_lines.push(Line::from(format!(
-                    "- {} [{}] — {}",
-                    source.label,
-                    format!("{:?}", source.trust_level).to_ascii_lowercase(),
-                    source.description
-                )));
-            }
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "Use /plugins search --source hermes <query> to constrain the browser to one registry family.",
-            ));
-        } else if browser.inflight_request_id.is_some() {
-            detail_lines.push(Line::from("Searching remote plugin registries…"));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "You can keep typing while results refresh. Source failures are surfaced as notes instead of blocking the browser.",
-            ));
-        } else {
-            detail_lines.push(Line::from("No results for the current query."));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "Try a broader term, a source name like 'edgecrab' or 'hermes', or use /plugins search --source <name> <query>.",
-            ));
-        }
-
-        if !browser.notices.is_empty() {
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(Span::styled(
-                "Source Notes",
-                Style::default()
-                    .fg(Color::Rgb(255, 191, 0))
-                    .add_modifier(Modifier::BOLD),
-            )));
-            for notice in &browser.notices {
-                detail_lines.push(Line::from(format!("- {notice}")));
-            }
-        }
-
-        if let Some(action) = &browser.action_in_flight {
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(Span::styled(
-                format!("Running: {action}"),
-                Style::default().fg(Color::Rgb(210, 240, 175)),
-            )));
-        }
-
-        if self.detail_fullscreen_active(DetailSurface::RemotePluginBrowser) {
-            self.render_fullscreen_browser_detail(
-                frame,
-                area,
-                FullscreenBrowserChrome {
-                    query: &browser.selector.query,
-                    header: BrowserChrome {
-                        title: &title,
-                        placeholder:
-                            "Type to search official and configured plugin registries, or use /plugins search --source <name> <query>",
-                        icon: "🔌",
-                        icon_color: Color::Rgb(255, 210, 110),
-                        border_color: if browser.inflight_request_id.is_some() {
-                            Color::Rgb(255, 210, 110)
-                        } else {
-                            Color::Rgb(255, 191, 0)
-                        },
-                    },
-                    detail: ScrollableDetailChrome {
-                        title: "Details",
-                        border_color: Color::Rgb(255, 191, 0),
-                        focused: true,
-                        requested_scroll: self
-                            .detail_fullscreen_scroll(DetailSurface::RemotePluginBrowser),
-                    },
-                    help: Line::from(vec![
-                        Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(255, 210, 110))),
-                        Span::styled("change item  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("type ", Style::default().fg(Color::Rgb(255, 210, 110))),
-                        Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-                        self.paging_key_help_span(Color::Rgb(255, 210, 110)),
-                        Span::styled("scroll detail  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Enter ", Style::default().fg(Color::Rgb(255, 210, 110))),
-                        Span::styled("default action  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Z ", Style::default().fg(Color::Rgb(255, 210, 110))),
-                        Span::styled("split view  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Esc ", Style::default().fg(Color::Rgb(255, 210, 110))),
-                        Span::styled("close  ", Style::default().fg(Color::DarkGray)),
-                    ]),
-                },
-                detail_lines,
-            );
-            return;
-        }
-
-        self.render_standard_split_detail(
-            frame,
-            body[1],
-            DetailSurface::RemotePluginBrowser,
-            Color::Rgb(255, 191, 0),
-            detail_lines,
-        );
-
-        let mut help_spans = vec![
-            Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(255, 210, 110))),
-            Span::styled("browse  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("type ", Style::default().fg(Color::Rgb(255, 210, 110))),
-            Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-        ];
-        help_spans.extend(self.focus_pane_help_spans(Color::Rgb(255, 210, 110)));
-        help_spans.extend(self.page_or_scroll_help_spans(Color::Rgb(255, 210, 110)));
-        help_spans.extend([
-            Span::styled("Enter ", Style::default().fg(Color::Rgb(255, 210, 110))),
-            Span::styled("default action  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("I ", Style::default().fg(Color::Rgb(255, 210, 110))),
-            Span::styled("install/update  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("U ", Style::default().fg(Color::Rgb(255, 210, 110))),
-            Span::styled("update  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Z ", Style::default().fg(Color::Rgb(255, 210, 110))),
-            Span::styled("detail  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("R ", Style::default().fg(Color::Rgb(255, 210, 110))),
-            Span::styled("refresh  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("L ", Style::default().fg(Color::Rgb(255, 210, 110))),
-            Span::styled("local browser  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(Color::Rgb(255, 210, 110))),
-            Span::styled("cancel  ", Style::default().fg(Color::DarkGray)),
-        ]);
-        let status_text = if browser.inflight_request_id.is_some() {
-            "searching"
-        } else if !query.is_empty() && filtered.is_empty() {
-            "no matches"
-        } else {
-            "matches"
-        };
-        help_spans.push(Span::styled(
-            format!(
-                "{} {} · {} pane",
-                filtered.len(),
-                status_text,
-                self.simple_split_focus_label(DetailSurface::RemotePluginBrowser)
-            ),
-            Style::default().fg(Color::Rgb(155, 140, 105)),
-        ));
-        let help = Paragraph::new(Line::from(help_spans));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    fn render_tool_manager(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
-
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Min(1),
-                Constraint::Length(1),
-            ])
-            .split(area);
-        let body = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
-            .split(chunks[1]);
-
-        let tabs = [
-            ToolManagerScope::All,
-            ToolManagerScope::Toolsets,
-            ToolManagerScope::Tools,
-        ]
-        .into_iter()
-        .map(|scope| {
-            let style = if scope == self.tool_manager_scope {
-                Style::default()
-                    .fg(Color::Rgb(255, 238, 170))
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Rgb(120, 132, 146))
-            };
-            Span::styled(format!("[{}] ", scope.title()), style)
-        })
-        .collect::<Vec<_>>();
-
-        let search_text = if self.tool_manager.query.is_empty() {
-            "Search tools, toolsets, descriptions, or tags".to_string()
-        } else {
-            self.tool_manager.query.clone()
-        };
-        let search_style = if self.tool_manager.query.is_empty() {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        let mut search_spans = vec![
-            Span::styled("  🧰 ", Style::default().fg(Color::Rgb(140, 220, 210))),
-            Span::styled(search_text, search_style),
-            Span::raw("   "),
-        ];
-        search_spans.extend(tabs);
-        let search = Paragraph::new(Line::from(search_spans)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(110, 220, 210)))
-                .title(" Tool Manager "),
-        );
-        frame.render_widget(search, chunks[0]);
-
-        let filtered = &self.tool_manager.filtered;
-        let selected = self.tool_manager.selected;
-        let max_visible = body[0].height as usize;
-        let scroll_start = if selected >= max_visible {
-            selected - max_visible + 1
-        } else {
-            0
-        };
-
-        let items: Vec<ListItem> = if filtered.is_empty() {
-            vec![ListItem::new(Line::from(Span::styled(
-                "  No tools matched the current filter.",
-                Style::default().fg(Color::Rgb(120, 120, 135)),
-            )))]
-        } else {
-            filtered
-                .iter()
-                .skip(scroll_start)
-                .take(max_visible)
-                .enumerate()
-                .map(|(vis_idx, &entry_idx)| {
-                    let entry = &self.tool_manager.items[entry_idx];
-                    let is_selected = vis_idx + scroll_start == selected;
-                    let bg = if is_selected {
-                        Color::Rgb(20, 42, 46)
-                    } else {
-                        Color::Rgb(16, 22, 28)
-                    };
-                    let check_style = if is_selected {
-                        Style::default()
-                            .bg(bg)
-                            .fg(Color::Rgb(210, 240, 175))
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Rgb(145, 185, 120))
-                    };
-                    let kind_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(150, 180, 188))
-                    } else {
-                        Style::default().fg(Color::Rgb(95, 115, 125))
-                    };
-                    let name_style = if is_selected {
-                        Style::default()
-                            .bg(bg)
-                            .fg(Color::Rgb(110, 220, 210))
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Rgb(210, 220, 220))
-                    };
-                    let detail_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(170, 190, 190))
-                    } else {
-                        Style::default().fg(Color::Rgb(118, 138, 138))
-                    };
-
-                    ListItem::new(Line::from(vec![
-                        selector_marker(is_selected, Color::Rgb(110, 220, 210), Some(bg)),
-                        Span::styled(format!("  {}", entry.check_state.glyph()), check_style),
-                        Span::raw("  "),
-                        Span::styled(unicode_pad_right(&entry.tag, 8), kind_style),
-                        Span::styled(
-                            unicode_pad_right(&format!("{} {}", entry.emoji, entry.name), 30),
-                            name_style,
-                        ),
-                        Span::raw("  "),
-                        Span::styled(unicode_trunc(&entry.detail, 36), detail_style),
-                    ]))
-                })
-                .collect()
-        };
-
-        frame.render_widget(
-            List::new(items).style(Style::default().bg(Color::Rgb(16, 22, 28))),
-            body[0],
-        );
-
-        let mut detail_lines = Vec::new();
-        if let Some(entry) = self.tool_manager.current() {
-            let policy_text = match entry.policy_source {
-                ToolPolicySource::Default => "inherits default policy",
-                ToolPolicySource::ExplicitEnable => "forced on by explicit override",
-                ToolPolicySource::ExplicitDisable => "forced off by explicit override",
-            };
-            let runtime_text = if entry.exposed {
-                "visible to the model right now"
-            } else if !entry.startup_available {
-                "hidden because the tool is unavailable at startup"
-            } else if !entry.check_allowed {
-                "hidden by runtime gating in this session"
-            } else {
-                "hidden by current policy"
-            };
-
-            detail_lines.push(Line::from(Span::styled(
-                format!("{} {}", entry.emoji, entry.name),
-                Style::default()
-                    .fg(Color::Rgb(110, 220, 210))
-                    .add_modifier(Modifier::BOLD),
-            )));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(format!("Kind: {}", entry.tag)));
-            detail_lines.push(Line::from(format!("Policy: {policy_text}")));
-            detail_lines.push(Line::from(format!("Runtime: {runtime_text}")));
-
-            match entry.kind {
-                ToolManagerItemKind::Toolset => {
-                    detail_lines.push(Line::from(format!(
-                        "Coverage: {}/{} selected · {}/{} exposed",
-                        entry.selected_tools,
-                        entry.total_tools,
-                        entry.exposed_tools,
-                        entry.total_tools
-                    )));
-                    if !entry.description.is_empty() {
-                        detail_lines.push(Line::from(""));
-                        detail_lines.push(Line::from("Included tools:"));
-                        for tool in entry.description.split(", ") {
-                            detail_lines.push(Line::from(format!("  • {tool}")));
-                        }
-                    }
-                }
-                ToolManagerItemKind::Tool => {
-                    detail_lines.push(Line::from(format!("Toolset: {}", entry.toolset)));
-                    if entry.dynamic {
-                        detail_lines.push(Line::from("Origin: dynamic runtime tool"));
-                    }
-                    if !entry.aliases.is_empty() {
-                        detail_lines
-                            .push(Line::from(format!("Aliases: {}", entry.aliases.join(", "))));
-                    }
-                    detail_lines.push(Line::from(""));
-                    for line in entry.description.lines() {
-                        detail_lines.push(Line::from(line.to_string()));
-                    }
-                }
-            }
-        }
-
-        if self.detail_fullscreen_active(DetailSurface::ToolManager) {
-            self.render_fullscreen_browser_detail(
-                frame,
-                area,
-                FullscreenBrowserChrome {
-                    query: &self.tool_manager.query,
-                    header: BrowserChrome {
-                        title: "Tool Manager",
-                        placeholder: "Search tools, toolsets, descriptions, or tags",
-                        icon: "🧰",
-                        icon_color: Color::Rgb(140, 220, 210),
-                        border_color: Color::Rgb(110, 220, 210),
-                    },
-                    detail: ScrollableDetailChrome {
-                        title: "Details",
-                        border_color: Color::Rgb(110, 220, 210),
-                        focused: true,
-                        requested_scroll: self.detail_fullscreen_scroll(DetailSurface::ToolManager),
-                    },
-                    help: Line::from(vec![
-                        Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("change item  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("type ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-                        self.paging_key_help_span(Color::Rgb(110, 220, 210)),
-                        Span::styled("scroll detail  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Space ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("toggle  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("←→ ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("scope  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Z ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("split view  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Esc ", Style::default().fg(Color::Rgb(110, 220, 210))),
-                        Span::styled("close  ", Style::default().fg(Color::DarkGray)),
-                    ]),
-                },
-                detail_lines,
-            );
-            return;
-        }
-        self.render_standard_split_detail(
-            frame,
-            body[1],
-            DetailSurface::ToolManager,
-            Color::Rgb(110, 220, 210),
-            detail_lines,
-        );
-
-        let footer_note = self.tool_manager_status_note.as_deref().unwrap_or(
-            "Space toggles. Tab focuses panes. Left/Right changes scope. R restores defaults.",
-        );
-        let footer_summary = format!(
-            "{} · {} scope · {} pane",
-            footer_note,
-            self.tool_manager_scope.title(),
-            self.simple_split_focus_label(DetailSurface::ToolManager)
-        );
-        let mut help_spans = vec![
-            Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("browse  ", Style::default().fg(Color::DarkGray)),
-        ];
-        help_spans.extend(self.focus_pane_help_spans(Color::Rgb(110, 220, 210)));
-        help_spans.extend(self.page_or_scroll_help_spans(Color::Rgb(110, 220, 210)));
-        help_spans.extend([
-            Span::styled("Space ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("toggle  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("←→ ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("scope  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Z ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("detail  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("R ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("reset  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(Color::Rgb(110, 220, 210))),
-            Span::styled("close  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                edgecrab_core::safe_truncate(&footer_summary, 62),
-                Style::default().fg(Color::Rgb(95, 115, 125)),
-            ),
-        ]);
-        let help = Paragraph::new(Line::from(help_spans));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    fn render_plugin_toggle(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
-
-        let chunks = Self::browser_overlay_chunks(area);
-        let body = Self::browser_body_chunks(chunks[1]);
-        let title = format!("Browse Plugins [{}]", self.plugin_toggle_scope.title());
-        self.render_browser_header(
-            frame,
-            chunks[0],
-            &self.plugin_toggle.query,
-            BrowserChrome {
-                title: &title,
-                placeholder:
-                    "Search installed plugins by name, tool, CLI command, status, source, or trust.",
-                icon: "🔌",
-                icon_color: Color::Rgb(210, 190, 110),
-                border_color: Color::Rgb(210, 190, 110),
-            },
-        );
-
-        let filtered = &self.plugin_toggle.filtered;
-        let selected = self.plugin_toggle.selected;
-        let max_visible = body[0].height as usize;
-        let scroll_start = Self::browser_scroll_start(selected, max_visible);
-
-        let items: Vec<ListItem> = if filtered.is_empty() {
-            let empty_text = if self.plugin_toggle.items.is_empty() {
-                "  No local plugins installed yet."
-            } else if self.plugin_toggle.query.trim().is_empty() {
-                "  No plugins available in this scope."
-            } else {
-                "  No plugins matched the current filter."
-            };
-            vec![ListItem::new(Line::from(Span::styled(
-                empty_text.to_string(),
-                Style::default().fg(Color::Rgb(120, 120, 135)),
-            )))]
-        } else {
-            filtered
-                .iter()
-                .skip(scroll_start)
-                .take(max_visible)
-                .enumerate()
-                .map(|(vis_idx, &entry_idx)| {
-                    let entry = &self.plugin_toggle.items[entry_idx];
-                    let is_selected = vis_idx + scroll_start == selected;
-                    let bg = if is_selected {
-                        Color::Rgb(46, 38, 18)
-                    } else {
-                        Color::Rgb(22, 22, 18)
-                    };
-                    let state_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(210, 240, 175))
-                    } else {
-                        Style::default().fg(Color::Rgb(150, 180, 120))
-                    };
-                    let pending_style = if entry.has_pending_change() {
-                        if is_selected {
-                            Style::default().bg(bg).fg(Color::Rgb(255, 195, 120))
-                        } else {
-                            Style::default().fg(Color::Rgb(210, 150, 90))
-                        }
-                    } else if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(120, 110, 90))
-                    } else {
-                        Style::default().fg(Color::Rgb(90, 85, 70))
-                    };
-                    let kind_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(150, 165, 205))
-                    } else {
-                        Style::default().fg(Color::Rgb(110, 125, 160))
-                    };
-                    let name_style = if is_selected {
-                        Style::default()
-                            .bg(bg)
-                            .fg(Color::Rgb(255, 236, 175))
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Rgb(220, 220, 210))
-                    };
-                    let trust_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(205, 190, 140))
-                    } else {
-                        Style::default().fg(Color::Rgb(155, 140, 105))
-                    };
-                    let detail_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(160, 160, 145))
-                    } else {
-                        Style::default().fg(Color::Rgb(120, 120, 110))
-                    };
-                    ListItem::new(Line::from(vec![
-                        selector_marker(is_selected, Color::Rgb(210, 190, 110), Some(bg)),
-                        Span::styled(format!("  {:<8}", entry.runtime_status), state_style),
-                        Span::raw("  "),
-                        Span::styled(
-                            format!(
-                                "{:<7}",
-                                if entry.has_pending_change() {
-                                    "staged"
-                                } else {
-                                    ""
-                                }
-                            ),
-                            pending_style,
-                        ),
-                        Span::raw("  "),
-                        Span::styled(unicode_pad_right(&entry.kind, 8), kind_style),
-                        Span::styled(unicode_trunc(&entry.display_name, 24), name_style),
-                        Span::raw("  "),
-                        Span::styled(unicode_pad_right(&entry.trust_level, 10), trust_style),
-                        Span::raw("  "),
-                        Span::styled(
-                            unicode_trunc(
-                                &format!(
-                                    "{} {} tool{}",
-                                    entry.check_state.glyph(),
-                                    entry.tool_count,
-                                    if entry.tool_count == 1 { "" } else { "s" }
-                                ),
-                                18,
-                            ),
-                            detail_style,
-                        ),
-                    ]))
-                })
-                .collect()
-        };
-        frame.render_widget(
-            List::new(items).style(Style::default().bg(Color::Rgb(22, 22, 18))),
-            body[0],
-        );
-
-        let mut detail_lines = Vec::new();
-        if let Some(entry) = self.plugin_toggle.current() {
-            detail_lines.push(Line::from(Span::styled(
-                entry.display_name.clone(),
-                Style::default()
-                    .fg(Color::Rgb(255, 236, 175))
-                    .add_modifier(Modifier::BOLD),
-            )));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(vec![
-                Span::styled(
-                    "Desired state: ",
-                    Style::default().fg(Color::Rgb(205, 190, 140)),
-                ),
-                Span::raw(entry.state_label()),
-            ]));
-            detail_lines.push(Line::from(vec![
-                Span::styled(
-                    "Runtime status: ",
-                    Style::default().fg(Color::Rgb(205, 190, 140)),
-                ),
-                Span::raw(entry.runtime_status.clone()),
-            ]));
-            detail_lines.push(Line::from(vec![
-                Span::styled("Scope: ", Style::default().fg(Color::Rgb(205, 190, 140))),
-                Span::raw(self.plugin_toggle_scope.title()),
-            ]));
-            detail_lines.push(Line::from(vec![
-                Span::styled("Kind: ", Style::default().fg(Color::Rgb(205, 190, 140))),
-                Span::raw(entry.kind.clone()),
-            ]));
-            detail_lines.push(Line::from(vec![
-                Span::styled("Trust: ", Style::default().fg(Color::Rgb(205, 190, 140))),
-                Span::raw(entry.trust_level.clone()),
-            ]));
-            detail_lines.push(Line::from(vec![
-                Span::styled("Version: ", Style::default().fg(Color::Rgb(205, 190, 140))),
-                Span::raw(entry.version.clone()),
-            ]));
-            detail_lines.push(Line::from(vec![
-                Span::styled("Source: ", Style::default().fg(Color::Rgb(205, 190, 140))),
-                Span::raw(entry.source.clone()),
-            ]));
-            if let Some(install_source) = entry.install_source.as_deref() {
-                detail_lines.push(Line::from(vec![
-                    Span::styled(
-                        "Install source: ",
-                        Style::default().fg(Color::Rgb(205, 190, 140)),
-                    ),
-                    Span::raw(install_source.to_string()),
-                ]));
-            }
-            detail_lines.push(Line::from(vec![
-                Span::styled("Tools: ", Style::default().fg(Color::Rgb(205, 190, 140))),
-                Span::raw(if entry.tools.is_empty() {
-                    "none".into()
-                } else {
-                    entry.tools.join(", ")
-                }),
-            ]));
-            if !entry.cli_commands.is_empty() {
-                detail_lines.push(Line::from(vec![
-                    Span::styled("CLI: ", Style::default().fg(Color::Rgb(205, 190, 140))),
-                    Span::raw(entry.cli_commands.join(", ")),
-                ]));
-            }
-            if let Some(compatibility) = entry.compatibility.as_deref() {
-                detail_lines.push(Line::from(vec![
-                    Span::styled(
-                        "Compatibility: ",
-                        Style::default().fg(Color::Rgb(205, 190, 140)),
-                    ),
-                    Span::raw(compatibility.to_string()),
-                ]));
-            }
-            if !entry.related_skills.is_empty() {
-                detail_lines.push(Line::from(vec![
-                    Span::styled(
-                        "Related skills: ",
-                        Style::default().fg(Color::Rgb(205, 190, 140)),
-                    ),
-                    Span::raw(entry.related_skills.join(", ")),
-                ]));
-            }
-            detail_lines.push(Line::from(vec![
-                Span::styled(
-                    "Estimated prompt cost: ",
-                    Style::default().fg(Color::Rgb(205, 190, 140)),
-                ),
-                Span::raw(format!("~{} tokens", entry.estimated_tokens)),
-            ]));
-            if !entry.missing_env.is_empty() {
-                detail_lines.push(Line::from(vec![
-                    Span::styled(
-                        "Missing env: ",
-                        Style::default().fg(Color::Rgb(255, 180, 120)),
-                    ),
-                    Span::raw(entry.missing_env.join(", ")),
-                ]));
-            }
-            if entry.has_pending_change() {
-                detail_lines.push(Line::from(""));
-                detail_lines.push(Line::from(Span::styled(
-                    "This plugin has staged changes that are not saved yet.",
-                    Style::default().fg(Color::Rgb(255, 195, 120)),
-                )));
-            }
-            detail_lines.push(Line::from(""));
-            for line in entry.description.lines() {
-                detail_lines.push(Line::from(line.to_string()));
-            }
-        } else if self.plugin_toggle.items.is_empty() {
-            detail_lines.push(Line::from(Span::styled(
-                "No Local Plugins",
-                Style::default()
-                    .fg(Color::Rgb(255, 236, 175))
-                    .add_modifier(Modifier::BOLD),
-            )));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "Install a local Hermes plugin with `edgecrab plugins install ./path`, or press R to search remote plugin registries.",
-            ));
-        } else if self.plugin_toggle.query.trim().is_empty() {
-            detail_lines.push(Line::from(Span::styled(
-                "Installed Plugins",
-                Style::default()
-                    .fg(Color::Rgb(255, 236, 175))
-                    .add_modifier(Modifier::BOLD),
-            )));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "Browse installed plugins by status, tool surface, trust, and source.",
-            ));
-            detail_lines.push(Line::from(
-                "Space stages enable or disable changes. Enter saves them for the active scope.",
-            ));
-            detail_lines.push(Line::from(
-                "Tab switches between the list and detail panes. Use Left and Right to change the active policy scope.",
-            ));
-        } else {
-            detail_lines.push(Line::from("No plugins matched the current query."));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "Try a broader term, a tool name, a trust level, or press R to search remote sources.",
-            ));
-        }
-
-        if self.detail_fullscreen_active(DetailSurface::PluginToggle) {
-            self.render_fullscreen_browser_detail(
-                frame,
-                area,
-                FullscreenBrowserChrome {
-                    query: &self.plugin_toggle.query,
-                    header: BrowserChrome {
-                        title: &title,
-                        placeholder:
-                            "Search installed plugins by name, tool, CLI command, status, source, or trust.",
-                        icon: "🔌",
-                        icon_color: Color::Rgb(210, 190, 110),
-                        border_color: Color::Rgb(210, 190, 110),
-                    },
-                    detail: ScrollableDetailChrome {
-                        title: "Details",
-                        border_color: Color::Rgb(210, 190, 110),
-                        focused: true,
-                        requested_scroll: self
-                            .detail_fullscreen_scroll(DetailSurface::PluginToggle),
-                    },
-                    help: Line::from(vec![
-                        Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(210, 190, 110))),
-                        Span::styled("change item  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("type ", Style::default().fg(Color::Rgb(210, 190, 110))),
-                        Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-                        self.paging_key_help_span(Color::Rgb(210, 190, 110)),
-                        Span::styled("scroll detail  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Space ", Style::default().fg(Color::Rgb(210, 190, 110))),
-                        Span::styled("stage change  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Enter ", Style::default().fg(Color::Rgb(210, 190, 110))),
-                        Span::styled("save  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("←→ ", Style::default().fg(Color::Rgb(210, 190, 110))),
-                        Span::styled("scope  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("R ", Style::default().fg(Color::Rgb(210, 190, 110))),
-                        Span::styled("remote search  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Z ", Style::default().fg(Color::Rgb(210, 190, 110))),
-                        Span::styled("split view  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Esc ", Style::default().fg(Color::Rgb(210, 190, 110))),
-                        Span::styled("close", Style::default().fg(Color::DarkGray)),
-                    ]),
-                },
-                detail_lines,
-            );
-            return;
-        }
-        self.render_standard_split_detail(
-            frame,
-            body[1],
-            DetailSurface::PluginToggle,
-            Color::Rgb(210, 190, 110),
-            detail_lines,
-        );
-
-        let footer_note = self
-            .plugin_toggle_status_note
-            .clone()
-            .unwrap_or_else(|| plugin_toggle_status_line(&self.plugin_toggle.items));
-        let footer_summary = format!(
-            "{} · {} scope · {} pane",
-            footer_note,
-            self.plugin_toggle_scope.title(),
-            self.simple_split_focus_label(DetailSurface::PluginToggle)
-        );
-        let mut help_spans = vec![
-            Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(210, 190, 110))),
-            Span::styled("browse  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("type ", Style::default().fg(Color::Rgb(210, 190, 110))),
-            Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-        ];
-        help_spans.extend(self.focus_pane_help_spans(Color::Rgb(210, 190, 110)));
-        help_spans.extend(self.page_or_scroll_help_spans(Color::Rgb(210, 190, 110)));
-        help_spans.extend([
-            Span::styled("Space ", Style::default().fg(Color::Rgb(210, 190, 110))),
-            Span::styled("stage change  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter ", Style::default().fg(Color::Rgb(210, 190, 110))),
-            Span::styled("save  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("←→ ", Style::default().fg(Color::Rgb(210, 190, 110))),
-            Span::styled("scope  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("R ", Style::default().fg(Color::Rgb(210, 190, 110))),
-            Span::styled("remote search  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Z ", Style::default().fg(Color::Rgb(210, 190, 110))),
-            Span::styled("detail  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(Color::Rgb(210, 190, 110))),
-            Span::styled("close  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                edgecrab_core::safe_truncate(&footer_summary, 62),
-                Style::default().fg(Color::Rgb(120, 120, 110)),
-            ),
-        ]);
-        let help = Paragraph::new(Line::from(help_spans));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    fn build_config_detail_lines(&self, entry: Option<&ConfigEntry>) -> Vec<Line<'static>> {
-        let mut detail_lines = Vec::new();
-        if let Some(entry) = entry {
-            detail_lines.push(Line::from(Span::styled(
-                entry.title.clone(),
-                Style::default()
-                    .fg(Color::Rgb(130, 210, 255))
-                    .add_modifier(Modifier::BOLD),
-            )));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(entry.detail.clone()));
-            detail_lines.push(Line::from(""));
-            let detail_body = match entry.action {
-                ConfigAction::ShowSummary => self.render_config_summary(),
-                ConfigAction::ShowPaths => self.render_config_paths(),
-                ConfigAction::ShowWorktree => self.render_worktree_report(),
-                ConfigAction::OpenTools => {
-                    "Press Enter to open the live tool manager. Use Tab to move between the list and detail panes, Left and Right to change scope, Space to toggle toolsets or individual tools, and R to restore defaults.".into()
-                }
-                ConfigAction::OpenGatewayBrowser => {
-                    "Press Enter to open the gateway control browser. From there you can toggle platforms, edit bind settings, change allowlists, update home channels, and restart the gateway runtime without leaving the TUI.".into()
-                }
-                ConfigAction::ShowGatewayHomes => {
-                    let config = self.load_runtime_config();
-                    self.render_gateway_home_channel_summary(&config)
-                }
-                ConfigAction::ShowVoice => format!(
-                    "Voice readback is {}.\nRun `/voice status` for recorder, provider, and push-to-talk details.",
-                    if self.voice_mode_enabled {
-                        "enabled"
-                    } else {
-                        "disabled"
-                    }
-                ),
-                ConfigAction::ShowUpdateStatus => {
-                    "Runs the local git-based update check and prints ahead/behind guidance.".into()
-                }
-                ConfigAction::OpenModel => "Press Enter to open the model selector overlay.".into(),
-                ConfigAction::OpenCheapModel => {
-                    "Press Enter to open the cheap-model selector. Selecting a model enables smart routing for obviously simple turns.".into()
-                }
-                ConfigAction::ToggleMoa => {
-                    "Press Enter to enable or disable the moa tool while keeping the saved aggregator and expert roster.".into()
-                }
-                ConfigAction::OpenVisionModel => {
-                    "Press Enter to open the dedicated vision-model selector.".into()
-                }
-                ConfigAction::OpenImageModel => {
-                    "Press Enter to open the image-model selector.".into()
-                }
-                ConfigAction::OpenMoaAggregator => {
-                    "Press Enter to pick the default aggregator model used by the moa tool.".into()
-                }
-                ConfigAction::OpenMoaReferences => {
-                    "Press Enter to edit the full default MoA expert roster. Use Space to toggle experts and Enter to save.".into()
-                }
-                ConfigAction::AddMoaExpert => {
-                    "Press Enter to choose one model to add to the saved MoA expert roster.".into()
-                }
-                ConfigAction::RemoveMoaExpert => {
-                    "Press Enter to choose one configured expert to remove from the saved MoA roster.".into()
-                }
-                ConfigAction::ToggleStreaming => {
-                    "Press Enter to toggle live token streaming.".into()
-                }
-                ConfigAction::ToggleReasoning => {
-                    "Press Enter to toggle visible reasoning output.".into()
-                }
-                ConfigAction::ToggleStatusBar => {
-                    "Press Enter to show or hide the status bar.".into()
-                }
-                ConfigAction::OpenLogs => {
-                    "Press Enter to open the local log browser. Inside it you can inspect file tails, drill into individual entries, and save the default log level for future launches.".into()
-                }
-                ConfigAction::OpenSkins => {
-                    "Press Enter to browse installed skins and apply one live.".into()
-                }
-            };
-            for line in detail_body.lines() {
-                detail_lines.push(Line::from(line.to_string()));
-            }
-        }
-        detail_lines
-    }
-
-    fn render_config_selector(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
-
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Min(1),
-                Constraint::Length(1),
-            ])
-            .split(area);
-        let body = Layout::default()
-            .direction(Direction::Horizontal)
-            .constraints([Constraint::Percentage(58), Constraint::Percentage(42)])
-            .split(chunks[1]);
-
-        let search_text = if self.config_selector.query.is_empty() {
-            "Type to filter settings and controls…".to_string()
-        } else {
-            self.config_selector.query.clone()
-        };
-        let search_style = if self.config_selector.query.is_empty() {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        let search = Paragraph::new(Line::from(vec![
-            Span::styled("  ⚙ ", Style::default().fg(Color::Rgb(130, 210, 255))),
-            Span::styled(search_text, search_style),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(130, 210, 255)))
-                .title(" Config Center  [/config] "),
-        );
-        frame.render_widget(search, chunks[0]);
-
-        let filtered = &self.config_selector.filtered;
-        let selected = self.config_selector.selected;
-        let max_visible = body[0].height as usize;
-        let scroll_start = if selected >= max_visible {
-            selected - max_visible + 1
-        } else {
-            0
-        };
-
-        let items: Vec<ListItem> = if filtered.is_empty() {
-            vec![ListItem::new(Line::from(Span::styled(
-                "  No settings matched the current filter.",
-                Style::default().fg(Color::Rgb(120, 120, 135)),
-            )))]
-        } else {
-            filtered
-                .iter()
-                .skip(scroll_start)
-                .take(max_visible)
-                .enumerate()
-                .map(|(vis_idx, &entry_idx)| {
-                    let entry = &self.config_selector.items[entry_idx];
-                    let is_selected = vis_idx + scroll_start == selected;
-                    let bg = if is_selected {
-                        Color::Rgb(22, 36, 44)
-                    } else {
-                        Color::Rgb(18, 22, 28)
-                    };
-                    let tag_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(150, 180, 200))
-                    } else {
-                        Style::default().fg(Color::Rgb(105, 125, 140))
-                    };
-                    let title_style = if is_selected {
-                        Style::default()
-                            .bg(bg)
-                            .fg(Color::Rgb(130, 210, 255))
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Rgb(220, 232, 240))
-                    };
-                    let detail_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(172, 190, 204))
-                    } else {
-                        Style::default().fg(Color::Rgb(125, 140, 150))
-                    };
-                    ListItem::new(Line::from(vec![
-                        selector_marker(is_selected, Color::Rgb(130, 210, 255), Some(bg)),
-                        Span::styled(format!("  {:<9}", entry.tag), tag_style),
-                        Span::styled(unicode_pad_right(&entry.title, 28), title_style),
-                        Span::raw("  "),
-                        Span::styled(unicode_trunc(&entry.detail, 54), detail_style),
-                    ]))
-                })
-                .collect()
-        };
-        frame.render_widget(
-            List::new(items).style(Style::default().bg(Color::Rgb(18, 22, 28))),
-            body[0],
-        );
-
-        let detail_lines = self.build_config_detail_lines(self.config_selector.current());
-        if self.detail_fullscreen_active(DetailSurface::ConfigSelector) {
-            self.render_fullscreen_browser_detail(
-                frame,
-                area,
-                FullscreenBrowserChrome {
-                    query: &self.config_selector.query,
-                    header: BrowserChrome {
-                        title: "Config Center",
-                        placeholder: "Type to filter settings and controls…",
-                        icon: "⚙",
-                        icon_color: Color::Rgb(130, 210, 255),
-                        border_color: Color::Rgb(130, 210, 255),
-                    },
-                    detail: ScrollableDetailChrome {
-                        title: "Details",
-                        border_color: Color::Rgb(130, 210, 255),
-                        focused: true,
-                        requested_scroll: self
-                            .detail_fullscreen_scroll(DetailSurface::ConfigSelector),
-                    },
-                    help: Line::from(vec![
-                        Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(130, 210, 255))),
-                        Span::styled("change item  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("type ", Style::default().fg(Color::Rgb(130, 210, 255))),
-                        Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-                        self.paging_key_help_span(Color::Rgb(130, 210, 255)),
-                        Span::styled("scroll detail  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Enter ", Style::default().fg(Color::Rgb(130, 210, 255))),
-                        Span::styled("run action  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Z ", Style::default().fg(Color::Rgb(130, 210, 255))),
-                        Span::styled("split view  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Esc ", Style::default().fg(Color::Rgb(130, 210, 255))),
-                        Span::styled("close  ", Style::default().fg(Color::DarkGray)),
-                    ]),
-                },
-                detail_lines,
-            );
-            return;
-        }
-        self.render_standard_split_detail(
-            frame,
-            body[1],
-            DetailSurface::ConfigSelector,
-            Color::Rgb(130, 210, 255),
-            detail_lines,
-        );
-
-        let mut help_spans = vec![
-            Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(130, 210, 255))),
-            Span::styled("browse  ", Style::default().fg(Color::DarkGray)),
-        ];
-        help_spans.extend(self.focus_pane_help_spans(Color::Rgb(130, 210, 255)));
-        help_spans.extend(self.page_or_scroll_help_spans(Color::Rgb(130, 210, 255)));
-        help_spans.extend([
-            Span::styled("Enter ", Style::default().fg(Color::Rgb(130, 210, 255))),
-            Span::styled("run action  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Z ", Style::default().fg(Color::Rgb(130, 210, 255))),
-            Span::styled("detail  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(Color::Rgb(130, 210, 255))),
-            Span::styled("cancel  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!(
-                    "{} item(s) · {} pane",
-                    filtered.len(),
-                    self.simple_split_focus_label(DetailSurface::ConfigSelector)
-                ),
-                Style::default().fg(Color::Rgb(100, 120, 130)),
-            ),
-        ]);
-        let help = Paragraph::new(Line::from(help_spans));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    fn render_gateway_browser(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
-
-        let chunks = Self::browser_overlay_chunks(area);
-        let body = Self::browser_body_chunks(chunks[1]);
-        self.render_browser_header(
-            frame,
-            chunks[0],
-            &self.gateway_browser.query,
-            BrowserChrome {
-                title: "Gateway Control",
-                placeholder:
-                    "Search platforms by name, state, delivery mode, or missing setup fields.",
-                icon: "⛵",
-                icon_color: Color::Rgb(120, 220, 200),
-                border_color: Color::Rgb(120, 220, 200),
-            },
-        );
-
-        let filtered = &self.gateway_browser.filtered;
-        let selected = self.gateway_browser.selected;
-        let max_visible = Self::browser_list_visible_rows(body[0], false);
-        let scroll_start = Self::browser_scroll_start(selected, max_visible);
-
-        let items: Vec<ListItem> = if filtered.is_empty() {
-            vec![ListItem::new(Line::from(Span::styled(
-                "  No gateway platforms matched this filter.".to_string(),
-                Style::default().fg(Color::Rgb(120, 120, 135)),
-            )))]
-        } else {
-            filtered
-                .iter()
-                .skip(scroll_start)
-                .take(max_visible)
-                .enumerate()
-                .map(|(vis_idx, &entry_idx)| {
-                    let entry = &self.gateway_browser.items[entry_idx];
-                    let is_selected = vis_idx + scroll_start == selected;
-                    let bg = if is_selected {
-                        Color::Rgb(18, 42, 42)
-                    } else {
-                        Color::Rgb(18, 22, 28)
-                    };
-                    let accent = match entry.diagnostic.state {
-                        crate::gateway_catalog::PlatformState::Ready => Color::Rgb(120, 220, 160),
-                        crate::gateway_catalog::PlatformState::Available => {
-                            Color::Rgb(170, 210, 120)
-                        }
-                        crate::gateway_catalog::PlatformState::Incomplete => {
-                            Color::Rgb(255, 180, 110)
-                        }
-                        crate::gateway_catalog::PlatformState::NotConfigured => {
-                            Color::Rgb(120, 140, 150)
-                        }
-                    };
-                    let tag_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(155, 185, 175))
-                    } else {
-                        Style::default().fg(Color::Rgb(105, 125, 118))
-                    };
-                    let title_style = if is_selected {
-                        Style::default()
-                            .bg(bg)
-                            .fg(accent)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(accent)
-                    };
-                    let detail_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(175, 195, 188))
-                    } else {
-                        Style::default().fg(Color::Rgb(125, 140, 150))
-                    };
-
-                    ListItem::new(Line::from(vec![
-                        selector_marker(is_selected, accent, Some(bg)),
-                        Span::styled(
-                            format!("  {:<16}", entry.diagnostic.state.label()),
-                            tag_style,
-                        ),
-                        Span::styled(unicode_pad_right(entry.diagnostic.name, 12), title_style),
-                        Span::raw("  "),
-                        Span::styled(unicode_trunc(&entry.summary, 64), detail_style),
-                    ]))
-                })
-                .collect()
-        };
-        frame.render_widget(
-            List::new(items).style(Style::default().bg(Color::Rgb(18, 22, 28))),
-            body[0],
-        );
-
-        let mut detail_lines = Vec::new();
-        if let Some(entry) = self.gateway_browser.current() {
-            for line in entry.detail_view.lines() {
-                detail_lines.push(Line::from(line.to_string()));
-            }
-        } else {
-            detail_lines.push(Line::from(Span::styled(
-                "Gateway Control",
-                Style::default()
-                    .fg(Color::Rgb(120, 220, 200))
-                    .add_modifier(Modifier::BOLD),
-            )));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "This browser turns `/platforms` into an operator cockpit instead of a text dump.",
-            ));
-            detail_lines.push(Line::from(
-                "Use Enter for the next setup field, Space to toggle enablement, and B to edit the gateway bind address without leaving the TUI.",
-            ));
-        }
-
-        if self.detail_fullscreen_active(DetailSurface::GatewayBrowser) {
-            self.render_fullscreen_browser_detail(
-                frame,
-                area,
-                FullscreenBrowserChrome {
-                    query: &self.gateway_browser.query,
-                    header: BrowserChrome {
-                        title: "Gateway Control",
-                        placeholder:
-                            "Search platforms by name, state, delivery mode, or missing setup fields.",
-                        icon: "⛵",
-                        icon_color: Color::Rgb(120, 220, 200),
-                        border_color: Color::Rgb(120, 220, 200),
-                    },
-                    detail: ScrollableDetailChrome {
-                        title: "Details",
-                        border_color: Color::Rgb(120, 220, 200),
-                        focused: true,
-                        requested_scroll: self
-                            .detail_fullscreen_scroll(DetailSurface::GatewayBrowser),
-                    },
-                    help: Line::from(vec![
-                        Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(120, 220, 200))),
-                        Span::styled("change item  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("type ", Style::default().fg(Color::Rgb(120, 220, 200))),
-                        Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-                        self.paging_key_help_span(Color::Rgb(120, 220, 200)),
-                        Span::styled("scroll detail  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Enter ", Style::default().fg(Color::Rgb(120, 220, 200))),
-                        Span::styled("edit setup  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Space ", Style::default().fg(Color::Rgb(120, 220, 200))),
-                        Span::styled("toggle  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("X ", Style::default().fg(Color::Rgb(120, 220, 200))),
-                        Span::styled("restart  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Z ", Style::default().fg(Color::Rgb(120, 220, 200))),
-                        Span::styled("split view  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Esc ", Style::default().fg(Color::Rgb(120, 220, 200))),
-                        Span::styled("close  ", Style::default().fg(Color::DarkGray)),
-                    ]),
-                },
-                detail_lines,
-            );
-            return;
-        }
-
-        self.render_scrollable_browser_detail(
-            frame,
-            body[1],
-            ScrollableDetailChrome {
-                title: "Details",
-                border_color: Color::Rgb(120, 220, 200),
-                focused: self.gateway_browser_pane.focus == SplitPaneFocus::Detail,
-                requested_scroll: self.gateway_browser_pane.scroll,
-            },
-            detail_lines,
-        );
-
-        let help = Paragraph::new(Line::from(vec![
-            Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(120, 220, 200))),
-            Span::styled("browse  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter ", Style::default().fg(Color::Rgb(120, 220, 200))),
-            Span::styled("edit key field  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Space ", Style::default().fg(Color::Rgb(120, 220, 200))),
-            Span::styled("toggle  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("A ", Style::default().fg(Color::Rgb(120, 220, 200))),
-            Span::styled("allowlist  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("H ", Style::default().fg(Color::Rgb(120, 220, 200))),
-            Span::styled("home  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("B ", Style::default().fg(Color::Rgb(120, 220, 200))),
-            Span::styled("bind  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("R ", Style::default().fg(Color::Rgb(120, 220, 200))),
-            Span::styled("refresh  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("X ", Style::default().fg(Color::Rgb(120, 220, 200))),
-            Span::styled("restart  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Z ", Style::default().fg(Color::Rgb(120, 220, 200))),
-            Span::styled("detail  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(Color::Rgb(120, 220, 200))),
-            Span::styled("close  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!("{} platform(s)", filtered.len()),
-                Style::default().fg(Color::Rgb(95, 120, 112)),
-            ),
-        ]));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    fn render_log_browser(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
-
-        let accent = Color::Rgb(255, 196, 120);
-        let chunks = Self::browser_overlay_chunks(area);
-        let body = Self::browser_body_chunks(chunks[1]);
-        self.render_browser_header(
-            frame,
-            chunks[0],
-            &self.log_browser.query,
-            BrowserChrome {
-                title: "Log Browser",
-                placeholder: "Search log files by name, type, preview text, or size.",
-                icon: "◷",
-                icon_color: accent,
-                border_color: accent,
-            },
-        );
-
-        let filtered = &self.log_browser.filtered;
-        let selected = self.log_browser.selected;
-        let max_visible = Self::browser_list_visible_rows(body[0], true);
-        let scroll_start = Self::browser_scroll_start(selected, max_visible);
-
-        let items: Vec<ListItem> = if filtered.is_empty() {
-            vec![ListItem::new(Line::from(Span::styled(
-                "  No log files matched the current filter.",
-                Style::default().fg(Color::Rgb(120, 120, 135)),
-            )))]
-        } else {
-            filtered
-                .iter()
-                .skip(scroll_start)
-                .take(max_visible)
-                .enumerate()
-                .map(|(vis_idx, &entry_idx)| {
-                    let entry = &self.log_browser.items[entry_idx];
-                    let is_selected = vis_idx + scroll_start == selected;
-                    let bg = if is_selected {
-                        Color::Rgb(46, 34, 20)
-                    } else {
-                        Color::Rgb(18, 22, 28)
-                    };
-                    let tag_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(230, 188, 140))
-                    } else {
-                        Style::default().fg(Color::Rgb(150, 126, 100))
-                    };
-                    let title_style = if is_selected {
-                        Style::default()
-                            .bg(bg)
-                            .fg(accent)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Rgb(232, 226, 214))
-                    };
-                    let detail_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(208, 182, 150))
-                    } else {
-                        Style::default().fg(Color::Rgb(140, 136, 128))
-                    };
-                    let preview_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(220, 204, 184))
-                    } else {
-                        Style::default().fg(Color::Rgb(150, 150, 150))
-                    };
-
-                    ListItem::new(Line::from(vec![
-                        selector_marker(is_selected, accent, Some(bg)),
-                        Span::styled(format!("  {:<8}", entry.kind), tag_style),
-                        Span::styled(unicode_trunc(&entry.name, 24), title_style),
-                        Span::raw("  "),
-                        Span::styled(unicode_trunc(&entry.detail, 30), detail_style),
-                        Span::raw("  "),
-                        Span::styled(unicode_trunc(&entry.preview, 28), preview_style),
-                    ]))
-                })
-                .collect()
-        };
-        let list_border_style = if self.log_browser_pane.focus == SplitPaneFocus::List {
-            Style::default().fg(accent).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Rgb(60, 80, 84))
-        };
-        frame.render_widget(
-            List::new(items)
-                .style(Style::default().bg(Color::Rgb(18, 22, 28)))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(list_border_style)
-                        .title(" Files "),
-                ),
-            body[0],
-        );
-
-        let detail_lines = if let Some(entry) = self.log_browser.current() {
-            let mut lines = vec![Line::from(vec![
-                Span::styled(
-                    format!("{} ", entry.kind),
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(entry.name.clone()),
-            ])];
-            lines.push(Line::from(""));
-            lines.extend(
-                entry
-                    .detail_view
-                    .lines()
-                    .map(|line| Line::from(line.to_string())),
-            );
-            lines
-        } else {
-            default_log_browser_detail_lines()
-        };
-
-        self.render_scrollable_browser_detail(
-            frame,
-            body[1],
-            ScrollableDetailChrome {
-                title: "Details",
-                border_color: accent,
-                focused: self.log_browser_pane.focus == SplitPaneFocus::Detail,
-                requested_scroll: self.log_browser_pane.scroll,
-            },
-            detail_lines.clone(),
-        );
-        if self.detail_fullscreen_active(DetailSurface::LogBrowser) {
-            self.render_fullscreen_browser_detail(
-                frame,
-                area,
-                FullscreenBrowserChrome {
-                    query: &self.log_browser.query,
-                    header: BrowserChrome {
-                        title: "Log Browser",
-                        placeholder: "Search log files by name, type, preview text, or size.",
-                        icon: "◷",
-                        icon_color: accent,
-                        border_color: accent,
-                    },
-                    detail: ScrollableDetailChrome {
-                        title: "Details",
-                        border_color: accent,
-                        focused: true,
-                        requested_scroll: self.detail_fullscreen_scroll(DetailSurface::LogBrowser),
-                    },
-                    help: Line::from(vec![
-                        Span::styled(" ↑↓ ", Style::default().fg(accent)),
-                        Span::styled("change file  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("type ", Style::default().fg(accent)),
-                        Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-                        self.paging_key_help_span(accent),
-                        Span::styled("scroll detail  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Enter ", Style::default().fg(accent)),
-                        Span::styled("inspect  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("F ", Style::default().fg(accent)),
-                        Span::styled("follow  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("1-5 ", Style::default().fg(accent)),
-                        Span::styled("level  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Z ", Style::default().fg(accent)),
-                        Span::styled("split view  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Esc ", Style::default().fg(accent)),
-                        Span::styled("close", Style::default().fg(Color::DarkGray)),
-                    ]),
-                },
-                detail_lines,
-            );
-            return;
-        }
-
-        let note = self.log_browser_status_note.as_deref().unwrap_or(
-            "Lowercase refines the filter. Enter opens an entry inspector for the selected file tail.",
-        );
-        let help = Paragraph::new(Line::from(vec![
-            Span::styled(" ↑↓ ", Style::default().fg(accent)),
-            Span::styled("files  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Tab ", Style::default().fg(accent)),
-            Span::styled("focus pane  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("type ", Style::default().fg(accent)),
-            Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-            self.paging_key_help_span(accent),
-            Span::styled("page or scroll  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter ", Style::default().fg(accent)),
-            Span::styled("inspect  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("R ", Style::default().fg(accent)),
-            Span::styled("reload  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("F ", Style::default().fg(accent)),
-            Span::styled("follow  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("1-5 ", Style::default().fg(accent)),
-            Span::styled("level  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Z ", Style::default().fg(accent)),
-            Span::styled("detail  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(accent)),
-            Span::styled("close  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!(
-                    "{} file(s) · {} pane · {}",
-                    filtered.len(),
-                    match self.log_browser_pane.focus {
-                        SplitPaneFocus::List => "list",
-                        SplitPaneFocus::Detail => "detail",
-                    },
-                    note
-                ),
-                Style::default().fg(Color::Rgb(130, 120, 105)),
-            ),
-        ]));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    fn build_log_inspector_detail_lines(&self) -> Vec<Line<'static>> {
-        let mut detail_lines = Vec::new();
-        if let Some(file) = self.log_inspector.file.as_ref() {
-            detail_lines.push(Line::from(vec![
-                Span::styled(
-                    file.name.clone(),
-                    Style::default()
-                        .fg(Color::Rgb(255, 196, 120))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(format!("  ({})", file.kind)),
-            ]));
-            detail_lines.push(Line::from(format!(
-                "{} · modified {}",
-                file.size_label, file.modified_label
-            )));
-            detail_lines.push(Line::from(format!("Path: {}", file.path.display())));
-            detail_lines.push(Line::from(format!(
-                "Live follow: {}",
-                self.log_follow.badge()
-            )));
-            if !file.preview.is_empty() {
-                detail_lines.push(Line::from(format!("Tail preview: {}", file.preview)));
-            }
-            if !self.log_inspector.selector.query.trim().is_empty() {
-                detail_lines.push(Line::from(format!(
-                    "Local filter: {}",
-                    self.log_inspector.selector.query
-                )));
-            }
-            detail_lines.push(Line::from(""));
-
-            if let Some(entry) = self.log_inspector.selector.current() {
-                detail_lines.push(Line::from(Span::styled(
-                    "Selected entry",
-                    Style::default().add_modifier(Modifier::BOLD),
-                )));
-                detail_lines.push(Line::from(format!(
-                    "{} · {}",
-                    entry.level_label, entry.timestamp
-                )));
-                detail_lines.push(Line::from(format!("Summary: {}", entry.summary)));
-                detail_lines.push(Line::from(""));
-                for line in entry.detail.lines() {
-                    detail_lines.push(Line::from(line.to_string()));
-                }
-            } else {
-                detail_lines.push(Line::from(
-                    "No log entry is selected. Clear the filter or move the cursor to inspect the tail.",
-                ));
-            }
-        }
-        detail_lines
-    }
-
-    fn render_log_inspector(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
-
-        let accent = Color::Rgb(255, 196, 120);
-        let chunks = Self::browser_overlay_chunks(area);
-        let body = Self::browser_body_chunks(chunks[1]);
-        self.render_browser_header(
-            frame,
-            chunks[0],
-            &self.log_inspector.selector.query,
-            BrowserChrome {
-                title: "Log Inspector",
-                placeholder: "Filter the selected file tail by level, timestamp, message, or stacktrace text.",
-                icon: "⌘",
-                icon_color: accent,
-                border_color: accent,
-            },
-        );
-
-        let filtered = &self.log_inspector.selector.filtered;
-        let selected = self.log_inspector.selector.selected;
-        let max_visible = Self::browser_list_visible_rows(body[0], true);
-        let scroll_start = Self::browser_scroll_start(selected, max_visible);
-
-        let items: Vec<ListItem> = if filtered.is_empty() {
-            vec![ListItem::new(Line::from(Span::styled(
-                "  No log entries matched the current filter.",
-                Style::default().fg(Color::Rgb(120, 120, 135)),
-            )))]
-        } else {
-            filtered
-                .iter()
-                .skip(scroll_start)
-                .take(max_visible)
-                .enumerate()
-                .map(|(vis_idx, &entry_idx)| {
-                    let entry = &self.log_inspector.selector.items[entry_idx];
-                    let is_selected = vis_idx + scroll_start == selected;
-                    let bg = if is_selected {
-                        Color::Rgb(46, 34, 20)
-                    } else {
-                        Color::Rgb(18, 22, 28)
-                    };
-                    let tag_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(255, 210, 150))
-                    } else {
-                        Style::default().fg(Color::Rgb(170, 140, 112))
-                    };
-                    let title_style = if is_selected {
-                        Style::default()
-                            .bg(bg)
-                            .fg(accent)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Rgb(225, 220, 210))
-                    };
-                    let detail_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(215, 194, 168))
-                    } else {
-                        Style::default().fg(Color::Rgb(145, 145, 145))
-                    };
-
-                    ListItem::new(Line::from(vec![
-                        selector_marker(is_selected, accent, Some(bg)),
-                        Span::styled(format!("  {:<6}", entry.level_label), tag_style),
-                        Span::styled(unicode_trunc(&entry.timestamp, 19), detail_style),
-                        Span::raw("  "),
-                        Span::styled(unicode_trunc(&entry.summary, 72), title_style),
-                    ]))
-                })
-                .collect()
-        };
-        let list_border_style = if self.log_inspector.pane.focus == SplitPaneFocus::List {
-            Style::default().fg(accent).add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Rgb(60, 80, 84))
-        };
-        frame.render_widget(
-            List::new(items)
-                .style(Style::default().bg(Color::Rgb(18, 22, 28)))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(list_border_style)
-                        .title(" Entries "),
-                ),
-            body[0],
-        );
-
-        let detail_lines = self.build_log_inspector_detail_lines();
-        self.render_scrollable_browser_detail(
-            frame,
-            body[1],
-            ScrollableDetailChrome {
-                title: "Details",
-                border_color: accent,
-                focused: self.log_inspector.pane.focus == SplitPaneFocus::Detail,
-                requested_scroll: self.log_inspector.pane.scroll,
-            },
-            detail_lines.clone(),
-        );
-        if self.detail_fullscreen_active(DetailSurface::LogInspector) {
-            self.render_fullscreen_browser_detail(
-                frame,
-                area,
-                FullscreenBrowserChrome {
-                    query: &self.log_inspector.selector.query,
-                    header: BrowserChrome {
-                        title: "Log Inspector",
-                        placeholder: "Filter the selected file tail by level, timestamp, message, or stacktrace text.",
-                        icon: "⌘",
-                        icon_color: accent,
-                        border_color: accent,
-                    },
-                    detail: ScrollableDetailChrome {
-                        title: "Details",
-                        border_color: accent,
-                        focused: true,
-                        requested_scroll: self.detail_fullscreen_scroll(DetailSurface::LogInspector),
-                    },
-                    help: Line::from(vec![
-                        Span::styled(" ↑↓ ", Style::default().fg(accent)),
-                        Span::styled("change entry  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("type ", Style::default().fg(accent)),
-                        Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-                        self.paging_key_help_span(accent),
-                        Span::styled("scroll detail  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("B ", Style::default().fg(accent)),
-                        Span::styled("back  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("R ", Style::default().fg(accent)),
-                        Span::styled("reload  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("F ", Style::default().fg(accent)),
-                        Span::styled("follow  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("1-5 ", Style::default().fg(accent)),
-                        Span::styled("level  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Z ", Style::default().fg(accent)),
-                        Span::styled("split view  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Esc ", Style::default().fg(accent)),
-                        Span::styled("close", Style::default().fg(Color::DarkGray)),
-                    ]),
-                },
-                detail_lines,
-            );
-            return;
-        }
-
-        let help = Paragraph::new(Line::from(vec![
-            Span::styled(" ↑↓ ", Style::default().fg(accent)),
-            Span::styled("entries  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Tab ", Style::default().fg(accent)),
-            Span::styled("focus pane  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("type ", Style::default().fg(accent)),
-            Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-            self.paging_key_help_span(accent),
-            Span::styled("page or scroll  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("B ", Style::default().fg(accent)),
-            Span::styled("back  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("R ", Style::default().fg(accent)),
-            Span::styled("reload  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("F ", Style::default().fg(accent)),
-            Span::styled("follow  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("1-5 ", Style::default().fg(accent)),
-            Span::styled("level  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Z ", Style::default().fg(accent)),
-            Span::styled("detail  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(accent)),
-            Span::styled("close  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!(
-                    "{} entry(s) · {} pane · {}",
-                    filtered.len(),
-                    match self.log_inspector.pane.focus {
-                        SplitPaneFocus::List => "list",
-                        SplitPaneFocus::Detail => "detail",
-                    },
-                    self.log_follow.badge()
-                ),
-                Style::default().fg(Color::Rgb(130, 120, 105)),
-            ),
-        ]));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    // ─────────────────────────────────────────────────────────────────────────
-    // ── Gateway Diagnostics Overlay ──────────────────────────────────────────
-    // ─────────────────────────────────────────────────────────────────────────
-
-    /// Render the full-screen Gateway Diagnostics overlay.
-    ///
-    /// DRY: re-uses `browser_overlay_chunks` and the established accent palette
-    /// so it inherits the same visual language as other overlays with zero
-    /// extra styling primitives.
-    fn render_diagnose_panel(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
-
-        // Accent: teal — distinct from the warm-amber log/model overlays.
-        let accent = Color::Rgb(80, 220, 200);
-        let heading_color = Color::Rgb(255, 220, 100);
-        let ok_color = Color::Rgb(100, 220, 100);
-        let err_color = Color::Rgb(255, 100, 80);
-        let warn_color = Color::Rgb(255, 180, 50);
-        let dim_color = Color::Rgb(130, 130, 140);
-        let bg = Color::Rgb(14, 20, 26);
-
-        // ── Layout ───────────────────────────────────────────────────────────
-        // 3 rows: header bar (3) / body / footer (1)
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3),
-                Constraint::Min(1),
-                Constraint::Length(1),
-            ])
-            .split(area);
-
-        // ── Header ───────────────────────────────────────────────────────────
-        let title_text = if self.diagnose_panel.refresh_in_flight {
-            "  Gateway Diagnostics  ·  refreshing…"
-        } else {
-            "  Gateway Diagnostics  ·  /gateway diagnose"
-        };
-        let header = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(accent))
-            .title(Span::styled(
-                title_text,
-                Style::default().fg(accent).add_modifier(Modifier::BOLD),
-            ))
-            .style(Style::default().bg(bg));
-        frame.render_widget(header, chunks[0]);
-
-        // ── Body: colorized report lines ─────────────────────────────────────
-        let report_lines: Vec<Line> = self
-            .diagnose_panel
-            .report
-            .lines()
-            .map(|raw| {
-                Self::colorize_diagnose_line(
-                    raw,
-                    ok_color,
-                    err_color,
-                    warn_color,
-                    heading_color,
-                    dim_color,
-                    accent,
-                )
-            })
-            .collect();
-
-        let visible_height = chunks[1].height.saturating_sub(2) as usize;
-        let scroll = self
-            .diagnose_panel
-            .scroll
-            .min(self.diagnose_panel.total_lines.saturating_sub(1));
-
-        let paragraph = Paragraph::new(report_lines)
-            .scroll((scroll as u16, 0))
-            .style(Style::default().bg(bg).fg(Color::Rgb(225, 220, 210)))
-            .block(
-                Block::default()
-                    .borders(Borders::LEFT | Borders::RIGHT | Borders::BOTTOM)
-                    .border_style(Style::default().fg(Color::Rgb(50, 70, 80)))
-                    .style(Style::default().bg(bg)),
-            )
-            .wrap(ratatui::widgets::Wrap { trim: false });
-        frame.render_widget(paragraph, chunks[1]);
-
-        // Scroll position indicator (top-right of body border)
-        let total = self.diagnose_panel.total_lines;
-        let bottom = (scroll + visible_height).min(total);
-        let pos_text = format!(" {scroll}–{bottom}/{total} ");
-        let pos_x = chunks[1]
-            .x
-            .saturating_add(chunks[1].width.saturating_sub(pos_text.len() as u16 + 1));
-        let pos_area = Rect {
-            x: pos_x,
-            y: chunks[1].y + chunks[1].height.saturating_sub(1),
-            width: pos_text.len() as u16,
-            height: 1,
-        };
-        frame.render_widget(
-            Paragraph::new(Span::styled(pos_text, Style::default().fg(dim_color))),
-            pos_area,
-        );
-
-        // ── Footer: key hints ────────────────────────────────────────────────
-        let help = Paragraph::new(Line::from(vec![
-            Span::styled(" ↑↓ ", Style::default().fg(accent)),
-            Span::styled("scroll  ", Style::default().fg(dim_color)),
-            Span::styled("PgUp/PgDn ", Style::default().fg(accent)),
-            Span::styled("page  ", Style::default().fg(dim_color)),
-            Span::styled("R ", Style::default().fg(accent)),
-            Span::styled("refresh  ", Style::default().fg(dim_color)),
-            Span::styled("Esc/Q ", Style::default().fg(accent)),
-            Span::styled("close", Style::default().fg(dim_color)),
-        ]));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    /// Handle keyboard input while the Gateway Diagnostics overlay is open.
-    fn handle_diagnose_panel_key(&mut self, key: event::KeyEvent) {
-        let page = self.output_area_height.max(4).saturating_sub(2) as usize;
-        match key.code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {
-                self.diagnose_panel.active = false;
-            }
-            KeyCode::Up | KeyCode::Char('k') | KeyCode::Char('K') => {
-                self.diagnose_panel.scroll = self.diagnose_panel.scroll.saturating_sub(1);
-            }
-            KeyCode::Down | KeyCode::Char('j') | KeyCode::Char('J') => {
-                let max = self.diagnose_panel.total_lines.saturating_sub(1);
-                self.diagnose_panel.scroll = (self.diagnose_panel.scroll + 1).min(max);
-            }
-            KeyCode::PageUp => {
-                self.diagnose_panel.scroll = self.diagnose_panel.scroll.saturating_sub(page);
-            }
-            KeyCode::PageDown => {
-                let max = self.diagnose_panel.total_lines.saturating_sub(1);
-                self.diagnose_panel.scroll = (self.diagnose_panel.scroll + page).min(max);
-            }
-            KeyCode::Home => {
-                self.diagnose_panel.scroll = 0;
-            }
-            KeyCode::End => {
-                self.diagnose_panel.scroll = self.diagnose_panel.total_lines.saturating_sub(1);
-            }
-            KeyCode::Char('r') | KeyCode::Char('R') | KeyCode::F(5) => {
-                // Refresh: re-run diagnostics and stay in overlay.
-                self.handle_gateway_control("diagnose".into());
-            }
-            _ => {}
-        }
-        self.needs_redraw = true;
-    }
-
-    /// Apply semantic TUI colors to a single line from the gateway diagnose report.
-    ///
-    /// WHY free associated function (no `self`): `render_diagnose_panel` maps over
-    /// report lines and only needs the raw text + color palette — no app state.
-    /// Keeping it here keeps all diagnose-overlay logic co-located.
-    fn colorize_diagnose_line<'a>(
-        raw: &'a str,
-        ok_color: Color,
-        err_color: Color,
-        warn_color: Color,
-        heading_color: Color,
-        dim_color: Color,
-        accent: Color,
-    ) -> Line<'a> {
-        // Box-drawing borders (╔ ╚ ║ ═ etc.)
-        if raw.contains('╔') || raw.contains('╚') || raw.contains('║') || raw.contains('╠')
-        {
-            return Line::from(Span::styled(
-                raw,
-                Style::default().fg(accent).add_modifier(Modifier::BOLD),
-            ));
-        }
-        // Section dividers e.g. "── Title ──"
-        let trimmed = raw.trim_start();
-        if trimmed.starts_with("──") || trimmed.starts_with("─────") {
-            return Line::from(Span::styled(raw, Style::default().fg(heading_color)));
-        }
-        // Status marker lines
-        if raw.contains(" \u{2713} ") || raw.contains(" \u{2714} ") {
-            // ✓ ✔
-            return Line::from(Span::styled(raw, Style::default().fg(ok_color)));
-        }
-        if raw.contains(" \u{2717} ") || raw.contains(" \u{2718} ") {
-            // ✗ ✘
-            return Line::from(Span::styled(raw, Style::default().fg(err_color)));
-        }
-        if raw.contains(" \u{25cb} ") || raw.contains(" \u{25e6} ") {
-            // ○ ◦  (offline / not configured)
-            return Line::from(Span::styled(raw, Style::default().fg(dim_color)));
-        }
-        // Issues section entries  e.g. "[ERROR] ..."
-        if trimmed.starts_with('[') && (trimmed.contains("] ") || trimmed.ends_with(']')) {
-            let color = if trimmed.contains("[WARN") {
-                warn_color
-            } else {
-                err_color
-            };
-            return Line::from(Span::styled(raw, Style::default().fg(color)));
-        }
-        // Fix suggestions
-        if trimmed.starts_with("Fix:") || trimmed.starts_with("fix:") {
-            return Line::from(Span::styled(
-                raw,
-                Style::default().fg(ok_color).add_modifier(Modifier::BOLD),
-            ));
-        }
-        // Log severity keywords
-        if raw.contains("ERROR") {
-            return Line::from(Span::styled(raw, Style::default().fg(err_color)));
-        }
-        if raw.contains("WARN") {
-            return Line::from(Span::styled(raw, Style::default().fg(warn_color)));
-        }
-        // Quick-action command lines e.g. "  edgecrab gateway start"
-        if trimmed.starts_with("edgecrab ") {
-            return Line::from(Span::styled(raw, Style::default().fg(accent)));
-        }
-        // Default: plain text, let the paragraph style apply
-        Line::from(raw)
-    }
-
-    fn build_session_inspector_detail_lines(&self) -> Vec<Line<'static>> {
-        let mut detail_lines = Vec::new();
-        let selector = &self.session_inspector.selector;
-
-        if let Some(session) = self.session_inspector.session.as_ref() {
-            detail_lines.push(Line::from(vec![
-                Span::styled(
-                    session.title.clone(),
-                    Style::default()
-                        .fg(Color::Rgb(120, 215, 185))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(format!("  ({})", session.source)),
-            ]));
-            detail_lines.push(Line::from(format!(
-                "{} · {} messages · started {} · last active {}",
-                session.model,
-                session.message_count,
-                session.started_label,
-                session.last_active_label
-            )));
-            detail_lines.push(Line::from(format!("Session ID: {}", session.id)));
-            if !session.preview.is_empty() {
-                detail_lines.push(Line::from(format!("Preview: {}", session.preview)));
-            }
-            if let (Some(role), Some(snippet)) = (
-                session.matched_role.as_deref(),
-                session.matched_snippet.as_deref(),
-            ) {
-                detail_lines.push(Line::from(format!(
-                    "Opened from browser match: {role} -> {snippet}"
-                )));
-            }
-            if !selector.query.trim().is_empty() {
-                detail_lines.push(Line::from(format!("Local filter: {}", selector.query)));
-            }
-            if session.is_live {
-                detail_lines.push(Line::from("Mode: live in-memory session debugger"));
-            }
-            for line in &session.debug_lines {
-                detail_lines.push(Line::from(line.clone()));
-            }
-            detail_lines.push(Line::from(""));
-
-            if let Some(entry) = selector.current() {
-                detail_lines.push(Line::from(Span::styled(
-                    "Selected message",
-                    Style::default().add_modifier(Modifier::BOLD),
-                )));
-                detail_lines.push(Line::from(vec![
-                    Span::styled(
-                        entry.headline.clone(),
-                        Style::default()
-                            .fg(Color::Rgb(120, 215, 185))
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::raw(format!("  {}", entry.meta)),
-                ]));
-                detail_lines.push(Line::from(""));
-
-                let content = entry.message.text_content();
-                if !content.trim().is_empty() {
-                    detail_lines.push(Line::from(Span::styled(
-                        "Content",
-                        Style::default().add_modifier(Modifier::BOLD),
-                    )));
-                    for line in content.lines() {
-                        detail_lines.push(Line::from(line.to_string()));
-                    }
-                } else {
-                    detail_lines.push(Line::from("(No text content stored for this message.)"));
-                }
-
-                if let Some(reasoning) = entry
-                    .message
-                    .reasoning
-                    .as_deref()
-                    .filter(|reasoning| !reasoning.trim().is_empty())
-                {
-                    detail_lines.push(Line::from(""));
-                    detail_lines.push(Line::from(Span::styled(
-                        "Reasoning",
-                        Style::default().add_modifier(Modifier::BOLD),
-                    )));
-                    for line in reasoning.lines() {
-                        detail_lines.push(Line::from(line.to_string()));
-                    }
-                }
-
-                if let Some(tool_calls) = entry
-                    .message
-                    .tool_calls
-                    .as_ref()
-                    .filter(|tool_calls| !tool_calls.is_empty())
-                {
-                    detail_lines.push(Line::from(""));
-                    detail_lines.push(Line::from(Span::styled(
-                        "Tool Calls",
-                        Style::default().add_modifier(Modifier::BOLD),
-                    )));
-                    for call in tool_calls {
-                        detail_lines.push(Line::from(format!(
-                            "- {}  ({})",
-                            call.function.name, call.id
-                        )));
-                    }
-                }
-            } else {
-                detail_lines.push(Line::from(
-                    "No message is selected. Clear the filter or move the cursor to inspect the timeline.",
-                ));
-            }
-        }
-
-        detail_lines
-    }
-
-    /// Render the session browser overlay (activated by F5 or `/sessions`).
-    fn render_session_browser(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
-
-        let chunks = Self::browser_overlay_chunks(area);
-        let body = Self::browser_body_chunks(chunks[1]);
-        self.render_browser_header(
-            frame,
-            chunks[0],
-            &self.session_browser.query,
-            BrowserChrome {
-                title: "Session Browser",
-                placeholder: "Search by title, id, source, model, or any indexed message text.",
-                icon: "⏱",
-                icon_color: Color::Rgb(110, 190, 255),
-                border_color: Color::Rgb(110, 190, 255),
-            },
-        );
-
-        let filtered = &self.session_browser.filtered;
-        let selected = self.session_browser.selected;
-        let max_visible = Self::browser_list_visible_rows(body[0], true);
-        let scroll_start = Self::browser_scroll_start(selected, max_visible);
-
-        let items: Vec<ListItem> = if filtered.is_empty() {
-            let empty_text = if self.session_browser.query.trim().is_empty() {
-                "  No saved sessions are available."
-            } else {
-                "  No sessions matched this query."
-            };
-            vec![ListItem::new(Line::from(Span::styled(
-                empty_text.to_string(),
-                Style::default().fg(Color::Rgb(120, 120, 135)),
-            )))]
-        } else {
-            filtered
-                .iter()
-                .skip(scroll_start)
-                .take(max_visible)
-                .enumerate()
-                .map(|(vis_idx, &entry_idx)| {
-                    let entry = &self.session_browser.items[entry_idx];
-                    let is_selected = vis_idx + scroll_start == selected;
-                    let bg = if is_selected {
-                        Color::Rgb(20, 34, 48)
-                    } else {
-                        Color::Rgb(18, 22, 28)
-                    };
-                    let source_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(140, 170, 210))
-                    } else {
-                        Style::default().fg(Color::Rgb(95, 115, 145))
-                    };
-                    let title_style = if is_selected {
-                        Style::default()
-                            .bg(bg)
-                            .fg(Color::Rgb(125, 215, 255))
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Rgb(210, 225, 235))
-                    };
-                    let detail_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(145, 175, 188))
-                    } else {
-                        Style::default().fg(Color::Rgb(118, 135, 150))
-                    };
-                    let preview_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(168, 188, 196))
-                    } else {
-                        Style::default().fg(Color::Rgb(132, 146, 156))
-                    };
-
-                    ListItem::new(Line::from(vec![
-                        selector_marker(is_selected, Color::Rgb(110, 190, 255), Some(bg)),
-                        Span::styled(format!("  {:<10}", entry.source), source_style),
-                        Span::styled(unicode_trunc(&entry.display, 28), title_style),
-                        Span::raw("  "),
-                        Span::styled(unicode_trunc(&entry.detail, 28), detail_style),
-                        Span::raw("  "),
-                        Span::styled(unicode_trunc(&entry.preview, 34), preview_style),
-                    ]))
-                })
-                .collect()
-        };
-        let list_border_style = if self.session_browser_pane.focus == SplitPaneFocus::List {
-            Style::default()
-                .fg(Color::Rgb(110, 190, 255))
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Rgb(60, 80, 84))
-        };
-        frame.render_widget(
-            List::new(items)
-                .style(Style::default().bg(Color::Rgb(18, 22, 28)))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(list_border_style)
-                        .title(" Sessions "),
-                ),
-            body[0],
-        );
-
-        let mut detail_lines = Vec::new();
-        if let Some(entry) = self.session_browser.current() {
-            detail_lines.push(Line::from(vec![
-                Span::styled(
-                    format!("{} ", entry.source),
-                    Style::default()
-                        .fg(Color::Rgb(110, 190, 255))
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(entry.display.clone()),
-            ]));
-            detail_lines.push(Line::from(""));
-            for line in entry.detail_view.lines() {
-                detail_lines.push(Line::from(line.to_string()));
-            }
-        } else if self.session_browser.query.trim().is_empty() {
-            detail_lines.push(Line::from(Span::styled(
-                "Session Browser",
-                Style::default()
-                    .fg(Color::Rgb(110, 190, 255))
-                    .add_modifier(Modifier::BOLD),
-            )));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "Browse recent sessions on the left and inspect metadata on the right.",
-            ));
-            detail_lines.push(Line::from(
-                "Search matches local metadata instantly and also checks the full indexed message archive.",
-            ));
-        } else {
-            detail_lines.push(Line::from("No results for the current query."));
-            detail_lines.push(Line::from(""));
-            detail_lines.push(Line::from(
-                "Try a title fragment, model name, source like cli or telegram, or terms from the conversation itself.",
-            ));
-        }
-        self.render_scrollable_browser_detail(
-            frame,
-            body[1],
-            ScrollableDetailChrome {
-                title: "Details",
-                border_color: Color::Rgb(110, 190, 255),
-                focused: self.session_browser_pane.focus == SplitPaneFocus::Detail,
-                requested_scroll: self.session_browser_pane.scroll,
-            },
-            detail_lines.clone(),
-        );
-        if self.detail_fullscreen_active(DetailSurface::SessionBrowser) {
-            self.render_fullscreen_browser_detail(
-                frame,
-                area,
-                FullscreenBrowserChrome {
-                    query: &self.session_browser.query,
-                    header: BrowserChrome {
-                        title: "Session Browser",
-                        placeholder:
-                            "Search by title, id, source, model, or any indexed message text.",
-                        icon: "⏱",
-                        icon_color: Color::Rgb(110, 190, 255),
-                        border_color: Color::Rgb(110, 190, 255),
-                    },
-                    detail: ScrollableDetailChrome {
-                        title: "Details",
-                        border_color: Color::Rgb(110, 190, 255),
-                        focused: true,
-                        requested_scroll: self
-                            .detail_fullscreen_scroll(DetailSurface::SessionBrowser),
-                    },
-                    help: Line::from(vec![
-                        Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(110, 190, 255))),
-                        Span::styled("change item  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("type ", Style::default().fg(Color::Rgb(110, 190, 255))),
-                        Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-                        self.paging_key_help_span(Color::Rgb(110, 190, 255)),
-                        Span::styled("scroll detail  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Enter ", Style::default().fg(Color::Rgb(110, 190, 255))),
-                        Span::styled("inspect  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("R ", Style::default().fg(Color::Rgb(110, 190, 255))),
-                        Span::styled("resume  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Z ", Style::default().fg(Color::Rgb(110, 190, 255))),
-                        Span::styled("split view  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Esc ", Style::default().fg(Color::Rgb(110, 190, 255))),
-                        Span::styled("close  ", Style::default().fg(Color::DarkGray)),
-                    ]),
-                },
-                detail_lines,
-            );
-            return;
-        }
-
-        let note = self.session_browser_status_note.as_deref().unwrap_or(
-            "Lowercase keeps typing in the filter. Uppercase shortcuts trigger actions.",
-        );
-        let help = Paragraph::new(Line::from(vec![
-            Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(110, 190, 255))),
-            Span::styled("list  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Tab ", Style::default().fg(Color::Rgb(110, 190, 255))),
-            Span::styled("focus pane  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("type ", Style::default().fg(Color::Rgb(110, 190, 255))),
-            Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-            self.paging_key_help_span(Color::Rgb(110, 190, 255)),
-            Span::styled("page or scroll  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter ", Style::default().fg(Color::Rgb(110, 190, 255))),
-            Span::styled("inspect  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Z ", Style::default().fg(Color::Rgb(110, 190, 255))),
-            Span::styled("detail  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("R ", Style::default().fg(Color::Rgb(110, 190, 255))),
-            Span::styled("resume  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("D ", Style::default().fg(Color::Rgb(110, 190, 255))),
-            Span::styled("delete  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(Color::Rgb(110, 190, 255))),
-            Span::styled("close  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!(
-                    "{} visible · {} pane · {}",
-                    filtered.len(),
-                    match self.session_browser_pane.focus {
-                        SplitPaneFocus::List => "list",
-                        SplitPaneFocus::Detail => "detail",
-                    },
-                    note
-                ),
-                Style::default().fg(Color::Rgb(100, 120, 130)),
-            ),
-        ]));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    fn render_session_inspector(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
-
-        let chunks = Self::browser_overlay_chunks(area);
-        let body = Self::browser_body_chunks(chunks[1]);
-        self.render_browser_header(
-            frame,
-            chunks[0],
-            &self.session_inspector.selector.query,
-            BrowserChrome {
-                title: "Session Inspector",
-                placeholder:
-                    "Filter this timeline by role, content, tool ids, tool names, or reasoning text.",
-                icon: "⌕",
-                icon_color: Color::Rgb(120, 215, 185),
-                border_color: Color::Rgb(120, 215, 185),
-            },
-        );
-
-        let selector = &self.session_inspector.selector;
-        let filtered = &selector.filtered;
-        let selected = selector.selected;
-        let max_visible = Self::browser_list_visible_rows(body[0], true);
-        let scroll_start = Self::browser_scroll_start(selected, max_visible);
-
-        let items: Vec<ListItem> = if filtered.is_empty() {
-            let empty_text = if selector.query.trim().is_empty() {
-                "  No messages were stored for this session."
-            } else {
-                "  No messages in this session matched the current filter."
-            };
-            vec![ListItem::new(Line::from(Span::styled(
-                empty_text.to_string(),
-                Style::default().fg(Color::Rgb(120, 120, 135)),
-            )))]
-        } else {
-            filtered
-                .iter()
-                .skip(scroll_start)
-                .take(max_visible)
-                .enumerate()
-                .map(|(vis_idx, &entry_idx)| {
-                    let entry = &selector.items[entry_idx];
-                    let is_selected = vis_idx + scroll_start == selected;
-                    let bg = if is_selected {
-                        Color::Rgb(24, 36, 34)
-                    } else {
-                        Color::Rgb(18, 24, 24)
-                    };
-                    let role_color = match entry.role_label.as_str() {
-                        "user" => Color::Rgb(110, 190, 255),
-                        "assistant" => Color::Rgb(120, 215, 185),
-                        "tool" => Color::Rgb(235, 190, 105),
-                        "system" => Color::Rgb(190, 145, 240),
-                        _ => Color::Rgb(190, 190, 190),
-                    };
-                    let index_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(145, 170, 170))
-                    } else {
-                        Style::default().fg(Color::Rgb(92, 112, 112))
-                    };
-                    let role_style = if is_selected {
-                        Style::default()
-                            .bg(bg)
-                            .fg(role_color)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(role_color)
-                    };
-                    let preview_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(218, 230, 228))
-                    } else {
-                        Style::default().fg(Color::Rgb(188, 198, 196))
-                    };
-                    let meta_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(145, 175, 170))
-                    } else {
-                        Style::default().fg(Color::Rgb(110, 136, 132))
-                    };
-
-                    ListItem::new(Line::from(vec![
-                        selector_marker(is_selected, role_color, Some(bg)),
-                        Span::styled(format!("  {:>3}", entry.index + 1), index_style),
-                        Span::raw("  "),
-                        Span::styled(format!("{:<10}", entry.role_label), role_style),
-                        Span::styled(unicode_trunc(&entry.preview, 38), preview_style),
-                        Span::raw("  "),
-                        Span::styled(unicode_trunc(&entry.meta, 22), meta_style),
-                    ]))
-                })
-                .collect()
-        };
-        let list_border_style = if self.session_inspector.pane.focus == SplitPaneFocus::List {
-            Style::default()
-                .fg(Color::Rgb(120, 215, 185))
-                .add_modifier(Modifier::BOLD)
-        } else {
-            Style::default().fg(Color::Rgb(60, 80, 84))
-        };
-        frame.render_widget(
-            List::new(items)
-                .style(Style::default().bg(Color::Rgb(18, 24, 24)))
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(list_border_style)
-                        .title(" Timeline "),
-                ),
-            body[0],
-        );
-
-        let detail_lines = self.build_session_inspector_detail_lines();
-        self.render_scrollable_browser_detail(
-            frame,
-            body[1],
-            ScrollableDetailChrome {
-                title: "Details",
-                border_color: Color::Rgb(120, 215, 185),
-                focused: self.session_inspector.pane.focus == SplitPaneFocus::Detail,
-                requested_scroll: self.session_inspector.pane.scroll,
-            },
-            detail_lines.clone(),
-        );
-        if self.detail_fullscreen_active(DetailSurface::SessionInspector) {
-            self.render_fullscreen_browser_detail(
-                frame,
-                area,
-                FullscreenBrowserChrome {
-                    query: &self.session_inspector.selector.query,
-                    header: BrowserChrome {
-                        title: "Session Inspector",
-                        placeholder:
-                            "Filter this timeline by role, content, tool ids, tool names, or reasoning text.",
-                        icon: "⌕",
-                        icon_color: Color::Rgb(120, 215, 185),
-                        border_color: Color::Rgb(120, 215, 185),
-                    },
-                    detail: ScrollableDetailChrome {
-                        title: "Details",
-                        border_color: Color::Rgb(120, 215, 185),
-                        focused: true,
-                        requested_scroll: self
-                            .detail_fullscreen_scroll(DetailSurface::SessionInspector),
-                    },
-                    help: Line::from(vec![
-                        Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(120, 215, 185))),
-                        Span::styled("change item  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("type ", Style::default().fg(Color::Rgb(120, 215, 185))),
-                        Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-                        self.paging_key_help_span(Color::Rgb(120, 215, 185)),
-                        Span::styled("scroll detail  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("R ", Style::default().fg(Color::Rgb(120, 215, 185))),
-                        Span::styled("resume saved  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Z ", Style::default().fg(Color::Rgb(120, 215, 185))),
-                        Span::styled("split view  ", Style::default().fg(Color::DarkGray)),
-                        Span::styled("Esc ", Style::default().fg(Color::Rgb(120, 215, 185))),
-                        Span::styled("back  ", Style::default().fg(Color::DarkGray)),
-                    ]),
-                },
-                detail_lines,
-            );
-            return;
-        }
-
-        let help = Paragraph::new(Line::from(vec![
-            Span::styled(" ↑↓ ", Style::default().fg(Color::Rgb(120, 215, 185))),
-            Span::styled("timeline  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Tab ", Style::default().fg(Color::Rgb(120, 215, 185))),
-            Span::styled("focus pane  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("type ", Style::default().fg(Color::Rgb(120, 215, 185))),
-            Span::styled("filter  ", Style::default().fg(Color::DarkGray)),
-            self.paging_key_help_span(Color::Rgb(120, 215, 185)),
-            Span::styled("page or scroll  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Z ", Style::default().fg(Color::Rgb(120, 215, 185))),
-            Span::styled("detail  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("B ", Style::default().fg(Color::Rgb(120, 215, 185))),
-            Span::styled("back  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("R ", Style::default().fg(Color::Rgb(120, 215, 185))),
-            Span::styled("resume saved  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(Color::Rgb(120, 215, 185))),
-            Span::styled("back  ", Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                format!(
-                    "{} visible · {} pane",
-                    filtered.len(),
-                    match self.session_inspector.pane.focus {
-                        SplitPaneFocus::List => "list",
-                        SplitPaneFocus::Detail => "detail",
-                    }
-                ),
-                Style::default().fg(Color::Rgb(100, 120, 120)),
-            ),
-        ]));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    /// Render a masked-input overlay for secret/sudo capture.
-    ///
-    /// The typed buffer is shown as `••••••••` so the secret never appears in
-    /// plain text. The overlay is full-screen to prevent accidental shoulder-
-    /// surfing from the scrollback buffer behind it.
-    fn render_secret_capture_overlay(&self, frame: &mut Frame, area: Rect) {
-        let (var_name, prompt, is_sudo, buffer_len) = if let DisplayState::SecretCapture {
-            ref var_name,
-            ref prompt,
-            is_sudo,
-            ref buffer,
-        } = self.display_state
-        {
-            (var_name.as_str(), prompt.as_str(), is_sudo, buffer.len())
-        } else {
-            return;
-        };
-
-        frame.render_widget(Clear, area);
-
-        // Centre a small dialog in the terminal
-        let dlg_w = area.width.min(60);
-        let dlg_h = 8u16;
-        let x = area.x + (area.width.saturating_sub(dlg_w)) / 2;
-        let y = area.y + (area.height.saturating_sub(dlg_h)) / 2;
-        let dlg = Rect::new(x, y, dlg_w, dlg_h);
-
-        let accent = if is_sudo {
-            Color::Rgb(220, 80, 80)
-        } else {
-            Color::Rgb(80, 180, 220)
-        };
-        let icon = if is_sudo { "🔒" } else { "🔑" };
-
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(2), // prompt
-                Constraint::Length(3), // input box
-                Constraint::Length(1), // help
-            ])
-            .split(dlg);
-
-        // Prompt line
-        let prompt_para = Paragraph::new(Line::from(vec![
-            Span::styled(format!("  {icon} "), Style::default().fg(accent)),
-            Span::styled(
-                prompt,
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::LEFT | Borders::TOP | Borders::RIGHT)
-                .border_style(Style::default().fg(accent))
-                .title(format!(" {} ", var_name)),
-        );
-        frame.render_widget(prompt_para, chunks[0]);
-
-        // Masked input box
-        let masked = "•".repeat(buffer_len);
-        let input_para = Paragraph::new(Line::from(vec![
-            Span::styled("  ", Style::default()),
-            Span::styled(masked, Style::default().fg(Color::White)),
-            Span::styled("█", Style::default().fg(accent)), // cursor
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::LEFT | Borders::BOTTOM | Borders::RIGHT)
-                .border_style(Style::default().fg(accent)),
-        );
-        frame.render_widget(input_para, chunks[1]);
-
-        // Help line
-        let help = Paragraph::new(Line::from(vec![
-            Span::styled("  Enter ", Style::default().fg(accent)),
-            Span::styled("submit  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(accent)),
-            Span::styled("abort", Style::default().fg(Color::DarkGray)),
-        ]));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    fn render_value_capture_overlay(&self, frame: &mut Frame, area: Rect) {
-        let (title, prompt, placeholder, masked, buffer) = if let DisplayState::ValueCapture {
-            ref title,
-            ref prompt,
-            ref placeholder,
-            masked,
-            ref buffer,
-            ..
-        } = self.display_state
-        {
-            (
-                title.as_str(),
-                prompt.as_str(),
-                placeholder.as_str(),
-                masked,
-                buffer.as_str(),
-            )
-        } else {
-            return;
-        };
-
-        frame.render_widget(Clear, area);
-
-        let dlg_w = area.width.min(84);
-        let dlg_h = 8u16;
-        let x = area.x + (area.width.saturating_sub(dlg_w)) / 2;
-        let y = area.y + (area.height.saturating_sub(dlg_h)) / 2;
-        let dlg = Rect::new(x, y, dlg_w, dlg_h);
-        let accent = Color::Rgb(120, 220, 200);
-
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(2),
-                Constraint::Length(3),
-                Constraint::Length(1),
-            ])
-            .split(dlg);
-
-        let prompt_para = Paragraph::new(Line::from(vec![
-            Span::styled("  ⛵ ", Style::default().fg(accent)),
-            Span::styled(
-                prompt,
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]))
-        .wrap(Wrap { trim: false })
-        .block(
-            Block::default()
-                .borders(Borders::LEFT | Borders::TOP | Borders::RIGHT)
-                .border_style(Style::default().fg(accent))
-                .title(format!(" {} ", title)),
-        );
-        frame.render_widget(prompt_para, chunks[0]);
-
-        let visible = if buffer.is_empty() {
-            placeholder.to_string()
-        } else if masked {
-            "•".repeat(buffer.chars().count())
-        } else {
-            buffer.to_string()
-        };
-        let input_style = if buffer.is_empty() {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        let input_para = Paragraph::new(Line::from(vec![
-            Span::styled("  ", Style::default()),
-            Span::styled(visible, input_style),
-            Span::styled("█", Style::default().fg(accent)),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::LEFT | Borders::BOTTOM | Borders::RIGHT)
-                .border_style(Style::default().fg(accent)),
-        );
-        frame.render_widget(input_para, chunks[1]);
-
-        let help = Paragraph::new(Line::from(vec![
-            Span::styled("  Enter ", Style::default().fg(accent)),
-            Span::styled("save  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(accent)),
-            Span::styled("cancel", Style::default().fg(Color::DarkGray)),
-        ]));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    fn render_document_overlay(&self, frame: &mut Frame, area: Rect) {
-        let Some(overlay) = self.document_overlay.as_ref() else {
-            return;
-        };
-
-        frame.render_widget(Clear, area);
-
-        let chunks = Self::browser_overlay_chunks(area);
-        let header = Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!("  {} ", overlay.icon),
-                Style::default().fg(overlay.accent),
-            ),
-            Span::styled(
-                if overlay.subtitle.trim().is_empty() {
-                    "Read-only report".to_string()
-                } else {
-                    overlay.subtitle.clone()
-                },
-                Style::default().fg(Color::White),
-            ),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(overlay.accent))
-                .title(format!(" {} ", overlay.title)),
-        );
-        frame.render_widget(header, chunks[0]);
-
-        let detail_lines: Vec<Line<'static>> = overlay
-            .body
-            .lines()
-            .map(|line| Line::from(line.to_string()))
-            .collect();
-        self.render_scrollable_browser_detail(
-            frame,
-            chunks[1],
-            ScrollableDetailChrome {
-                title: "Details",
-                border_color: overlay.accent,
-                focused: true,
-                requested_scroll: overlay.scroll,
-            },
-            detail_lines,
-        );
-
-        let help = Paragraph::new(Line::from(vec![
-            Span::styled(" ↑↓ ", Style::default().fg(overlay.accent)),
-            Span::styled("scroll line  ", Style::default().fg(Color::DarkGray)),
-            self.paging_key_help_span(overlay.accent),
-            Span::styled("scroll page  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Home/End ", Style::default().fg(overlay.accent)),
-            Span::styled("jump  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(overlay.accent)),
-            Span::styled("close", Style::default().fg(Color::DarkGray)),
-        ]));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    fn render_skin_browser(&self, frame: &mut Frame, area: Rect) {
-        frame.render_widget(Clear, area);
-
-        let accent = Color::Rgb(255, 150, 80); // warm tangerine
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(3), // search input
-                Constraint::Min(1),    // skin list
-                Constraint::Length(1), // help line
-            ])
-            .split(area);
-
-        // ── Search box ───────────────────────────────────────────────
-        let search_text = if self.skin_browser.query.is_empty() {
-            "Type to filter skins…  (Esc to cancel)".to_string()
-        } else {
-            self.skin_browser.query.clone()
-        };
-        let search_style = if self.skin_browser.query.is_empty() {
-            Style::default().fg(Color::DarkGray)
-        } else {
-            Style::default().fg(Color::White)
-        };
-        let search = Paragraph::new(Line::from(vec![
-            Span::styled("  🎨 ", Style::default().fg(accent)),
-            Span::styled(search_text, search_style),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(accent))
-                .title(" Browse Skins  [/skin] "),
-        );
-        frame.render_widget(search, chunks[0]);
-
-        // ── Skin list ─────────────────────────────────────────────────
-        let max_visible = chunks[1].height as usize;
-        let filtered = &self.skin_browser.filtered;
-        let selected = self.skin_browser.selected;
-
-        let scroll_start = if selected >= max_visible {
-            selected - max_visible + 1
-        } else {
-            0
-        };
-
-        let name_w = 20usize;
-
-        let items: Vec<ListItem> = filtered
-            .iter()
-            .skip(scroll_start)
-            .take(max_visible)
-            .enumerate()
-            .map(|(vis_idx, &entry_idx)| {
-                let entry = &self.skin_browser.items[entry_idx];
-                let is_selected = vis_idx + scroll_start == selected;
-
-                let name_cell = unicode_pad_right(&entry.name, name_w);
-                let badge = if entry.is_active { " ✓ active" } else { "" };
-
-                let bg = if is_selected {
-                    Color::Rgb(60, 40, 20)
-                } else {
-                    Color::Reset
-                };
-                let name_fg = if is_selected {
-                    Color::White
-                } else {
-                    Color::Rgb(220, 180, 100)
-                };
-                let badge_fg = Color::Rgb(100, 200, 100);
-
-                ListItem::new(Line::from(vec![
-                    selector_marker(is_selected, accent, Some(bg)),
-                    Span::styled(
-                        format!("  {name_cell}"),
-                        Style::default().fg(name_fg).bg(bg),
-                    ),
-                    Span::styled(badge, Style::default().fg(badge_fg).bg(bg)),
-                ]))
-            })
-            .collect();
-
-        let skin_list =
-            List::new(items).block(Block::default().borders(Borders::LEFT | Borders::RIGHT));
-        frame.render_widget(skin_list, chunks[1]);
-
-        // ── Help line ─────────────────────────────────────────────────
-        let help = Paragraph::new(Line::from(vec![
-            Span::styled("  ↑↓ ", Style::default().fg(accent)),
-            Span::styled("navigate  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter ", Style::default().fg(accent)),
-            Span::styled("apply  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(accent)),
-            Span::styled("cancel", Style::default().fg(Color::DarkGray)),
-        ]));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    /// Render the risk-graduated approval overlay.
-    ///
-    /// Layout:
-    /// ```text
-    ///   ┌─ Approval required ──────────────────────────────────┐
-    ///   │                                                       │
-    ///   │  ⚠  rm -rf /tmp/build                               │
-    ///   │                                                       │
-    ///   │   > [once]  [session]  [always]  [deny]  [v]iew      │
-    ///   │                                                       │
-    ///   │  ← → select  Enter confirm  v view  Esc deny         │
-    ///   └───────────────────────────────────────────────────────┘
-    /// ```
-    fn render_verbose_selector(&self, frame: &mut Frame, area: Rect) {
-        // Compact centered popup — 4 mode rows + header + detail + help.
-        let popup = popup_rect(area, 72, 18);
-        frame.render_widget(Clear, popup);
-        let chunks = picker_three_layout(popup); // header(3) | body(min) | help(1)
-        let body = picker_two_cols(chunks[1], 45); // list | detail
-
-        // ── Modes metadata ───────────────────────────────────────
-        const MODES: [(ToolProgressMode, &str, &str, &str); 4] = [
-            (
-                ToolProgressMode::Off,
-                "OFF",
-                "⊘",
-                "Silent — only the status bar shows active work.",
-            ),
-            (
-                ToolProgressMode::New,
-                "NEW",
-                "◑",
-                "Show each distinct tool call once per turn.",
-            ),
-            (
-                ToolProgressMode::All,
-                "ALL",
-                "●",
-                "Show every tool call in the transcript.",
-            ),
-            (
-                ToolProgressMode::Verbose,
-                "VERBOSE",
-                "◉",
-                "Show every call + curated plan and result detail lines.",
-            ),
-        ];
-        let active_mode = self.tool_progress_mode;
-        let cursor = self.verbose_selector_cursor;
-
-        // ── Header block ─────────────────────────────────────────
-        let active_label = MODES
-            .iter()
-            .find(|(m, _, _, _)| *m == active_mode)
-            .map(|(_, lbl, _, _)| *lbl)
-            .unwrap_or("?");
-        let header = Paragraph::new(Line::from(vec![
-            Span::styled("  ◈  ", Style::default().fg(Color::Rgb(130, 210, 255))),
-            Span::styled(
-                "Tool Progress Display",
-                Style::default()
-                    .fg(Color::Rgb(200, 225, 255))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                format!("current: {active_label}"),
-                Style::default().fg(Color::Rgb(100, 170, 220)),
-            ),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(100, 160, 210)))
-                .title(" /verbose "),
-        );
-        frame.render_widget(header, chunks[0]);
-
-        // ── Mode list ────────────────────────────────────────────
-        let list_items: Vec<ListItem> = MODES
-            .iter()
-            .enumerate()
-            .map(|(i, (mode, label, icon, _desc))| {
-                let is_cursor = i == cursor;
-                let is_active = *mode == active_mode;
-                let bg = if is_cursor {
-                    Color::Rgb(22, 38, 55)
-                } else {
-                    Color::Rgb(15, 18, 24)
-                };
-
-                let marker = selector_marker(is_cursor, Color::Rgb(130, 210, 255), Some(bg));
-
-                let active_badge = if is_active {
-                    Span::styled(" ◉", Style::default().fg(Color::Rgb(100, 200, 130)))
-                } else {
-                    Span::styled(" ○", Style::default().fg(Color::Rgb(55, 65, 80)))
-                };
-
-                let icon_style = if is_cursor {
-                    Style::default().bg(bg).fg(Color::Rgb(130, 210, 255))
-                } else if is_active {
-                    Style::default().fg(Color::Rgb(100, 200, 130))
-                } else {
-                    Style::default().fg(Color::Rgb(80, 95, 115))
-                };
-                let label_style = if is_cursor {
-                    Style::default()
-                        .bg(bg)
-                        .fg(Color::Rgb(200, 225, 255))
-                        .add_modifier(Modifier::BOLD)
-                } else if is_active {
-                    Style::default().fg(Color::Rgb(160, 210, 170))
-                } else {
-                    Style::default().fg(Color::Rgb(155, 165, 185))
-                };
-
-                ListItem::new(Line::from(vec![
-                    marker,
-                    active_badge,
-                    Span::styled(format!("  {icon} "), icon_style),
-                    Span::styled(unicode_pad_right(label, 9), label_style),
-                ]))
-            })
-            .collect();
-
-        let list = List::new(list_items).style(Style::default().bg(Color::Rgb(15, 18, 24)));
-        frame.render_widget(list, body[0]);
-
-        // ── Detail panel for highlighted mode ────────────────────
-        let (_, detail_label, detail_icon, detail_desc) = &MODES[cursor];
-        let is_active_cursor = MODES[cursor].0 == active_mode;
-        let mut detail_lines: Vec<Line<'static>> = Vec::new();
-
-        // Mode name heading
-        detail_lines.push(Line::from(vec![
-            Span::styled(
-                format!("{detail_icon} {detail_label}"),
-                Style::default()
-                    .fg(Color::Rgb(130, 210, 255))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            if is_active_cursor {
-                Span::styled("  ◉ active", Style::default().fg(Color::Rgb(100, 200, 130)))
-            } else {
-                Span::raw("")
-            },
-        ]));
-        detail_lines.push(Line::from(""));
-
-        // Description — word-wrap at panel width
-        detail_lines.push(Line::from(Span::styled(
-            detail_desc.to_string(),
-            Style::default().fg(Color::Rgb(185, 200, 220)),
-        )));
-        detail_lines.push(Line::from(""));
-
-        // What pressing Enter will do
-        if is_active_cursor {
-            detail_lines.push(Line::from(Span::styled(
-                "Already active — Enter closes.",
-                Style::default().fg(Color::Rgb(110, 125, 140)),
-            )));
-        } else {
-            detail_lines.push(Line::from(Span::styled(
-                "Press Enter to switch to this mode.",
-                Style::default().fg(Color::Rgb(130, 210, 255)),
-            )));
-        }
-
-        let detail = Paragraph::new(Text::from(detail_lines))
-            .wrap(Wrap { trim: false })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Rgb(60, 85, 110)))
-                    .title(" Details "),
-            );
-        frame.render_widget(detail, body[1]);
-
-        // ── Help bar ─────────────────────────────────────────────
-        frame.render_widget(
-            Paragraph::new(picker_help_line(Color::Rgb(130, 210, 255))),
-            chunks[2],
-        );
-    }
-
-    /// Render the reasoning settings picker overlay.
-    ///
-    /// 5 options: Low / Medium / High effort (API) and Show / Hide reasoning trace.
-    fn render_reasoning_selector(&self, frame: &mut Frame, area: Rect) {
-        let popup = popup_rect(area, 72, 20);
-        frame.render_widget(Clear, popup);
-        let chunks = picker_three_layout(popup);
-        let body = picker_two_cols(chunks[1], 42);
-
-        const ENTRIES: [(&str, &str, &str, &str); 5] = [
-            ("low", "LOW", "◌", "Faster & cheaper. Less analytic depth."),
-            ("medium", "MEDIUM", "◎", "Balanced — good for most tasks."),
-            (
-                "high",
-                "HIGH",
-                "●",
-                "Deeper reasoning. Slower, more tokens.",
-            ),
-            (
-                "show",
-                "SHOW",
-                "o",
-                "Reveal the reasoning trace above answers.",
-            ),
-            ("hide", "HIDE", "x", "Keep the reasoning trace hidden."),
-        ];
-
-        let accent = Color::Rgb(130, 210, 255);
-        let cursor = self.reasoning_selector_cursor;
-        let cur_effort = self.reasoning_effort_hint.as_deref().unwrap_or("medium");
-        let cur_vis = if self.show_reasoning {
-            "shown"
-        } else {
-            "hidden"
-        };
-
-        let header = Paragraph::new(Line::from(vec![
-            Span::styled("  ◈  ", Style::default().fg(accent)),
-            Span::styled(
-                "Reasoning Settings",
-                Style::default()
-                    .fg(Color::Rgb(200, 225, 255))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                format!("effort: {}  trace: {}", cur_effort.to_uppercase(), cur_vis),
-                Style::default().fg(Color::Rgb(100, 170, 220)),
-            ),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(100, 160, 210)))
-                .title(" /reasoning "),
-        );
-        frame.render_widget(header, chunks[0]);
-
-        // ── List panel ───────────────────────────────────────────
-        let items: Vec<ListItem> = ENTRIES
-            .iter()
-            .enumerate()
-            .map(|(i, (_, label, icon, _))| {
-                let is_cursor = i == cursor;
-                let bg = if is_cursor {
-                    Color::Rgb(40, 60, 80)
-                } else {
-                    Color::Reset
-                };
-                let fg = if is_cursor {
-                    Color::White
-                } else {
-                    Color::Rgb(180, 200, 220)
-                };
-                ListItem::new(Line::from(vec![
-                    selector_marker(is_cursor, accent, Some(bg)),
-                    Span::styled(format!(" {icon} "), Style::default().fg(accent).bg(bg)),
-                    Span::styled(
-                        format!("{label:<8}", label = *label),
-                        Style::default().fg(fg).bg(bg),
-                    ),
-                ]))
-            })
-            .collect();
-        let list = List::new(items).block(Block::default().borders(Borders::LEFT | Borders::RIGHT));
-        frame.render_widget(list, body[0]);
-
-        // ── Detail panel ─────────────────────────────────────────
-        let (key, label, icon, desc) = ENTRIES[cursor];
-        let current_active = match cursor {
-            0 => self.reasoning_effort_hint.as_deref() == Some("low"),
-            1 => self.reasoning_effort_hint.as_deref().unwrap_or("medium") == "medium",
-            2 => self.reasoning_effort_hint.as_deref() == Some("high"),
-            3 => self.show_reasoning,
-            4 => !self.show_reasoning,
-            _ => false,
-        };
-        let _ = key; // used via cursor index
-        let action_hint = if current_active {
-            "Already active"
-        } else {
-            "Press Enter to apply"
-        };
-        let detail = Paragraph::new(vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                format!("  {icon} {label}"),
-                Style::default()
-                    .fg(Color::Rgb(200, 225, 255))
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                format!("  {desc}"),
-                Style::default().fg(Color::Rgb(170, 195, 215)),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                format!("  {action_hint}"),
-                Style::default().fg(if current_active {
-                    Color::Rgb(100, 200, 100)
-                } else {
-                    Color::Rgb(220, 180, 80)
-                }),
-            )),
-        ])
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(60, 90, 120))),
-        );
-        frame.render_widget(detail, body[1]);
-
-        // ── Help bar ─────────────────────────────────────────────
-        frame.render_widget(Paragraph::new(picker_help_line(accent)), chunks[2]);
-    }
-
-    /// Render the personality picker overlay.
-    ///
-    /// Shows all personality presets with a preview pane. The first entry
-    /// is always "clear" to remove any active personality overlay.
-    fn render_personality_selector(&self, frame: &mut Frame, area: Rect) {
-        let popup = popup_rect(area, 76, 22);
-        frame.render_widget(Clear, popup);
-        let chunks = picker_three_layout(popup);
-        let body = picker_two_cols(chunks[1], 38);
-
-        let accent = Color::Rgb(200, 160, 255);
-        let cursor = self.personality_selector_cursor;
-        let entries = &self.personality_selector_entries;
-        let cur_personality = self.session_personality.as_deref().unwrap_or("default");
-
-        // ── Header ───────────────────────────────────────────────
-        let header = Paragraph::new(Line::from(vec![
-            Span::styled("  ◈  ", Style::default().fg(accent)),
-            Span::styled(
-                "Personality",
-                Style::default()
-                    .fg(Color::Rgb(225, 200, 255))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                format!("active: {cur_personality}"),
-                Style::default().fg(Color::Rgb(170, 140, 220)),
-            ),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(150, 100, 200)))
-                .title(" /personality "),
-        );
-        frame.render_widget(header, chunks[0]);
-
-        // ── Scrolling list panel ──────────────────────────────────
-        let list_height = body[0].height.saturating_sub(2) as usize;
-        let total = entries.len();
-        let scroll_start = if total > list_height && cursor >= list_height {
-            cursor.saturating_sub(list_height.saturating_sub(1))
-        } else {
-            0
-        };
-        let name_w = body[0].width.saturating_sub(6) as usize;
-        let items: Vec<ListItem> = entries
-            .iter()
-            .enumerate()
-            .skip(scroll_start)
-            .take(list_height)
-            .map(|(i, (name, _))| {
-                let is_cursor = i == cursor;
-                let is_active = name == "clear" && self.session_personality.is_none()
-                    || self.session_personality.as_deref() == Some(name.as_str());
-                let bg = if is_cursor {
-                    Color::Rgb(60, 30, 80)
-                } else {
-                    Color::Reset
-                };
-                let fg = if is_cursor {
-                    Color::White
-                } else {
-                    Color::Rgb(200, 170, 230)
-                };
-                let badge_fg = Color::Rgb(100, 200, 100);
-                let name_cell = unicode_trunc(name, name_w.max(1));
-                let badge = if is_active { " ✓" } else { "" };
-                ListItem::new(Line::from(vec![
-                    selector_marker(is_cursor, accent, Some(bg)),
-                    Span::styled(format!("  {name_cell}"), Style::default().fg(fg).bg(bg)),
-                    Span::styled(badge, Style::default().fg(badge_fg).bg(bg)),
-                ]))
-            })
-            .collect();
-        let list = List::new(items).block(Block::default().borders(Borders::LEFT | Borders::RIGHT));
-        frame.render_widget(list, body[0]);
-
-        // ── Detail panel ─────────────────────────────────────────
-        if let Some((name, preview)) = entries.get(cursor) {
-            let is_active = (name == "clear" && self.session_personality.is_none())
-                || self.session_personality.as_deref() == Some(name.as_str());
-            let action_hint = if is_active {
-                "Already active"
-            } else {
-                "Press Enter to apply"
-            };
-            let preview_short = edgecrab_core::safe_truncate(preview, 240);
-            let detail = Paragraph::new(vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    format!("  {name}"),
-                    Style::default()
-                        .fg(Color::Rgb(225, 200, 255))
-                        .add_modifier(Modifier::BOLD),
-                )),
-                Line::from(""),
-                Line::from(Span::styled(
-                    format!("  {preview_short}"),
-                    Style::default().fg(Color::Rgb(195, 175, 215)),
-                )),
-                Line::from(""),
-                Line::from(Span::styled(
-                    format!("  {action_hint}"),
-                    Style::default().fg(if is_active {
-                        Color::Rgb(100, 200, 100)
-                    } else {
-                        Color::Rgb(220, 180, 80)
-                    }),
-                )),
-            ])
-            .wrap(ratatui::widgets::Wrap { trim: true })
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Rgb(90, 60, 120))),
-            );
-            frame.render_widget(detail, body[1]);
-        }
-
-        // ── Help bar ─────────────────────────────────────────────
-        frame.render_widget(Paragraph::new(picker_help_line(accent)), chunks[2]);
-    }
-
-    /// Render the streaming mode picker (2 options: on / off).
-    fn render_stream_selector(&self, frame: &mut Frame, area: Rect) {
-        let popup = popup_rect(area, 64, 16);
-        frame.render_widget(Clear, popup);
-        let chunks = picker_three_layout(popup);
-        let body = picker_two_cols(chunks[1], 38);
-
-        const ENTRIES: [(&str, &str, &str); 2] = [
-            ("on", "ON", "Tokens stream live as they are generated."),
-            ("off", "OFF", "Replies appear as one complete message."),
-        ];
-
-        let accent = Color::Rgb(255, 210, 80);
-        let cursor = self.stream_selector_cursor;
-        let cur_label = if self.streaming_enabled { "on" } else { "off" };
-
-        let header = Paragraph::new(Line::from(vec![
-            Span::styled("  ◈  ", Style::default().fg(accent)),
-            Span::styled(
-                "Token Streaming",
-                Style::default()
-                    .fg(Color::Rgb(255, 235, 160))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                format!("current: {cur_label}"),
-                Style::default().fg(Color::Rgb(200, 170, 80)),
-            ),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(180, 150, 60)))
-                .title(" /stream "),
-        );
-        frame.render_widget(header, chunks[0]);
-
-        let items: Vec<ListItem> = ENTRIES
-            .iter()
-            .enumerate()
-            .map(|(i, (key, label, _))| {
-                let is_cursor = i == cursor;
-                let is_active = *key == cur_label;
-                let bg = if is_cursor {
-                    Color::Rgb(70, 55, 20)
-                } else {
-                    Color::Reset
-                };
-                let fg = if is_cursor {
-                    Color::White
-                } else {
-                    Color::Rgb(230, 200, 140)
-                };
-                let badge_fg = Color::Rgb(100, 200, 100);
-                ListItem::new(Line::from(vec![
-                    selector_marker(is_cursor, accent, Some(bg)),
-                    Span::styled(
-                        format!("  {label:<5}", label = *label),
-                        Style::default().fg(fg).bg(bg),
-                    ),
-                    Span::styled(
-                        if is_active { " ✓" } else { "" },
-                        Style::default().fg(badge_fg).bg(bg),
-                    ),
-                ]))
-            })
-            .collect();
-        let list = List::new(items).block(Block::default().borders(Borders::LEFT | Borders::RIGHT));
-        frame.render_widget(list, body[0]);
-
-        let (key, label, desc) = ENTRIES[cursor];
-        let is_active_cur = key == cur_label;
-        let action_hint = if is_active_cur {
-            "Already active"
-        } else {
-            "Press Enter to switch"
-        };
-        let detail = Paragraph::new(vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                format!("  {label}"),
-                Style::default()
-                    .fg(Color::Rgb(255, 235, 160))
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                format!("  {desc}"),
-                Style::default().fg(Color::Rgb(210, 185, 130)),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                format!("  {action_hint}"),
-                Style::default().fg(if is_active_cur {
-                    Color::Rgb(100, 200, 100)
-                } else {
-                    Color::Rgb(220, 180, 80)
-                }),
-            )),
-        ])
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(100, 80, 30))),
-        );
-        frame.render_widget(detail, body[1]);
-
-        frame.render_widget(Paragraph::new(picker_help_line(accent)), chunks[2]);
-    }
-
-    /// Render the status bar visibility picker (2 options: visible / hidden).
-    fn render_statusbar_selector(&self, frame: &mut Frame, area: Rect) {
-        let popup = popup_rect(area, 64, 16);
-        frame.render_widget(Clear, popup);
-        let chunks = picker_three_layout(popup);
-        let body = picker_two_cols(chunks[1], 38);
-
-        const ENTRIES: [(&str, &str, &str); 2] = [
-            (
-                "visible",
-                "Visible",
-                "Shows model, context pressure, and metrics.",
-            ),
-            (
-                "hidden",
-                "Hidden",
-                "Clean mode — full height for conversation.",
-            ),
-        ];
-
-        let accent = Color::Rgb(120, 200, 200);
-        let cursor = self.statusbar_selector_cursor;
-        let cur_label = if self.show_status_bar {
-            "visible"
-        } else {
-            "hidden"
-        };
-
-        let header = Paragraph::new(Line::from(vec![
-            Span::styled("  ◈  ", Style::default().fg(accent)),
-            Span::styled(
-                "Status Bar",
-                Style::default()
-                    .fg(Color::Rgb(180, 230, 230))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                format!("current: {cur_label}"),
-                Style::default().fg(Color::Rgb(100, 170, 170)),
-            ),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(80, 160, 160)))
-                .title(" /statusbar "),
-        );
-        frame.render_widget(header, chunks[0]);
-
-        let items: Vec<ListItem> = ENTRIES
-            .iter()
-            .enumerate()
-            .map(|(i, (key, label, _))| {
-                let is_cursor = i == cursor;
-                let is_active = *key == cur_label;
-                let bg = if is_cursor {
-                    Color::Rgb(20, 60, 60)
-                } else {
-                    Color::Reset
-                };
-                let fg = if is_cursor {
-                    Color::White
-                } else {
-                    Color::Rgb(160, 210, 210)
-                };
-                let badge_fg = Color::Rgb(100, 200, 100);
-                ListItem::new(Line::from(vec![
-                    selector_marker(is_cursor, accent, Some(bg)),
-                    Span::styled(format!("  {label}"), Style::default().fg(fg).bg(bg)),
-                    Span::styled(
-                        if is_active { " ✓" } else { "" },
-                        Style::default().fg(badge_fg).bg(bg),
-                    ),
-                ]))
-            })
-            .collect();
-        let list = List::new(items).block(Block::default().borders(Borders::LEFT | Borders::RIGHT));
-        frame.render_widget(list, body[0]);
-
-        let (key, label, desc) = ENTRIES[cursor];
-        let is_active_cur = key == cur_label;
-        let action_hint = if is_active_cur {
-            "Already active"
-        } else {
-            "Press Enter to switch"
-        };
-        let detail = Paragraph::new(vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                format!("  {label}"),
-                Style::default()
-                    .fg(Color::Rgb(180, 230, 230))
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                format!("  {desc}"),
-                Style::default().fg(Color::Rgb(150, 200, 200)),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                format!("  {action_hint}"),
-                Style::default().fg(if is_active_cur {
-                    Color::Rgb(100, 200, 100)
-                } else {
-                    Color::Rgb(220, 180, 80)
-                }),
-            )),
-        ])
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(50, 110, 110))),
-        );
-        frame.render_widget(detail, body[1]);
-
-        frame.render_widget(Paragraph::new(picker_help_line(accent)), chunks[2]);
-    }
-
-    /// Render the shadow judge picker (2 options: on / off).
-    fn render_shadow_judge_selector(&self, frame: &mut Frame, area: Rect) {
-        let popup = popup_rect(area, 74, 18);
-        frame.render_widget(Clear, popup);
-        let chunks = picker_three_layout(popup);
-        let body = picker_two_cols(chunks[1], 42);
-
-        const ENTRIES: [(&str, &str, &str); 2] = [
-            (
-                "on",
-                "ON",
-                "Run the completion oracle before finalizing; vetoes likely-incomplete stops.",
-            ),
-            (
-                "off",
-                "OFF",
-                "Skip completion verification and trust the normal completion policy only.",
-            ),
-        ];
-
-        let accent = Color::Rgb(130, 200, 255);
-        let cursor = self.shadow_judge_selector_cursor;
-        let cur_label = if self.shadow_judge_enabled {
-            "on"
-        } else {
-            "off"
-        };
-
-        let header = Paragraph::new(Line::from(vec![
-            Span::styled("  ◈  ", Style::default().fg(accent)),
-            Span::styled(
-                "Shadow Judge",
-                Style::default()
-                    .fg(Color::Rgb(210, 235, 255))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(
-                format!("current: {}", cur_label.to_uppercase()),
-                Style::default().fg(Color::Rgb(145, 190, 230)),
-            ),
-        ]))
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(90, 145, 195)))
-                .title(" /shadow-judge "),
-        );
-        frame.render_widget(header, chunks[0]);
-
-        let items: Vec<ListItem> = ENTRIES
-            .iter()
-            .enumerate()
-            .map(|(i, (key, label, _))| {
-                let is_cursor = i == cursor;
-                let is_active = *key == cur_label;
-                let bg = if is_cursor {
-                    Color::Rgb(28, 52, 74)
-                } else {
-                    Color::Reset
-                };
-                let fg = if is_cursor {
-                    Color::White
-                } else {
-                    Color::Rgb(185, 215, 240)
-                };
-                ListItem::new(Line::from(vec![
-                    selector_marker(is_cursor, accent, Some(bg)),
-                    Span::styled(
-                        format!("  {label:<4}", label = *label),
-                        Style::default().fg(fg).bg(bg),
-                    ),
-                    Span::styled(
-                        if is_active { " ✓" } else { "" },
-                        Style::default().fg(Color::Rgb(105, 210, 125)).bg(bg),
-                    ),
-                ]))
-            })
-            .collect();
-        frame.render_widget(
-            List::new(items).block(Block::default().borders(Borders::LEFT | Borders::RIGHT)),
-            body[0],
-        );
-
-        let (key, label, desc) = ENTRIES[cursor];
-        let is_active_cur = key == cur_label;
-        let action_hint = if is_active_cur {
-            "Already active"
-        } else {
-            "Press Enter to apply"
-        };
-        let detail = Paragraph::new(vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                format!("  {label}"),
-                Style::default()
-                    .fg(Color::Rgb(210, 235, 255))
-                    .add_modifier(Modifier::BOLD),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                format!("  {desc}"),
-                Style::default().fg(Color::Rgb(170, 205, 232)),
-            )),
-            Line::from(""),
-            Line::from(Span::styled(
-                format!("  {action_hint}"),
-                Style::default().fg(if is_active_cur {
-                    Color::Rgb(100, 200, 100)
-                } else {
-                    Color::Rgb(220, 180, 80)
-                }),
-            )),
-        ])
-        .wrap(Wrap { trim: true })
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(65, 105, 145))),
-        );
-        frame.render_widget(detail, body[1]);
-
-        frame.render_widget(Paragraph::new(picker_help_line(accent)), chunks[2]);
-    }
-
-    /// Render the compact mission-steering overlay.
-    ///
-    /// The overlay appears as a small floating panel over the lower-half of the
-    /// output area when `steering_overlay_active` is true.  It contains:
-    ///   – A header showing the active steering kind with Tab cycling hint
-    ///   – A single-line textarea for the steer message
-    ///   – A footer help bar
-    fn render_steering_overlay(&mut self, frame: &mut Frame, area: Rect) {
-        use edgecrab_core::SteeringKind;
-
-        // Compact popup: 60 wide × 7 tall — below centre so output stays visible.
-        let pw: u16 = 60.min(area.width);
-        let ph: u16 = 7;
-        let popup = Rect {
-            x: area.x + area.width.saturating_sub(pw) / 2,
-            // Position at 70 % down the screen so the output is not obscured.
-            y: area.y + (area.height.saturating_sub(ph) * 7 / 10),
-            width: pw,
-            height: ph,
-        };
-        frame.render_widget(Clear, popup);
-
-        // Render the border block and obtain the inner area to layout within.
-        let border_block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Rgb(120, 180, 255)))
-            .title(Span::styled(
-                " ⛵ Mission Steer ",
-                Style::default()
-                    .fg(Color::Rgb(200, 230, 255))
-                    .add_modifier(Modifier::BOLD),
-            ));
-        let inner = border_block.inner(popup);
-        frame.render_widget(border_block, popup);
-
-        // Split inner area: header(1) | textarea(min) | help(1)
-        let sections = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1), // kind selector header
-                Constraint::Min(1),    // textarea
-                Constraint::Length(1), // help bar
-            ])
-            .split(inner);
-
-        // ── Kind selector row ─────────────────────────────────────────────
-        let (hint_s, redir_s, stop_s) = match self.steering_kind {
-            SteeringKind::Hint => (
-                Style::default()
-                    .fg(Color::Rgb(10, 18, 30))
-                    .bg(Color::Rgb(120, 220, 165))
-                    .add_modifier(Modifier::BOLD),
-                Style::default().fg(Color::Rgb(90, 110, 140)),
-                Style::default().fg(Color::Rgb(90, 110, 140)),
-            ),
-            SteeringKind::Redirect => (
-                Style::default().fg(Color::Rgb(90, 110, 140)),
-                Style::default()
-                    .fg(Color::Rgb(10, 18, 30))
-                    .bg(Color::Rgb(255, 200, 80))
-                    .add_modifier(Modifier::BOLD),
-                Style::default().fg(Color::Rgb(90, 110, 140)),
-            ),
-            SteeringKind::Stop => (
-                Style::default().fg(Color::Rgb(90, 110, 140)),
-                Style::default().fg(Color::Rgb(90, 110, 140)),
-                Style::default()
-                    .fg(Color::Rgb(10, 18, 30))
-                    .bg(Color::Rgb(255, 100, 80))
-                    .add_modifier(Modifier::BOLD),
-            ),
-        };
-        let kind_line = Line::from(vec![
-            Span::styled("  kind: ", Style::default().fg(Color::Rgb(130, 150, 180))),
-            Span::styled(" HINT ", hint_s),
-            Span::raw(" "),
-            Span::styled(" REDIRECT ", redir_s),
-            Span::raw(" "),
-            Span::styled(" STOP ", stop_s),
-            Span::styled(
-                "  (Tab=cycle)",
-                Style::default().fg(Color::Rgb(70, 85, 110)),
-            ),
-        ]);
-        frame.render_widget(Paragraph::new(kind_line), sections[0]);
-
-        // ── Steering textarea ─────────────────────────────────────────────
-        self.steering_textarea.set_style(
-            Style::default()
-                .fg(Color::Rgb(220, 235, 255))
-                .bg(Color::Rgb(16, 20, 30)),
-        );
-        frame.render_widget(&self.steering_textarea, sections[1]);
-
-        // ── Help bar ──────────────────────────────────────────────────────
-        let help = Line::from(vec![
-            Span::styled(
-                " Enter",
-                Style::default()
-                    .fg(Color::Rgb(120, 220, 165))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" send  ", Style::default().fg(Color::Rgb(100, 130, 160))),
-            Span::styled(
-                "Tab",
-                Style::default()
-                    .fg(Color::Rgb(120, 220, 165))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" kind  ", Style::default().fg(Color::Rgb(100, 130, 160))),
-            Span::styled(
-                "Esc",
-                Style::default()
-                    .fg(Color::Rgb(200, 100, 80))
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(" cancel ", Style::default().fg(Color::Rgb(100, 130, 160))),
-        ]);
-        frame.render_widget(Paragraph::new(help), sections[2]);
-    }
-
-    fn render_approval_overlay(&self, frame: &mut Frame, area: Rect) {
-        // Only render when in WaitingForApproval state
-        let (command, full_command, selected, scroll_offset) =
-            if let DisplayState::WaitingForApproval {
-                ref command,
-                ref full_command,
-                selected,
-                scroll_offset,
-                ..
-            } = self.display_state
-            {
-                (
-                    command.as_str(),
-                    full_command.as_str(),
-                    selected,
-                    scroll_offset,
-                )
-            } else {
-                return;
-            };
-
-        frame.render_widget(Clear, area);
-
-        let chunks = Layout::default()
-            .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(1),    // command display (wrapped + scrollable)
-                Constraint::Length(3), // choice buttons
-                Constraint::Length(1), // help line
-            ])
-            .split(area);
-
-        // ── Command display — always show full command, wrapped and scrollable ──
-        // Use full_command if it differs from command; otherwise command is already full.
-        let cmd_text = if full_command.is_empty() {
-            command
-        } else {
-            full_command
-        };
-        let cmd_lines: Vec<Line> = cmd_text
-            .lines()
-            .map(|l| {
-                Line::from(vec![
-                    Span::styled(
-                        "  ⚠  ",
-                        Style::default()
-                            .fg(Color::Rgb(255, 140, 0))
-                            .add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(
-                        l.to_string(),
-                        Style::default().fg(Color::Rgb(255, 220, 180)),
-                    ),
-                ])
-            })
-            .collect();
-        let cmd_para = Paragraph::new(cmd_lines)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .border_style(Style::default().fg(Color::Rgb(255, 140, 0)))
-                    .title(" ⚠  Approval required "),
-            )
-            .wrap(Wrap { trim: false })
-            .scroll((scroll_offset, 0));
-        frame.render_widget(cmd_para, chunks[0]);
-
-        // ── Choice buttons ───────────────────────────────────────────
-        const LABELS: [&str; 4] = ["once", "session", "always", "deny"];
-        let mut btn_spans: Vec<Span> = vec![Span::raw("  ")];
-        for (i, label) in LABELS.iter().enumerate() {
-            let is_sel = i == selected;
-            let style = if is_sel {
-                Style::default()
-                    .fg(Color::Black)
-                    .bg(Color::Rgb(255, 140, 0))
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Rgb(180, 180, 200))
-            };
-            btn_spans.push(Span::styled(format!(" [{label}] "), style));
-            btn_spans.push(Span::raw(" "));
-        }
-
-        let buttons = Paragraph::new(Line::from(btn_spans)).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(80, 80, 100))),
-        );
-        frame.render_widget(buttons, chunks[1]);
-
-        // ── Help line ────────────────────────────────────────────────
-        let help = Paragraph::new(Line::from(vec![
-            Span::styled(" ← → ", Style::default().fg(Color::Rgb(255, 140, 0))),
-            Span::styled("select  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("↑ ↓ ", Style::default().fg(Color::Rgb(255, 140, 0))),
-            Span::styled("scroll  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter ", Style::default().fg(Color::Rgb(255, 140, 0))),
-            Span::styled("confirm  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc ", Style::default().fg(Color::Rgb(255, 140, 0))),
-            Span::styled("deny", Style::default().fg(Color::DarkGray)),
-        ]));
-        frame.render_widget(help, chunks[2]);
-    }
-
-    /// Render the input box + completion overlay + ghost text.
-    fn render_input(&mut self, frame: &mut Frame, area: Rect) {
-        // Configure the block before rendering so mode and pending-operator
-        // feedback appear immediately on the current frame.
-        let text = self.textarea_text();
-        let block = if self.is_processing {
-            // FP53: Animate the waiting title using the same spinner frame
-            // as the status bar — zero extra state, perfect sync.
-            let spinner =
-                compact_spinner_frame(self.current_spinner_frame(), self.terminal_glyph_profile);
-            let waiting_label = format!("{spinner} waiting…");
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(
-                    Style::default()
-                        .fg(Color::Rgb(60, 60, 75))
-                        .add_modifier(Modifier::DIM),
-                )
-                .title(self.input_panel_title(&waiting_label))
-        } else if text.starts_with('/') {
-            let cmd_name = text.split_whitespace().next().unwrap_or("");
-            let is_valid = self.all_command_names.iter().any(|c| c == cmd_name);
-            let border_color = if is_valid {
-                Color::Cyan
-            } else if cmd_name.len() > 1 {
-                Color::Rgb(239, 83, 80)
-            } else {
-                self.theme.input_border.fg.unwrap_or(Color::White)
-            };
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(border_color))
-                .title(self.input_panel_title(&self.theme.prompt_symbol))
-        } else if text.starts_with('@') {
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Green))
-                .title(self.input_panel_title(&self.theme.prompt_symbol))
-        } else {
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(self.theme.input_border)
-                .title(self.input_panel_title(&self.theme.prompt_symbol))
-        };
-        self.textarea.set_block(block);
-        frame.render_widget(&self.textarea, area);
-
-        // Ghost text overlay (Fish-style hint)
-        if self.show_ghost_hint
-            && matches!(self.editor_mode, InputEditorMode::Inline)
-            && let Some(hint) = self.ghost_hint()
-        {
-            let (row, col) = self.textarea.cursor();
-            let ghost_x = area.x + 1 + col as u16; // +1 for border
-            let ghost_y = area.y + 1 + row as u16;
-            if ghost_x < area.x + area.width - 1 {
-                let max_width = (area.x + area.width - 1 - ghost_x) as usize;
-                let display = edgecrab_core::safe_truncate(&hint, max_width);
-                let ghost_area = Rect::new(ghost_x, ghost_y, display.len() as u16, 1);
-                let ghost = Paragraph::new(Span::styled(
-                    display.to_string(),
-                    Style::default().fg(Color::DarkGray),
-                ));
-                frame.render_widget(ghost, ghost_area);
-            }
-        }
-
-        // Completion overlay
-        if matches!(self.editor_mode, InputEditorMode::Inline)
-            && self.completion.active
-            && !self.completion.candidates.is_empty()
-        {
-            let total_candidates = self.completion.candidates.len();
-            let max_items = 8.min(total_candidates);
-            let (scroll_start, scroll_end) = self.completion.visible_window(max_items);
-            // +2 for top/bottom border, +1 for count footer
-            let overlay_height = max_items as u16 + 3;
-            let overlay_width = self
-                .completion
-                .candidates
-                .iter()
-                .map(|(cmd, desc)| {
-                    let desc_len = if desc.is_empty() { 0 } else { 3 + desc.len() }; // " — desc"
-                    cmd.len() + desc_len
-                })
-                .max()
-                .unwrap_or(10) as u16
-                + 4; // padding
-            let overlay_width = overlay_width.clamp(24, area.width.saturating_sub(2));
-
-            // Position above input area (with 1-row gap from input border)
-            let overlay_y = area.y.saturating_sub(overlay_height);
-            let overlay_x = area.x + 1;
-            let overlay_area = Rect::new(overlay_x, overlay_y, overlay_width, overlay_height);
-
-            // Clear area behind overlay
-            frame.render_widget(Clear, overlay_area);
-
-            // Count indicator for the overlay title
-            let sel_idx = self.completion.selected;
-            let count_title = format!(
-                " Commands {}/{} ",
-                (sel_idx + 1).min(total_candidates),
-                total_candidates
-            );
-
-            let items: Vec<ListItem> = self
-                .completion
-                .candidates
-                .iter()
-                .skip(scroll_start)
-                .take(scroll_end.saturating_sub(scroll_start))
-                .enumerate()
-                .map(|(i, (cmd, desc))| {
-                    let candidate_idx = scroll_start + i;
-                    let is_selected = candidate_idx == self.completion.selected;
-                    let bg = if is_selected {
-                        Color::Rgb(55, 55, 75)
-                    } else {
-                        Color::Reset
-                    };
-                    let cmd_style = if is_selected {
-                        Style::default()
-                            .bg(bg)
-                            .fg(Color::Cyan)
-                            .add_modifier(Modifier::BOLD)
-                    } else {
-                        Style::default().fg(Color::Rgb(200, 200, 210))
-                    };
-                    let desc_style = if is_selected {
-                        Style::default().bg(bg).fg(Color::Rgb(140, 145, 165))
-                    } else {
-                        Style::default().fg(Color::Rgb(95, 100, 120))
-                    };
-                    let mut spans = vec![
-                        selector_marker(is_selected, Color::Cyan, Some(bg)),
-                        Span::styled(format!(" {cmd}"), cmd_style),
-                    ];
-                    if !desc.is_empty() {
-                        spans.push(Span::styled(format!(" — {desc}"), desc_style));
-                    }
-                    ListItem::new(Line::from(spans))
-                })
-                .collect();
-
-            let footer_line = if total_candidates > max_items {
-                let hidden =
-                    total_candidates.saturating_sub(scroll_end.saturating_sub(scroll_start));
-                format!(
-                    " Tab/↑↓ navigate  {} jump  +{} more ",
-                    self.paging_key_hint_label(),
-                    hidden
-                )
-            } else {
-                " Tab/↑↓ navigate  Enter select  Esc cancel ".to_string()
-            };
-
-            // Split area: list body + footer
-            let inner_chunks = Layout::default()
-                .direction(Direction::Vertical)
-                .constraints([
-                    Constraint::Min(1),    // list items
-                    Constraint::Length(1), // footer hint
-                ])
-                .vertical_margin(1)
-                .horizontal_margin(0)
-                .split(overlay_area);
-
-            let list = List::new(items)
-                .block(
-                    Block::default()
-                        .borders(Borders::ALL)
-                        .border_style(Style::default().fg(Color::Rgb(70, 75, 100)))
-                        .title(count_title)
-                        .title_style(Style::default().fg(Color::Rgb(140, 145, 165))),
-                )
-                .style(Style::default().bg(Color::Rgb(25, 25, 35)));
-            frame.render_widget(list, overlay_area);
-
-            // Render footer hint inside the border
-            let footer_area = inner_chunks[1];
-            let footer = Paragraph::new(Span::styled(
-                footer_line,
-                Style::default().fg(Color::Rgb(80, 85, 110)),
-            ))
-            .style(Style::default().bg(Color::Rgb(25, 25, 35)));
-            frame.render_widget(footer, footer_area);
-        }
-    }
 }
 
 /// Build a compact recap string showing the last few exchanges in a resumed session.
@@ -30333,17 +18926,6 @@ fn build_session_recap(messages: &[edgecrab_types::Message]) -> String {
 
     lines.push("────────────────────".to_string());
     lines.join("\n")
-}
-
-/// Format token count for display (e.g. 1234 → "1.2k", 1234567 → "1.2M")
-fn format_tokens(count: u64) -> String {
-    if count >= 1_000_000 {
-        format!("{:.1}M", count as f64 / 1_000_000.0)
-    } else if count >= 1_000 {
-        format!("{:.1}k", count as f64 / 1_000.0)
-    } else {
-        format!("{count}")
-    }
 }
 
 fn truncate_preview(text: &str, max_chars: usize) -> String {
@@ -30550,7 +19132,7 @@ pub fn run_tui(app: &mut App) -> io::Result<()> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = ratatui::Terminal::new(backend)?;
 
-    let result = event_loop(&mut terminal, app);
+    let result = event_loop::run_event_loop(&mut terminal, app);
 
     crossterm::terminal::disable_raw_mode()?;
     if keyboard_enhancement_enabled {
@@ -30569,224 +19151,6 @@ pub fn run_tui(app: &mut App) -> io::Result<()> {
     println!("{}", app.theme.goodbye_msg);
 
     result
-}
-
-fn event_loop(
-    terminal: &mut ratatui::Terminal<CrosstermBackend<io::Stdout>>,
-    app: &mut App,
-) -> io::Result<()> {
-    fn heartbeat_interval_for(profile: TerminalUiProfile) -> Duration {
-        match profile {
-            TerminalUiProfile::Standard => Duration::from_millis(250),
-            TerminalUiProfile::ReducedMotion => Duration::from_millis(800),
-            TerminalUiProfile::BasicCompat => Duration::from_millis(1000),
-        }
-    }
-
-    fn adaptive_draw_interval_after_draw(
-        profile: TerminalUiProfile,
-        floor: Duration,
-        current: Duration,
-        draw_cost: Duration,
-    ) -> Duration {
-        match profile {
-            TerminalUiProfile::Standard => Duration::ZERO,
-            TerminalUiProfile::ReducedMotion | TerminalUiProfile::BasicCompat => {
-                let ceiling = match profile {
-                    TerminalUiProfile::ReducedMotion => Duration::from_millis(120),
-                    TerminalUiProfile::BasicCompat => Duration::from_millis(180),
-                    TerminalUiProfile::Standard => Duration::ZERO,
-                };
-                let floor_ms = floor.as_millis() as u64;
-                let ceiling_ms = ceiling.as_millis() as u64;
-                let current_ms = current.as_millis() as u64;
-                let draw_ms = draw_cost.as_millis() as u64;
-                let scaled_ms = match profile {
-                    TerminalUiProfile::ReducedMotion => draw_ms.saturating_mul(3) / 2,
-                    TerminalUiProfile::BasicCompat => draw_ms.saturating_mul(2),
-                    TerminalUiProfile::Standard => 0,
-                };
-                let target_ms = scaled_ms.clamp(floor_ms, ceiling_ms);
-                if target_ms > current_ms {
-                    Duration::from_millis(target_ms)
-                } else {
-                    Duration::from_millis(current_ms.saturating_sub(10)).max(floor)
-                }
-            }
-        }
-    }
-
-    fn draw_app(
-        terminal: &mut ratatui::Terminal<CrosstermBackend<io::Stdout>>,
-        app: &mut App,
-        effective_draw_interval: &mut Duration,
-        min_draw_interval: Duration,
-        last_draw: &mut Instant,
-        last_status_heartbeat: &mut Instant,
-    ) -> io::Result<()> {
-        if app.needs_full_terminal_clear {
-            terminal.clear()?;
-            app.needs_full_terminal_clear = false;
-        }
-        let draw_started = Instant::now();
-        terminal.draw(|f| app.render(f))?;
-        let draw_cost = draw_started.elapsed();
-        app.needs_redraw = false;
-        *last_draw = Instant::now();
-        *last_status_heartbeat = *last_draw;
-        *effective_draw_interval = adaptive_draw_interval_after_draw(
-            app.terminal_ui_profile,
-            min_draw_interval,
-            *effective_draw_interval,
-            draw_cost,
-        );
-        Ok(())
-    }
-
-    let mut last_tick = Instant::now();
-    let tick_rate = if app.animate_status_indicators {
-        std::time::Duration::from_millis(80) // spinner animation rate
-    } else {
-        std::time::Duration::from_millis(250) // housekeeping without redraw churn
-    };
-
-    // In compatibility mode (Apple Terminal etc.), throttle draws so we never
-    // saturate the PTY output buffer.  Apple Terminal processes escape sequences
-    // ~10-50x slower than GPU-accelerated emulators like iTerm2 / kitty / VSCode.
-    // If we draw faster than the terminal can consume, `write()` blocks — which
-    // starves `check_responses()` and makes the TUI appear stuck.
-    let min_draw_interval = app.min_draw_interval;
-    let mut effective_draw_interval = min_draw_interval;
-    let mut last_draw = Instant::now() - min_draw_interval; // allow immediate first draw
-    let mut last_status_heartbeat = Instant::now();
-
-    loop {
-        // Check for agent responses first (non-blocking).  In compat mode the
-        // draw path can block for tens of milliseconds waiting for the terminal
-        // to drain its buffer, so we drain the response channel BEFORE drawing,
-        // and again AFTER polling for terminal events, to minimise the window
-        // during which an AgentResponse::Done can sit unprocessed.
-        app.check_responses();
-        app.poll_remote_skill_search();
-        app.poll_remote_plugin_search();
-        app.poll_remote_mcp_search();
-        app.refresh_log_follow_if_due_at(Instant::now());
-
-        // Advance spinner on each tick
-        let now_elapsed = last_tick.elapsed();
-        if now_elapsed >= tick_rate {
-            if app.tick_spinner() {
-                app.needs_redraw = true;
-            }
-            last_tick = Instant::now();
-        }
-
-        if !app.animate_status_indicators
-            && app.needs_periodic_status_refresh()
-            && last_status_heartbeat.elapsed() >= heartbeat_interval_for(app.terminal_ui_profile)
-        {
-            app.needs_redraw = true;
-            last_status_heartbeat = Instant::now();
-        }
-
-        // Only redraw when state changed — reduces CPU on idle.
-        // In compat mode, honour `min_draw_interval` to avoid flooding the
-        // PTY output buffer; `needs_redraw` stays true so we eventually draw
-        // once the interval has elapsed.
-        let draw_interval_ok = last_draw.elapsed() >= effective_draw_interval;
-        if app.needs_redraw && draw_interval_ok {
-            // When clear_output() was called, force a full terminal repaint
-            // before drawing so that any out-of-band characters that landed on
-            // the alternate screen (e.g. tracing output from a background task)
-            // are erased. terminal.clear() resets ratatui's internal prev-buffer
-            // so the next draw() writes every cell from scratch.
-            draw_app(
-                terminal,
-                app,
-                &mut effective_draw_interval,
-                min_draw_interval,
-                &mut last_draw,
-                &mut last_status_heartbeat,
-            )?;
-        }
-
-        // Poll with a short timeout so we loop quickly while streaming/thinking.
-        // In compat mode use a longer timeout to let the terminal catch up.
-        let poll_timeout = if effective_draw_interval >= std::time::Duration::from_millis(120) {
-            // Slow terminal: keep the loop responsive while avoiding spin.
-            std::time::Duration::from_millis(40)
-        } else if app.is_processing {
-            std::time::Duration::from_millis(16) // ~60fps while streaming
-        } else {
-            std::time::Duration::from_millis(40) // responsive idle without churn
-        };
-
-        let mut priority_interaction = false;
-        if event::poll(poll_timeout)? {
-            match event::read()? {
-                Event::Key(key) => {
-                    app.handle_key_event(key);
-                    priority_interaction = true;
-                }
-                Event::Paste(text) => {
-                    // Bracketed paste — insert text directly (safe from injection:
-                    // bracketed paste prevents escape sequences from being executed)
-                    app.handle_paste(text);
-                    priority_interaction = true;
-                }
-                Event::Mouse(mouse) => {
-                    app.handle_mouse_event(mouse);
-                    priority_interaction = true;
-                }
-                Event::Resize(_, _) => {
-                    // Terminal resized — force redraw and invalidate all render caches
-                    app.needs_redraw = true;
-                    app.needs_full_terminal_clear = true;
-                    for line in &mut app.output {
-                        line.invalidate_render_cache();
-                    }
-                    priority_interaction = true;
-                }
-                _ => {}
-            }
-        }
-
-        // Drain responses again after event processing to minimise latency
-        // for AgentResponse::Done arriving while we were in poll()/draw().
-        app.check_responses();
-
-        // User-directed interactions should feel immediate even on slow PTYs.
-        // These redraws are sparse and locally valuable, so bypass the
-        // background draw throttle after key/paste/mouse/resize events.
-        if priority_interaction && app.needs_redraw {
-            draw_app(
-                terminal,
-                app,
-                &mut effective_draw_interval,
-                min_draw_interval,
-                &mut last_draw,
-                &mut last_status_heartbeat,
-            )?;
-        }
-
-        if let Some(enabled) = app.take_mouse_capture_request() {
-            if enabled {
-                crossterm::execute!(terminal.backend_mut(), crossterm::event::EnableMouseCapture)?;
-            } else {
-                crossterm::execute!(
-                    terminal.backend_mut(),
-                    crossterm::event::DisableMouseCapture
-                )?;
-            }
-        }
-
-        if app.should_exit() {
-            if app.voice_recording.is_some() {
-                app.abort_voice_recording("Voice recording cancelled during exit.");
-            }
-            return Ok(());
-        }
-    }
 }
 
 /// Write raw RGBA pixel data as a minimal PNG file.
@@ -30911,7 +19275,16 @@ fn png_crc32(data: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(dead_code)]
+
     use super::*;
+    use crate::status_chrome::{
+        format_elapsed_hint, format_token_count, format_waiting_first_token_status,
+        summarize_tools_for_status, words_estimate,
+    };
+    use crate::status_summaries::{
+        format_background_status_summary, format_subagent_status_summary,
+    };
 
     fn line_spans_text(line: &OutputLine) -> String {
         line.prebuilt_spans
@@ -31546,6 +19919,57 @@ description = "Demo plugin tool"
 
     #[test]
     #[serial_test::serial(edgecrab_home_env)]
+    fn web_status_command_opens_web_hub_overlay() {
+        let _guard = crate::gateway_catalog::lock_test_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        unsafe {
+            std::env::set_var("EDGECRAB_HOME", dir.path().join(".edgecrab"));
+        }
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _enter = rt.enter();
+        let agent = mock_agent();
+        let mut app = App::new();
+        app.set_agent(agent);
+
+        app.handle_web_command("status".into());
+
+        let overlay = app.document_overlay.as_ref().expect("web hub overlay");
+        assert_eq!(overlay.kind, DocumentOverlayKind::Web);
+        assert!(overlay.title.contains("Web"));
+        assert!(overlay.body.contains("AT A GLANCE") || overlay.body.contains("GLANCE"));
+
+        unsafe {
+            std::env::remove_var("EDGECRAB_HOME");
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(edgecrab_home_env)]
+    fn web_chain_command_opens_chain_overlay() {
+        let _guard = crate::gateway_catalog::lock_test_env();
+        let dir = tempfile::tempdir().expect("tempdir");
+        unsafe {
+            std::env::set_var("EDGECRAB_HOME", dir.path().join(".edgecrab"));
+        }
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let _enter = rt.enter();
+        let agent = mock_agent();
+        let mut app = App::new();
+        app.set_agent(agent);
+
+        app.handle_web_command("chain".into());
+
+        let overlay = app.document_overlay.as_ref().expect("chain overlay");
+        assert_eq!(overlay.kind, DocumentOverlayKind::Web);
+        assert!(overlay.body.contains("FALLBACK FLOW"));
+
+        unsafe {
+            std::env::remove_var("EDGECRAB_HOME");
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(edgecrab_home_env)]
     fn prompt_command_opens_document_overlay_when_custom_prompt_missing() {
         let _guard = crate::gateway_catalog::lock_test_env();
         let dir = tempfile::tempdir().expect("tempdir");
@@ -31906,44 +20330,38 @@ description = "Demo plugin tool"
     }
 
     #[test]
-    fn active_tool_status_summary_prefers_latest_detail_and_parallel_count() {
-        let mut tools = std::collections::HashMap::new();
-        tools.insert(
+    fn turn_activity_summary_prefers_latest_detail_and_parallel_count() {
+        let mut state = TurnActivityState::new(true);
+        state.on_tool_exec(
             "call_1".into(),
-            ActiveToolStatus {
-                name: "read_file".into(),
-                args_json: r#"{"path":"src/lib.rs"}"#.into(),
-                last_detail: None,
-                started_at: Instant::now(),
-                last_seq: 1,
-            },
+            "read_file".into(),
+            r#"{"path":"src/lib.rs"}"#.into(),
+            "src/lib.rs".into(),
+            1,
         );
-        tools.insert(
+        state.on_tool_exec(
             "call_2".into(),
-            ActiveToolStatus {
-                name: "manage_todo_list".into(),
-                args_json:
-                    r#"{"items":[{"id":1,"title":"Audit","status":"in-progress"}],"merge":true}"#
-                        .into(),
-                last_detail: Some("1/3 completed; updating remaining tasks".into()),
-                started_at: Instant::now(),
-                last_seq: 2,
-            },
+            "manage_todo_list".into(),
+            r#"{"items":[{"id":1,"title":"Audit","status":"in-progress"}],"merge":true}"#.into(),
+            "Audit".into(),
+            2,
+        );
+        state.on_tool_progress(
+            "call_2",
+            "1/3 completed; updating remaining tasks".into(),
+            3,
+            Instant::now(),
         );
 
-        let summary = summarize_active_tools(&tools).expect("summary");
+        let summary = summarize_tools_for_status(&state).expect("summary");
         assert_eq!(summary.verb, "running");
         assert_eq!(summary.icon, "☑");
         assert!(
-            summary.detail.contains("1/3 completed"),
+            summary.detail.contains("2 tools"),
             "got: {}",
             summary.detail
         );
-        assert!(
-            summary.detail.contains("+1 more"),
-            "got: {}",
-            summary.detail
-        );
+        assert!(summary.detail.contains("+1"), "got: {}", summary.detail);
     }
 
     #[test]
@@ -31959,743 +20377,6 @@ description = "Demo plugin tool"
         assert!(text.contains("thinking"));
     }
 
-    #[test]
-    fn context_usage_ratio_clamps_at_one_hundred_percent() {
-        assert_eq!(context_usage_ratio(210_000, Some(200_000)), Some(1.0));
-        assert_eq!(context_usage_ratio(100_000, Some(200_000)), Some(0.5));
-        assert_eq!(context_usage_ratio(100, Some(0)), None);
-        assert_eq!(context_usage_ratio(100, None), None);
-    }
-
-    #[tokio::test]
-    async fn app_slash_command_exit() {
-        let mut app = App::new();
-        app.process_input("/quit");
-        assert!(app.should_exit());
-    }
-
-    #[tokio::test]
-    async fn app_slash_command_help() {
-        let mut app = App::new();
-        app.process_input("/help");
-        assert!(!app.output.is_empty());
-        assert!(
-            app.output
-                .last()
-                .is_some_and(|l| l.text.contains("EdgeCrab")
-                    || l.text.contains("slash commands")
-                    || l.text.contains("Navigation"))
-        );
-    }
-
-    #[tokio::test]
-    async fn image_model_selector_opens_with_default_reset_and_inventory() {
-        let mut app = App::new();
-
-        app.open_image_model_selector();
-
-        assert!(app.image_model_selector.active);
-        assert_eq!(
-            app.image_model_selector
-                .items
-                .first()
-                .map(|entry| entry.display.as_str()),
-            Some("default")
-        );
-        assert!(
-            app.image_model_selector
-                .items
-                .iter()
-                .any(|entry| entry.display == "gemini/gemini-2.5-flash-image")
-        );
-    }
-
-    #[tokio::test]
-    async fn model_selector_page_down_pages_list_in_split_view() {
-        let mut app = App::new();
-        app.open_model_selector_for("anthropic/claude-opus-4.6", ModelSelectorTarget::Primary);
-        app.model_selector.selected = 0;
-        app.set_split_detail_scroll(DetailSurface::ModelSelector, 0);
-
-        app.handle_key_event(event::KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
-
-        let expected = 8.min(app.model_selector.filtered.len().saturating_sub(1));
-        assert_eq!(app.model_selector.selected, expected);
-        assert_eq!(app.split_detail_scroll(DetailSurface::ModelSelector), 0);
-        assert_eq!(
-            app.detail_fullscreen_scroll(DetailSurface::ModelSelector),
-            0,
-            "split-view paging should move the visible list, not invisible detail scroll"
-        );
-    }
-
-    #[tokio::test]
-    #[ignore] // Skip fragile UI test - internal split pane state not properly initialized
-    async fn model_selector_tab_focuses_detail_before_paging() {
-        let mut app = App::new();
-        app.model_selector_seeded = false; // Force fresh seed
-        app.model_selector.items.clear(); // Clear any pre-existing items
-        app.open_model_selector_for("anthropic/claude-opus-4.6", ModelSelectorTarget::Primary);
-
-        app.handle_key_event(event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        app.handle_key_event(event::KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
-
-        assert_eq!(
-            app.simple_split_focus(DetailSurface::ModelSelector),
-            SplitPaneFocus::Detail
-        );
-        assert_eq!(app.model_selector.selected, 0);
-        // After PageDown in detail pane, scroll should increase (7-8 depending on view calculations)
-        assert!(app.split_detail_scroll(DetailSurface::ModelSelector) >= 7);
-    }
-
-    #[tokio::test]
-    async fn raw_ctrl_f_and_ctrl_b_page_model_selector_list_without_page_keys() {
-        let mut app = App::new();
-        app.open_model_selector_for("anthropic/claude-opus-4.6", ModelSelectorTarget::Primary);
-        app.model_selector.selected = 0;
-
-        app.handle_key_event(event::KeyEvent::new(
-            KeyCode::Char('\u{6}'),
-            KeyModifiers::NONE,
-        ));
-        let expected = 8.min(app.model_selector.filtered.len().saturating_sub(1));
-        assert_eq!(app.model_selector.selected, expected);
-        assert_eq!(app.split_detail_scroll(DetailSurface::ModelSelector), 0);
-
-        app.handle_key_event(event::KeyEvent::new(
-            KeyCode::Char('\u{2}'),
-            KeyModifiers::NONE,
-        ));
-        assert_eq!(app.model_selector.selected, 0);
-        assert_eq!(app.split_detail_scroll(DetailSurface::ModelSelector), 0);
-    }
-
-    #[tokio::test]
-    async fn model_selector_fullscreen_esc_returns_to_split_view() {
-        let mut app = App::new();
-        app.open_model_selector_for("anthropic/claude-opus-4.6", ModelSelectorTarget::Primary);
-        let selected_before = app.model_selector.selected;
-
-        app.handle_key_event(event::KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::NONE));
-        app.handle_key_event(event::KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
-
-        assert!(app.model_selector.active);
-        assert!(app.detail_fullscreen_active(DetailSurface::ModelSelector));
-        assert_eq!(app.model_selector.selected, selected_before);
-        assert_eq!(
-            app.detail_fullscreen_scroll(DetailSurface::ModelSelector),
-            8
-        );
-
-        app.handle_key_event(event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-
-        assert!(app.model_selector.active);
-        assert!(!app.detail_fullscreen_active(DetailSurface::ModelSelector));
-    }
-
-    #[tokio::test]
-    #[ignore] // Skip fragile UI test - runtime context pollution, internal state not properly initialized
-    async fn tool_manager_tab_focuses_detail_and_arrow_keys_change_scope() {
-        let mut app = App::new();
-        app.set_agent(mock_agent());
-        app.open_tool_manager(ToolManagerMode::All);
-
-        app.handle_key_event(event::KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert_eq!(app.tool_manager_scope, ToolManagerScope::Toolsets);
-        assert_eq!(
-            app.simple_split_focus(DetailSurface::ToolManager),
-            SplitPaneFocus::List
-        );
-
-        app.handle_key_event(event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        app.handle_key_event(event::KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
-        assert_eq!(
-            app.simple_split_focus(DetailSurface::ToolManager),
-            SplitPaneFocus::Detail
-        );
-        assert_eq!(app.split_detail_scroll(DetailSurface::ToolManager), 8);
-
-        app.handle_key_event(event::KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
-        assert_eq!(app.tool_manager_scope, ToolManagerScope::All);
-        assert_eq!(
-            app.simple_split_focus(DetailSurface::ToolManager),
-            SplitPaneFocus::List
-        );
-        assert_eq!(app.split_detail_scroll(DetailSurface::ToolManager), 0);
-    }
-
-    #[tokio::test]
-    async fn plugin_toggle_tab_focuses_detail_and_arrow_keys_change_scope() {
-        let mut app = App::new();
-        app.plugin_toggle.set_items(vec![PluginToggleEntry {
-            name: "demo".into(),
-            display_name: "Demo Plugin".into(),
-            description: (0..24)
-                .map(|idx| format!("line {idx:02} for plugin detail paging"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            version: "1.0.0".into(),
-            source: "local".into(),
-            kind: "skill".into(),
-            tool_count: 1,
-            estimated_tokens: 64,
-            check_state: PluginCheckState::On,
-            original_check_state: PluginCheckState::On,
-            runtime_status: "enabled".into(),
-            trust_level: "trusted".into(),
-            tools: vec!["demo_tool".into()],
-            cli_commands: vec![],
-            missing_env: vec![],
-            related_skills: vec![],
-            compatibility: Some("cli".into()),
-            install_source: None,
-            credentials_satisfied: true,
-            search_text: "demo plugin skill enabled trusted".into(),
-        }]);
-        app.plugin_toggle_scope = PluginScope::Global;
-        app.plugin_toggle.activate();
-
-        app.handle_key_event(event::KeyEvent::new(KeyCode::Right, KeyModifiers::NONE));
-        assert!(matches!(app.plugin_toggle_scope, PluginScope::Platform(_)));
-        assert_eq!(
-            app.simple_split_focus(DetailSurface::PluginToggle),
-            SplitPaneFocus::List
-        );
-
-        app.plugin_toggle_scope = PluginScope::Global;
-        app.plugin_toggle.set_items(vec![PluginToggleEntry {
-            name: "demo".into(),
-            display_name: "Demo Plugin".into(),
-            description: (0..24)
-                .map(|idx| format!("line {idx:02} for plugin detail paging"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            version: "1.0.0".into(),
-            source: "local".into(),
-            kind: "skill".into(),
-            tool_count: 1,
-            estimated_tokens: 64,
-            check_state: PluginCheckState::On,
-            original_check_state: PluginCheckState::On,
-            runtime_status: "enabled".into(),
-            trust_level: "trusted".into(),
-            tools: vec!["demo_tool".into()],
-            cli_commands: vec![],
-            missing_env: vec![],
-            related_skills: vec![],
-            compatibility: Some("cli".into()),
-            install_source: None,
-            credentials_satisfied: true,
-            search_text: "demo plugin skill enabled trusted".into(),
-        }]);
-        app.handle_key_event(event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        app.handle_key_event(event::KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
-        assert_eq!(
-            app.simple_split_focus(DetailSurface::PluginToggle),
-            SplitPaneFocus::Detail
-        );
-        assert_eq!(app.split_detail_scroll(DetailSurface::PluginToggle), 8);
-
-        app.handle_key_event(event::KeyEvent::new(KeyCode::Left, KeyModifiers::NONE));
-        assert!(matches!(app.plugin_toggle_scope, PluginScope::Platform(_)));
-        assert_eq!(
-            app.simple_split_focus(DetailSurface::PluginToggle),
-            SplitPaneFocus::List
-        );
-        assert_eq!(app.split_detail_scroll(DetailSurface::PluginToggle), 0);
-    }
-
-    #[tokio::test]
-    async fn session_browser_builds_rich_entries_from_saved_sessions() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db = Arc::new(
-            edgecrab_state::SessionDb::open(&dir.path().join("sessions.db")).expect("session db"),
-        );
-        let session = sample_browser_session(
-            "sess-alpha-123456",
-            "Debug auth flow",
-            1_720_000_000.0,
-            "openai/gpt-4o",
-        );
-        db.save_session(&session).expect("save session");
-        db.save_message(
-            "sess-alpha-123456",
-            &edgecrab_types::Message::user("Review the OAuth callback regression."),
-            1_720_000_010.0,
-        )
-        .expect("save message");
-
-        let agent = mock_agent_with_state_db(db);
-        let mut app = App::new();
-        app.set_agent(agent);
-        app.open_session_browser();
-
-        assert!(app.session_browser.active);
-        let entry = app
-            .session_browser
-            .items
-            .iter()
-            .find(|entry| entry.id == "sess-alpha-123456")
-            .expect("session entry");
-        assert_eq!(entry.display, "Debug auth flow");
-        assert_eq!(entry.preview, "Review the OAuth callback regression.");
-        assert!(entry.detail_view.contains("Model:     openai/gpt-4o"));
-        assert!(entry.detail_view.contains("Actions: Enter inspect"));
-    }
-
-    #[tokio::test]
-    async fn session_browser_query_surfaces_archived_message_content_hits() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db = Arc::new(
-            edgecrab_state::SessionDb::open(&dir.path().join("sessions.db")).expect("session db"),
-        );
-
-        let session = sample_browser_session(
-            "sess-beta-654321",
-            "Support triage",
-            1_720_000_100.0,
-            "anthropic/claude-opus-4.6",
-        );
-        db.save_session(&session).expect("save session");
-        db.save_message(
-            "sess-beta-654321",
-            &edgecrab_types::Message::user("Need help tracing websocket reconnect jitter"),
-            1_720_000_110.0,
-        )
-        .expect("save message");
-
-        let agent = mock_agent_with_state_db(db);
-        let mut app = App::new();
-        app.set_agent(agent);
-        app.open_session_browser();
-        app.session_browser.query = "websocket jitter".into();
-        app.refresh_session_browser();
-
-        assert!(app.session_browser.active);
-        assert!(app.session_browser.items.iter().any(|entry| {
-            entry.id == "sess-beta-654321"
-                && entry.matched_snippet.is_some()
-                && entry
-                    .matched_snippet
-                    .as_deref()
-                    .is_some_and(|snippet| snippet.contains("websocket"))
-        }));
-        assert_eq!(
-            app.session_browser.current().map(|entry| entry.id.as_str()),
-            Some("sess-beta-654321")
-        );
-    }
-
-    #[tokio::test]
-    async fn session_inspector_opens_and_escape_returns_to_browser() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db = Arc::new(
-            edgecrab_state::SessionDb::open(&dir.path().join("sessions.db")).expect("session db"),
-        );
-
-        let session = sample_browser_session(
-            "sess-gamma-222222",
-            "Tool chain debug",
-            1_720_000_200.0,
-            "openai/gpt-4.1",
-        );
-        db.save_session(&session).expect("save session");
-        db.save_message(
-            "sess-gamma-222222",
-            &edgecrab_types::Message::user("Run cargo clippy on the CLI crate"),
-            1_720_000_210.0,
-        )
-        .expect("save user");
-        db.save_message(
-            "sess-gamma-222222",
-            &edgecrab_types::Message::assistant("I will inspect the warnings first."),
-            1_720_000_220.0,
-        )
-        .expect("save assistant");
-
-        let agent = mock_agent_with_state_db(db);
-        let mut app = App::new();
-        app.set_agent(agent);
-        app.open_session_browser();
-
-        let entry = app
-            .session_browser
-            .items
-            .iter()
-            .find(|entry| entry.id == "sess-gamma-222222")
-            .cloned()
-            .expect("session entry");
-        app.open_session_inspector(entry);
-
-        assert!(app.session_inspector.active());
-        assert!(!app.session_browser.active);
-        assert_eq!(app.session_inspector.selector.items.len(), 2);
-        assert_eq!(
-            app.session_inspector
-                .session
-                .as_ref()
-                .map(|session| session.id.as_str()),
-            Some("sess-gamma-222222")
-        );
-
-        app.handle_key_event(event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-
-        assert!(!app.session_inspector.active());
-        assert!(app.session_browser.active);
-    }
-
-    #[tokio::test]
-    async fn session_inspector_prefers_matching_message_from_browser_search_hit() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db = Arc::new(
-            edgecrab_state::SessionDb::open(&dir.path().join("sessions.db")).expect("session db"),
-        );
-
-        let session = sample_browser_session(
-            "sess-hit-777777",
-            "Reconnect debugging",
-            1_720_000_230.0,
-            "anthropic/claude-opus-4.6",
-        );
-        db.save_session(&session).expect("save session");
-        db.save_message(
-            "sess-hit-777777",
-            &edgecrab_types::Message::user("Initial notes about the outage"),
-            1_720_000_231.0,
-        )
-        .expect("save user");
-        db.save_message(
-            "sess-hit-777777",
-            &edgecrab_types::Message::assistant(
-                "Tracing websocket reconnect jitter through the retry loop now.",
-            ),
-            1_720_000_232.0,
-        )
-        .expect("save assistant");
-
-        let agent = mock_agent_with_state_db(db);
-        let mut app = App::new();
-        app.set_agent(agent);
-        app.open_session_browser_with_query(Some("websocket jitter"));
-
-        let entry = app
-            .session_browser
-            .current()
-            .cloned()
-            .expect("search hit entry");
-        app.open_session_inspector(entry);
-
-        assert_eq!(
-            app.session_inspector
-                .selector
-                .current()
-                .map(|entry| (entry.index, entry.role_label.as_str())),
-            Some((1, "assistant"))
-        );
-
-        let detail = plain_lines_text(&app.build_session_inspector_detail_lines());
-        assert!(detail.contains("Opened from browser match: assistant ->"));
-        assert!(detail.contains("Selected message\n#2   assistant"));
-        assert!(detail.contains("Tracing websocket reconnect jitter through the retry loop now."));
-    }
-
-    #[tokio::test]
-    async fn session_inspector_detail_tracks_selected_message() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db = Arc::new(
-            edgecrab_state::SessionDb::open(&dir.path().join("sessions.db")).expect("session db"),
-        );
-
-        let session = sample_browser_session(
-            "sess-detail-888888",
-            "Inspector sync",
-            1_720_000_240.0,
-            "openai/gpt-4.1",
-        );
-        db.save_session(&session).expect("save session");
-        db.save_message(
-            "sess-detail-888888",
-            &edgecrab_types::Message::user("First unique message"),
-            1_720_000_241.0,
-        )
-        .expect("save first");
-        db.save_message(
-            "sess-detail-888888",
-            &edgecrab_types::Message::assistant("Second unique reply"),
-            1_720_000_242.0,
-        )
-        .expect("save second");
-
-        let agent = mock_agent_with_state_db(db);
-        let mut app = App::new();
-        app.set_agent(agent);
-        app.open_session_browser();
-
-        let entry = app
-            .session_browser
-            .items
-            .iter()
-            .find(|entry| entry.id == "sess-detail-888888")
-            .cloned()
-            .expect("session entry");
-        app.open_session_inspector(entry);
-
-        let initial_detail = plain_lines_text(&app.build_session_inspector_detail_lines());
-        assert!(initial_detail.contains("Selected message\n#1   user"));
-        assert!(initial_detail.contains("First unique message"));
-
-        app.handle_key_event(event::KeyEvent::new(KeyCode::Down, KeyModifiers::NONE));
-
-        let moved_detail = plain_lines_text(&app.build_session_inspector_detail_lines());
-        assert_eq!(
-            app.session_inspector
-                .selector
-                .current()
-                .map(|entry| entry.index),
-            Some(1)
-        );
-        assert!(moved_detail.contains("Selected message\n#2   assistant"));
-        assert!(moved_detail.contains("Second unique reply"));
-    }
-
-    #[tokio::test]
-    async fn session_browser_lowercase_letters_stay_in_filter() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db = Arc::new(
-            edgecrab_state::SessionDb::open(&dir.path().join("sessions.db")).expect("session db"),
-        );
-
-        let session = sample_browser_session(
-            "sess-delta-333333",
-            "Resume rehearsal",
-            1_720_000_300.0,
-            "anthropic/claude-3-5-sonnet",
-        );
-        db.save_session(&session).expect("save session");
-        db.save_message(
-            "sess-delta-333333",
-            &edgecrab_types::Message::user("Resume this later after lunch"),
-            1_720_000_310.0,
-        )
-        .expect("save message");
-
-        let agent = mock_agent_with_state_db(db);
-        let mut app = App::new();
-        app.set_agent(agent);
-        app.open_session_browser();
-
-        app.handle_key_event(event::KeyEvent::new(KeyCode::Char('r'), KeyModifiers::NONE));
-
-        assert!(app.session_browser.active);
-        assert_eq!(app.session_browser.query, "r");
-        assert!(!app.session_inspector.active());
-    }
-
-    #[tokio::test]
-    async fn session_slash_command_opens_live_current_session_inspector() {
-        let agent = mock_agent();
-        agent
-            .inject_assistant_context("Live note for debugging")
-            .await;
-
-        let mut app = App::new();
-        app.set_agent(agent);
-
-        app.process_input("/session");
-
-        assert!(app.session_inspector.active());
-        assert!(!app.session_browser.active);
-        assert_eq!(app.session_inspector.selector.items.len(), 1);
-        assert_eq!(
-            app.session_inspector
-                .session
-                .as_ref()
-                .map(|session| session.title.as_str()),
-            Some("Current session")
-        );
-        assert!(
-            app.session_inspector
-                .session
-                .as_ref()
-                .is_some_and(|session| session.is_live)
-        );
-        assert!(
-            app.output.is_empty(),
-            "rich inspector should replace shallow dump"
-        );
-    }
-
-    #[tokio::test]
-    async fn sessions_slash_command_opens_rich_browser_overlay() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db = Arc::new(
-            edgecrab_state::SessionDb::open(&dir.path().join("sessions.db")).expect("session db"),
-        );
-
-        let session = sample_browser_session(
-            "sess-epsilon-444444",
-            "Overlay test",
-            1_720_000_400.0,
-            "copilot/gpt-5-mini",
-        );
-        db.save_session(&session).expect("save session");
-        db.save_message(
-            "sess-epsilon-444444",
-            &edgecrab_types::Message::user("Inspect via slash command"),
-            1_720_000_410.0,
-        )
-        .expect("save message");
-
-        let agent = mock_agent_with_state_db(db);
-        let mut app = App::new();
-        app.set_agent(agent);
-
-        app.process_input("/sessions");
-
-        assert!(app.session_browser.active);
-        assert!(
-            app.output.is_empty(),
-            "rich browser should replace shallow dump"
-        );
-    }
-
-    #[tokio::test]
-    async fn sessions_alias_search_seeds_browser_query() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db = Arc::new(
-            edgecrab_state::SessionDb::open(&dir.path().join("sessions.db")).expect("session db"),
-        );
-
-        let session = sample_browser_session(
-            "sess-zeta-555555",
-            "OAuth troubleshooting",
-            1_720_000_500.0,
-            "copilot/gpt-5-mini",
-        );
-        db.save_session(&session).expect("save session");
-        db.save_message(
-            "sess-zeta-555555",
-            &edgecrab_types::Message::user("oauth callback mismatch debugging"),
-            1_720_000_510.0,
-        )
-        .expect("save message");
-
-        let agent = mock_agent_with_state_db(db);
-        let mut app = App::new();
-        app.set_agent(agent);
-
-        app.process_input("/sessions search oauth mismatch");
-
-        assert!(app.session_browser.active);
-        assert_eq!(app.session_browser.query, "oauth mismatch");
-        assert_eq!(
-            app.session_browser.current().map(|entry| entry.id.as_str()),
-            Some("sess-zeta-555555")
-        );
-    }
-
-    #[tokio::test]
-    async fn session_browser_tab_and_page_down_drive_detail_pane() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db = Arc::new(
-            edgecrab_state::SessionDb::open(&dir.path().join("sessions.db")).expect("session db"),
-        );
-
-        let session = sample_browser_session(
-            "sess-pane-666666",
-            "Pane focus",
-            1_720_000_600.0,
-            "copilot/gpt-5-mini",
-        );
-        db.save_session(&session).expect("save session");
-        db.save_message(
-            "sess-pane-666666",
-            &edgecrab_types::Message::user("One\nTwo\nThree\nFour\nFive\nSix\nSeven\nEight\nNine"),
-            1_720_000_610.0,
-        )
-        .expect("save message");
-
-        let agent = mock_agent_with_state_db(db);
-        let mut app = App::new();
-        app.set_agent(agent);
-        app.open_session_browser();
-
-        app.handle_key_event(event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        app.handle_key_event(event::KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
-
-        assert_eq!(app.session_browser_pane.focus, SplitPaneFocus::Detail);
-        assert_eq!(app.session_browser_pane.scroll, 8);
-        assert_eq!(app.session_browser.query, "");
-    }
-
-    #[tokio::test]
-    async fn session_browser_fullscreen_esc_returns_to_split_view() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let db = Arc::new(
-            edgecrab_state::SessionDb::open(&dir.path().join("sessions.db")).expect("session db"),
-        );
-
-        let session = sample_browser_session(
-            "sess-full-777777",
-            "Fullscreen detail",
-            1_720_000_700.0,
-            "copilot/gpt-5-mini",
-        );
-        db.save_session(&session).expect("save session");
-        db.save_message(
-            "sess-full-777777",
-            &edgecrab_types::Message::user(
-                "alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\neta\ntheta\niota",
-            ),
-            1_720_000_710.0,
-        )
-        .expect("save message");
-
-        let agent = mock_agent_with_state_db(db);
-        let mut app = App::new();
-        app.set_agent(agent);
-        app.open_session_browser();
-        app.handle_key_event(event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        app.handle_key_event(event::KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
-        assert_eq!(app.session_browser_pane.scroll, 8);
-
-        app.handle_key_event(event::KeyEvent::new(KeyCode::Char('Z'), KeyModifiers::NONE));
-        app.handle_key_event(event::KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
-
-        assert!(app.session_browser.active);
-        assert!(app.detail_fullscreen_active(DetailSurface::SessionBrowser));
-        assert_eq!(
-            app.detail_fullscreen_scroll(DetailSurface::SessionBrowser),
-            16
-        );
-
-        app.handle_key_event(event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));
-
-        assert!(app.session_browser.active);
-        assert!(!app.detail_fullscreen_active(DetailSurface::SessionBrowser));
-        assert_eq!(app.session_browser_pane.scroll, 16);
-    }
-
-    #[tokio::test]
-    async fn current_session_inspector_tab_and_page_down_scroll_detail() {
-        let agent = mock_agent();
-        agent
-            .inject_assistant_context("alpha\nbeta\ngamma\ndelta\nepsilon\nzeta\neta\ntheta\niota")
-            .await;
-
-        let mut app = App::new();
-        app.set_agent(agent);
-        app.process_input("/session");
-
-        app.handle_key_event(event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
-        app.handle_key_event(event::KeyEvent::new(KeyCode::PageDown, KeyModifiers::NONE));
-
-        assert_eq!(app.session_inspector.pane.focus, SplitPaneFocus::Detail);
-        assert_eq!(app.session_inspector.pane.scroll, 8);
-    }
-
-    #[test]
     fn mcp_selector_builder_merges_configured_and_official_entries() {
         let configured = vec![edgecrab_tools::tools::mcp_client::ConfiguredMcpServer {
             name: "local-git".into(),
@@ -33651,10 +21332,24 @@ kind = "skill"
     #[test]
     fn waiting_first_token_status_surfaces_the_right_message() {
         let theme = Theme::default();
-        let early =
-            format_waiting_first_token_status(&theme, TerminalGlyphProfile::Unicode, 0, 0, 0, 2);
-        let long =
-            format_waiting_first_token_status(&theme, TerminalGlyphProfile::Unicode, 0, 0, 0, 12);
+        let early = format_waiting_first_token_status(
+            &theme,
+            crate::status_indicator::StatusIndicatorStyle::Kaomoji,
+            TerminalGlyphProfile::Unicode,
+            0,
+            0,
+            0,
+            2,
+        );
+        let long = format_waiting_first_token_status(
+            &theme,
+            crate::status_indicator::StatusIndicatorStyle::Kaomoji,
+            TerminalGlyphProfile::Unicode,
+            0,
+            0,
+            0,
+            12,
+        );
         assert!(early.contains("first token"));
         assert!(long.contains("waiting for first token"));
         assert!(long.contains("^C=stop"));
@@ -33663,30 +21358,18 @@ kind = "skill"
     #[test]
     fn waiting_first_token_status_uses_ascii_spinner_when_requested() {
         let theme = Theme::default();
-        let status =
-            format_waiting_first_token_status(&theme, TerminalGlyphProfile::Ascii, 0, 0, 0, 2);
-        assert!(status.starts_with("- "));
-    }
-
-    #[test]
-    fn voice_presence_badges_cover_recording_and_playback_modes() {
-        let recording = format_voice_presence_badge(
-            VoicePresenceState::Recording {
-                elapsed_secs: 5,
-                continuous: true,
-            },
+        let status = format_waiting_first_token_status(
+            &theme,
+            crate::status_indicator::StatusIndicatorStyle::Ascii,
+            TerminalGlyphProfile::Ascii,
+            0,
+            0,
+            0,
             2,
         );
-        let speaking = format_voice_presence_badge(VoicePresenceState::Speaking, 2);
-        let listening = format_voice_presence_badge(VoicePresenceState::Listening, 2);
-        assert!(recording.contains("TALK"));
-        assert!(recording.contains("5s"));
-        assert!(speaking.contains("SPEAK"));
-        assert!(listening.contains("LISTEN"));
+        assert!(status.starts_with("| "));
     }
 
-    #[test]
-    #[serial_test::serial(edgecrab_home_env)]
     fn persist_voice_preferences_round_trip() {
         let _guard = crate::gateway_catalog::lock_test_env();
         let dir = tempfile::tempdir().expect("tempdir");
@@ -34626,8 +22309,8 @@ kind = "skill"
             recovered_message,
         ];
 
-        let recovered =
-            recover_latest_assistant_turn(&messages).expect("recover latest assistant turn");
+        let recovered = super::stream_forward::recover_latest_assistant_turn(&messages)
+            .expect("recover latest assistant turn");
         assert_eq!(recovered.text, "Recovered reply");
         assert_eq!(recovered.reasoning.as_deref(), Some("Recovered reasoning"));
     }
@@ -34641,7 +22324,7 @@ kind = "skill"
         let (response_tx, mut response_rx) = tokio::sync::mpsc::unbounded_channel();
         let hook_registry = Arc::new(edgecrab_gateway::hooks::HookRegistry::new());
 
-        let bridge = tokio::spawn(forward_agent_stream_to_tui(
+        let bridge = tokio::spawn(super::stream_forward::forward_agent_stream_to_tui(
             agent,
             chunk_rx,
             tokio::spawn(async { Ok::<(), edgecrab_types::AgentError>(()) }),
@@ -34676,7 +22359,7 @@ kind = "skill"
             .send(edgecrab_core::agent::StreamEvent::Token("hel".into()))
             .expect("send partial token");
 
-        let bridge = tokio::spawn(forward_agent_stream_to_tui(
+        let bridge = tokio::spawn(super::stream_forward::forward_agent_stream_to_tui(
             agent,
             chunk_rx,
             tokio::spawn(async { Ok::<(), edgecrab_types::AgentError>(()) }),
@@ -34736,9 +22419,14 @@ kind = "skill"
         );
     }
 
+    fn disable_activity_shelf(app: &mut App) {
+        app.turn_activity.enabled = false;
+    }
+
     #[tokio::test]
     async fn hidden_live_token_display_flushes_before_tool_exec() {
         let mut app = App::new();
+        disable_activity_shelf(&mut app);
         app.streaming_enabled = false;
         app.live_token_display_enabled = false;
         app.is_processing = true;
@@ -34771,6 +22459,7 @@ kind = "skill"
     #[tokio::test]
     async fn tool_done_updates_matching_placeholder_even_when_completions_arrive_out_of_order() {
         let mut app = App::new();
+        disable_activity_shelf(&mut app);
         app.tool_progress_mode = ToolProgressMode::All;
         app.response_tx
             .send(AgentResponse::ToolExec {
@@ -34814,6 +22503,7 @@ kind = "skill"
     #[tokio::test]
     async fn tool_progress_updates_active_placeholder_and_status_detail() {
         let mut app = App::new();
+        disable_activity_shelf(&mut app);
         app.response_tx
             .send(AgentResponse::ToolExec {
                 tool_call_id: "call_moa".into(),
@@ -34898,8 +22588,49 @@ kind = "skill"
             other => panic!("expected ToolExec state, got {other:?}"),
         }
         assert_eq!(app.in_flight_tool_count, 1);
-        assert!(app.active_tools.contains_key("call_read"));
-        assert!(!app.active_tools.contains_key("call_todo"));
+        assert!(app.turn_activity.contains_tool("call_read"));
+        assert!(!app.turn_activity.contains_tool("call_todo"));
+    }
+
+    #[tokio::test]
+    async fn tool_progress_follows_latest_reporting_parallel_tool() {
+        let mut app = App::new();
+        app.response_tx
+            .send(AgentResponse::ToolExec {
+                tool_call_id: "call_read".into(),
+                name: "read_file".into(),
+                args_json: r#"{"path":"src/main.rs"}"#.into(),
+            })
+            .expect("send read tool exec");
+        app.response_tx
+            .send(AgentResponse::ToolExec {
+                tool_call_id: "call_term".into(),
+                name: "terminal".into(),
+                args_json: r#"{"command":"cargo build"}"#.into(),
+            })
+            .expect("send terminal tool exec");
+        app.response_tx
+            .send(AgentResponse::ToolProgress {
+                tool_call_id: "call_term".into(),
+                name: "terminal".into(),
+                message: "Compiling edgecrab v0.9.0".into(),
+            })
+            .expect("send terminal progress");
+        app.check_responses();
+
+        match &app.display_state {
+            DisplayState::ToolExec {
+                tool_call_id,
+                name,
+                detail,
+                ..
+            } => {
+                assert_eq!(tool_call_id, "call_term");
+                assert_eq!(name, "terminal");
+                assert_eq!(detail.as_deref(), Some("Compiling edgecrab v0.9.0"));
+            }
+            other => panic!("expected ToolExec state, got {other:?}"),
+        }
     }
 
     #[tokio::test]
@@ -34935,8 +22666,123 @@ kind = "skill"
     }
 
     #[tokio::test]
+    async fn tool_progress_off_updates_minimal_indicator_with_tail() {
+        let mut app = App::new();
+        disable_activity_shelf(&mut app);
+        app.tool_progress_mode = ToolProgressMode::Off;
+        app.response_tx
+            .send(AgentResponse::ToolExec {
+                tool_call_id: "call_term".into(),
+                name: "terminal".into(),
+                args_json: r#"{"command":"cargo build"}"#.into(),
+            })
+            .expect("send tool exec");
+        app.response_tx
+            .send(AgentResponse::ToolProgress {
+                tool_call_id: "call_term".into(),
+                name: "terminal".into(),
+                message: "   Compiling edgecrab-tools v0.1.0\n   Compiling edgecrab-core".into(),
+            })
+            .expect("send tool progress");
+        app.check_responses();
+
+        assert_eq!(app.output.len(), 1);
+        let text = app.output[0].text.clone();
+        assert!(text.contains("cargo build"), "preview missing: {text}");
+        assert!(
+            text.contains("Compiling edgecrab-core"),
+            "tail missing: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn background_process_tail_updates_monitor_line_in_place() {
+        let mut app = App::new();
+        app.response_tx
+            .send(AgentResponse::BackgroundProcessTail {
+                process_id: "proc-1".into(),
+                command_preview: "cargo watch".into(),
+                tail: "Compiling edgecrab-cli".into(),
+            })
+            .expect("send bg tail");
+        app.check_responses();
+
+        assert_eq!(app.output.len(), 1);
+        assert!(app.output[0].text.contains("proc-1"));
+        assert!(app.output[0].text.contains("Compiling edgecrab-cli"));
+
+        app.response_tx
+            .send(AgentResponse::BackgroundProcessTail {
+                process_id: "proc-1".into(),
+                command_preview: "cargo watch".into(),
+                tail: "Finished dev".into(),
+            })
+            .expect("send bg tail update");
+        app.check_responses();
+
+        assert_eq!(app.output.len(), 1, "should update in place");
+        assert!(app.output[0].text.contains("Finished dev"));
+    }
+
+    #[tokio::test]
+    async fn background_process_finished_updates_monitor_line() {
+        let mut app = App::new();
+        app.response_tx
+            .send(AgentResponse::BackgroundProcessTail {
+                process_id: "proc-2".into(),
+                command_preview: "npm test".into(),
+                tail: "running tests".into(),
+            })
+            .expect("send bg tail");
+        app.response_tx
+            .send(AgentResponse::BackgroundProcessFinished {
+                process_id: "proc-2".into(),
+                exit_code: Some(0),
+            })
+            .expect("send bg finished");
+        app.check_responses();
+
+        assert_eq!(app.output.len(), 1);
+        assert!(app.output[0].text.contains("finished"));
+        assert!(app.bg_process_lines.is_empty());
+    }
+
+    #[tokio::test]
+    async fn background_process_finished_without_prior_tail_creates_line() {
+        let mut app = App::new();
+        app.response_tx
+            .send(AgentResponse::BackgroundProcessFinished {
+                process_id: "proc-fast".into(),
+                exit_code: Some(1),
+            })
+            .expect("send bg finished");
+        app.check_responses();
+
+        assert_eq!(app.output.len(), 1);
+        assert!(app.output[0].text.contains("proc-fast"));
+        assert!(app.output[0].text.contains("exited 1"));
+    }
+
+    #[tokio::test]
+    async fn tool_result_expand_toggles_full_body() {
+        let mut app = App::new();
+        let mut line = OutputLine::new_spans(vec![Span::raw("done")], OutputRole::Tool);
+        line.attach_expandable_body("line1\nline2\nline3\nline4".into());
+        app.output.push(line);
+
+        app.toggle_tool_result_expand();
+        assert!(app.output[0].expanded);
+        assert!(app.output[0].text.contains("line4"));
+
+        app.toggle_tool_result_expand();
+        assert!(!app.output[0].expanded);
+        assert!(app.output[0].prebuilt_spans.is_some());
+    }
+
+    #[tokio::test]
     async fn tool_progress_new_suppresses_repeated_signatures() {
         let mut app = App::new();
+        disable_activity_shelf(&mut app);
         app.tool_progress_mode = ToolProgressMode::New;
         for tool_call_id in ["call_1", "call_2"] {
             app.response_tx
@@ -34970,6 +22816,7 @@ kind = "skill"
     #[tokio::test]
     async fn tool_progress_verbose_adds_detail_lines() {
         let mut app = App::new();
+        disable_activity_shelf(&mut app);
         app.tool_progress_mode = ToolProgressMode::Verbose;
         app.response_tx
             .send(AgentResponse::ToolExec {
@@ -34999,6 +22846,7 @@ kind = "skill"
     #[tokio::test]
     async fn tool_progress_verbose_renders_todo_plan_board() {
         let mut app = App::new();
+        disable_activity_shelf(&mut app);
         app.tool_progress_mode = ToolProgressMode::Verbose;
         app.response_tx
             .send(AgentResponse::ToolExec {
@@ -35157,9 +23005,9 @@ kind = "skill"
 
     #[tokio::test]
     async fn format_tokens_display() {
-        assert_eq!(format_tokens(500), "500");
-        assert_eq!(format_tokens(1500), "1.5k");
-        assert_eq!(format_tokens(1_500_000), "1.5M");
+        assert_eq!(format_token_count(500), "500");
+        assert_eq!(format_token_count(1500), "1.5k");
+        assert_eq!(format_token_count(1_500_000), "1.5M");
     }
 
     // ── FP39: words_estimate ────────────────────────────────────────────────
@@ -35195,37 +23043,6 @@ kind = "skill"
         // Different threshold
         assert_eq!(format_elapsed_hint(Duration::from_secs(2), 3), "");
         assert_eq!(format_elapsed_hint(Duration::from_secs(3), 3), "  3s");
-    }
-
-    // ── FP40: extract_streaming_section ────────────────────────────────────
-
-    #[test]
-    fn extract_streaming_section_detects_headings() {
-        let mut section: Option<String> = None;
-        // Level 2 heading at start of token after newline
-        extract_streaming_section("\n## Competitive Landscape\nsome text", &mut section);
-        assert_eq!(section.as_deref(), Some("Competitive Landscape"));
-
-        // Level 1 heading
-        let mut s2: Option<String> = None;
-        extract_streaming_section("\n# Introduction\n", &mut s2);
-        assert_eq!(s2.as_deref(), Some("Introduction"));
-
-        // No heading → no change
-        let mut s3: Option<String> = Some("Previous".to_string());
-        extract_streaming_section("just prose text", &mut s3);
-        assert_eq!(s3.as_deref(), Some("Previous"));
-
-        // Heading at very start of first token (no leading newline)
-        let mut s4: Option<String> = None;
-        extract_streaming_section("## Market Analysis\n", &mut s4);
-        assert_eq!(s4.as_deref(), Some("Market Analysis"));
-
-        // Truncation at 30 chars
-        let mut s5: Option<String> = None;
-        let long_title = format!("\n## {}\n", "A".repeat(40));
-        extract_streaming_section(&long_title, &mut s5);
-        assert_eq!(s5.as_ref().map(|s| s.len()), Some(30));
     }
 
     #[tokio::test]
@@ -35790,20 +23607,12 @@ kind = "skill"
     #[tokio::test]
     async fn remove_reasoning_output_block_keeps_stream_alignment() {
         let mut app = App::new();
-        app.output.push(OutputLine {
-            text: "Thinking\nstep 1".into(),
-            role: OutputRole::Reasoning,
-            prebuilt_spans: None,
-            rendered: None,
-            plain_rendered: None,
-        });
-        app.output.push(OutputLine {
-            text: "answer".into(),
-            role: OutputRole::Assistant,
-            prebuilt_spans: None,
-            rendered: None,
-            plain_rendered: None,
-        });
+        app.output.push(OutputLine::new_text(
+            "Thinking\nstep 1",
+            OutputRole::Reasoning,
+        ));
+        app.output
+            .push(OutputLine::new_text("answer", OutputRole::Assistant));
         app.reasoning_line = Some(0);
         app.streaming_line = Some(1);
 
@@ -35917,6 +23726,18 @@ kind = "skill"
         let names: Vec<&str> = hints.iter().map(|(name, _)| *name).collect();
         assert!(names.contains(&"toggle"));
         assert!(names.contains(&"status"));
+    }
+
+    #[test]
+    fn command_arg_hints_computer_includes_setup_and_status() {
+        let hints = App::command_arg_hints("computer");
+        assert!(!hints.is_empty());
+        let names: Vec<&str> = hints.iter().map(|(name, _)| *name).collect();
+        assert!(names.contains(&"setup"));
+        assert!(names.contains(&"status"));
+        assert!(names.contains(&"permissions"));
+        assert!(names.contains(&"open"));
+        assert_eq!(hints, App::command_arg_hints("cu"));
     }
 
     /// After typing "/sessions " (with trailing space) update_completion should

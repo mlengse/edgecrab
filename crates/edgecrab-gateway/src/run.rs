@@ -54,7 +54,6 @@ use crate::webhook_subscriptions::{
 };
 use edgecrab_core::{Agent, IsolatedAgentOptions};
 use edgecrab_core::{config::resolve_personality, model_catalog::ModelCatalog};
-use edgecrab_tools::create_provider_for_model;
 use edgecrab_types::Role;
 
 /// Deterministic gateway-side image pre-analysis prompt.
@@ -245,9 +244,64 @@ fn gateway_help_text() -> String {
     text
 }
 
+fn handle_computer_command(msg: &IncomingMessage) -> String {
+    let config = edgecrab_core::AppConfig::load().unwrap_or_default();
+    let status_cfg = edgecrab_tools::ComputerUseStatusConfig {
+        enabled: config.computer_use.enabled,
+        keep_last_n_screenshots: config.computer_use.keep_last_n_screenshots,
+        confirm_destructive: config.computer_use.confirm_destructive,
+        cua_driver_cmd: config.computer_use.cua_driver_cmd.clone(),
+    };
+    let ctx = edgecrab_tools::ComputerUseReportContext {
+        active_model: String::new(),
+        enabled_toolsets: config.tools.enabled_toolsets.clone().unwrap_or_default(),
+        disabled_toolsets: config.tools.disabled_toolsets.clone().unwrap_or_default(),
+        auxiliary_provider: config.auxiliary.provider.clone(),
+        auxiliary_model: config.auxiliary.model.clone(),
+        auxiliary_base_url: config.auxiliary.base_url.clone(),
+        ..Default::default()
+    };
+    let sub = msg.get_command_args().trim().to_ascii_lowercase();
+    let first = sub.split_whitespace().next().unwrap_or("");
+    match first {
+        "enable" | "on" | "disable" | "off" => {
+            let enabled = matches!(first, "enable" | "on");
+            let persist_result = edgecrab_core::AppConfig::persist_computer_use_enabled(enabled);
+            edgecrab_tools::format_computer_enable_result(
+                enabled,
+                persist_result.is_ok(),
+                persist_result
+                    .err()
+                    .as_ref()
+                    .map(|e| e.to_string())
+                    .as_deref(),
+            )
+        }
+        "setup" => {
+            let install = edgecrab_tools::install_cua_driver(&status_cfg.cua_driver_cmd, false);
+            let persist_result = edgecrab_core::AppConfig::persist_computer_use_enabled(true);
+            let open_notes = edgecrab_tools::open_computer_use_settings();
+            edgecrab_tools::format_computer_setup_report(
+                &status_cfg,
+                &ctx,
+                &install,
+                Some(persist_result.is_ok()),
+                &open_notes,
+            )
+        }
+        other if edgecrab_tools::parse_install_args(other).0 => {
+            let upgrade = edgecrab_tools::parse_install_args(other).1;
+            let result = edgecrab_tools::install_cua_driver(&status_cfg.cua_driver_cmd, upgrade);
+            edgecrab_tools::render_install_report(&result)
+        }
+        _ => edgecrab_tools::format_computer_command(&sub, &status_cfg, &ctx),
+    }
+}
+
 fn format_gateway_insights(
     snapshot: &edgecrab_core::SessionSnapshot,
     historical: Option<&edgecrab_state::InsightsReport>,
+    handoffs: Option<&[edgecrab_state::HandoffRecord]>,
 ) -> String {
     let cost = edgecrab_core::pricing::estimate_cost(
         &edgecrab_core::pricing::CanonicalUsage {
@@ -277,6 +331,12 @@ fn format_gateway_insights(
         "• Estimated cost: ${:.4}\n",
         cost.amount_usd.unwrap_or(0.0)
     ));
+
+    if let Some(records) = handoffs {
+        text.push_str(&edgecrab_core::format_model_transfer_insights_section(
+            records,
+        ));
+    }
 
     if let Some(report) = historical {
         let ov = &report.overview;
@@ -489,6 +549,8 @@ async fn build_effective_text(agent: &Agent, msg: &IncomingMessage) -> String {
             provider: Some(provider.clone()),
             tool_registry: None,
             delegate_depth: 0,
+            delegate_agent_id: None,
+            delegate_parent_id: None,
             sub_agent_runner: None,
             delegation_event_tx: None,
             clarify_tx: None,
@@ -555,6 +617,8 @@ async fn build_effective_text(agent: &Agent, msg: &IncomingMessage) -> String {
             provider: None,
             tool_registry: None,
             delegate_depth: 0,
+            delegate_agent_id: None,
+            delegate_parent_id: None,
             sub_agent_runner: None,
             delegation_event_tx: None,
             clarify_tx: None,
@@ -880,6 +944,8 @@ async fn maybe_send_voice_reply(
         provider: None,
         tool_registry: None,
         delegate_depth: 0,
+        delegate_agent_id: None,
+        delegate_parent_id: None,
         sub_agent_runner: None,
         delegation_event_tx: None,
         clarify_tx: None,
@@ -1184,7 +1250,10 @@ impl Gateway {
 
     async fn handle_lsp_command(&self, msg: &IncomingMessage, origin_chat_id: &str) -> String {
         let args = msg.get_command_args().trim().to_ascii_lowercase();
-        match self.resolve_command_session_agent(msg, origin_chat_id).await {
+        match self
+            .resolve_command_session_agent(msg, origin_chat_id)
+            .await
+        {
             Ok(agent) => {
                 let current = agent.lsp_config().await;
                 match args.as_str() {
@@ -1225,11 +1294,9 @@ impl Gateway {
                             ),
                         }
                     }
-                    _ => {
-                        "Usage: /lsp [on|off|status|toggle]\n\
+                    _ => "Usage: /lsp [on|off|status|toggle]\n\
                          Controls LSP and post-write diagnostics on file mutations."
-                            .into()
-                    }
+                        .into(),
                 }
             }
             Err(error) => error,
@@ -1279,6 +1346,61 @@ impl Gateway {
         Ok(guard.agent.clone())
     }
 
+    async fn handle_session_model_switch(
+        &self,
+        msg: &IncomingMessage,
+        origin_chat_id: &str,
+        target: &str,
+    ) -> String {
+        let Ok(agent) = self
+            .resolve_command_session_agent(msg, origin_chat_id)
+            .await
+        else {
+            return "No agent configured.".into();
+        };
+
+        edgecrab_core::format_model_change_result(
+            agent
+                .switch_model_fast(target)
+                .await
+                .map(edgecrab_core::ModelChangeOutcome::Fast),
+        )
+    }
+
+    async fn handle_session_model_transfer(
+        &self,
+        msg: &IncomingMessage,
+        origin_chat_id: &str,
+        target: &str,
+    ) -> String {
+        let Ok(agent) = self
+            .resolve_command_session_agent(msg, origin_chat_id)
+            .await
+        else {
+            return "No agent configured.".into();
+        };
+
+        edgecrab_core::format_model_change_result(
+            agent
+                .perform_model_transfer(target, None)
+                .await
+                .map(edgecrab_core::ModelChangeOutcome::Transfer),
+        )
+    }
+
+    async fn handle_transfer_model_command(
+        &self,
+        msg: &IncomingMessage,
+        origin_chat_id: &str,
+    ) -> String {
+        let target = msg.get_command_args().trim();
+        if target.is_empty() {
+            return edgecrab_core::MODEL_TRANSFER_USAGE.into();
+        }
+        self.handle_session_model_transfer(msg, origin_chat_id, target)
+            .await
+    }
+
     async fn handle_model_command(&self, msg: &IncomingMessage, origin_chat_id: &str) -> String {
         let Ok(agent) = self
             .resolve_command_session_agent(msg, origin_chat_id)
@@ -1291,21 +1413,17 @@ impl Gateway {
         if target.is_empty() || target.eq_ignore_ascii_case("status") {
             let current = agent.model().await;
             return format!(
-                "Current model: {current}\nUsage: /model <provider>/<model>\nThis is session-scoped in gateway mode."
+                "Current model: {current}\nUsage: /model <provider>/<model>\n\
+                 Switches instantly (Hermes parity). Use /transfer-model for brief + window check."
             );
         }
 
-        let Some((provider, model)) = target.split_once('/') else {
+        if target.split_once('/').is_none() {
             return format!("Invalid model target '{target}'. Use /model <provider>/<model>.");
-        };
-
-        match create_provider_for_model(provider, model) {
-            Ok(provider_impl) => {
-                agent.swap_model(target.to_string(), provider_impl).await;
-                format!("Model switched to {target} for this chat session.")
-            }
-            Err(error) => format!("Failed to switch model to {target}: {error}"),
         }
+
+        self.handle_session_model_switch(msg, origin_chat_id, target)
+            .await
     }
 
     async fn handle_provider_command(&self, msg: &IncomingMessage, origin_chat_id: &str) -> String {
@@ -1511,11 +1629,18 @@ impl Gateway {
             .filter(|days| *days > 0)
             .unwrap_or(30);
         let snapshot = agent.session_snapshot().await;
+        let handoffs = match agent.state_db().await {
+            Some(db) => snapshot
+                .session_id
+                .as_deref()
+                .and_then(|sid| db.list_model_transfers(sid).ok()),
+            None => None,
+        };
         let historical = match agent.state_db().await {
             Some(db) => db.query_insights(days).ok(),
             None => None,
         };
-        format_gateway_insights(&snapshot, historical.as_ref())
+        format_gateway_insights(&snapshot, historical.as_ref(), handoffs.as_deref())
     }
 
     /// Returns `true` if the user is authorized to use the gateway.
@@ -1620,6 +1745,21 @@ impl Gateway {
             for w in &posture.warnings {
                 tracing::warn!(platform = %posture.platform, "{w}");
             }
+        }
+
+        if let Some(agent) = self.agent.clone()
+            && let Some(db) = agent.state_db().await
+        {
+            let watcher = crate::platform_handoff::SessionHandoffWatcher::new(
+                db,
+                self.session_manager.clone(),
+                agent,
+                self.adapters.clone(),
+                self.cancel.clone(),
+            );
+            tokio::spawn(async move {
+                watcher.run().await;
+            });
         }
 
         if let Some(agent) = self.agent.as_ref()
@@ -2252,7 +2392,20 @@ impl Gateway {
                                     Err(error) => Some(error),
                                 }
                             }
-                            "model" => Some(self.handle_model_command(&msg, &origin_chat_id).await),
+                            "model" => {
+                                if self.session_is_running(&session_key).await {
+                                    Some(edgecrab_core::MODEL_TRANSFER_BUSY_MESSAGE.into())
+                                } else {
+                                    Some(self.handle_model_command(&msg, &origin_chat_id).await)
+                                }
+                            }
+                            "transfer-model" | "transfer_model" => {
+                                if self.session_is_running(&session_key).await {
+                                    Some(edgecrab_core::MODEL_TRANSFER_BUSY_MESSAGE.into())
+                                } else {
+                                    Some(self.handle_transfer_model_command(&msg, &origin_chat_id).await)
+                                }
+                            }
                             "provider" => {
                                 Some(self.handle_provider_command(&msg, &origin_chat_id).await)
                             }
@@ -2311,6 +2464,12 @@ impl Gateway {
                             "lsp" => {
                                 Some(self.handle_lsp_command(&msg, &origin_chat_id).await)
                             }
+                            "computer" => {
+                                Some(handle_computer_command(&msg))
+                            }
+                            "web" => Some(edgecrab_tools::gateway_web_command_reply(
+                                msg.get_command_args(),
+                            )),
                             "commands" => {
                                 let page = msg
                                     .get_command_args()
@@ -2369,31 +2528,32 @@ impl Gateway {
                                     )),
                                 }
                             }
-                            "rollback" => {
+                            "rollback" | "checkpoint" => {
                                 let args = msg.get_command_args().trim();
-                                let prompt = match args {
-                                    "" | "list" => {
-                                        "Please list all available checkpoints by calling the checkpoint tool with action='list'.".to_string()
+                                let config =
+                                    edgecrab_core::AppConfig::load().unwrap_or_default();
+                                let cwd = std::env::current_dir()
+                                    .unwrap_or_else(|_| PathBuf::from("."));
+                                let cfg = edgecrab_tools::CheckpointConfig::from_home(
+                                    edgecrab_core::edgecrab_home(),
+                                    config.checkpoints.enabled,
+                                    config.checkpoints.max_snapshots,
+                                    config.checkpoints.max_total_size_mb,
+                                    config.checkpoints.max_file_size_mb,
+                                );
+                                Some(match edgecrab_tools::handle_rollback_command(
+                                    args, &cwd, cfg,
+                                ) {
+                                    edgecrab_tools::RollbackOutcome::Disabled => {
+                                        "Checkpoints are disabled. Set checkpoints.enabled: true in config.yaml.".into()
                                     }
-                                    name => format!(
-                                        "Please restore the checkpoint named '{}' by calling the checkpoint tool with action='restore', name='{}'.",
-                                        name, name
-                                    ),
-                                };
-                                let rollback_msg = IncomingMessage {
-                                    platform: msg.platform,
-                                    user_id: msg.user_id.clone(),
-                                    channel_id: msg.channel_id.clone(),
-                                    chat_type: msg.chat_type,
-                                    text: prompt,
-                                    thread_id: msg.thread_id.clone(),
-                                    metadata: msg.metadata.clone(),
-                                };
-                                let _ = tx.send(rollback_msg).await;
-                                Some(if args.is_empty() || args == "list" {
-                                    "Listing checkpoints...".into()
-                                } else {
-                                    format!("Attempting to restore checkpoint '{args}'...")
+                                    edgecrab_tools::RollbackOutcome::System(msg) => msg,
+                                    edgecrab_tools::RollbackOutcome::Error(msg) => msg,
+                                    edgecrab_tools::RollbackOutcome::Report {
+                                        title,
+                                        subtitle,
+                                        body,
+                                    } => format!("{title}\n{subtitle}\n\n{body}"),
                                 })
                             }
                             "background" | "bg" => {
@@ -2557,11 +2717,14 @@ impl Gateway {
                                                                 .await;
                                                         }
                                                 }
-                                                edgecrab_core::StreamEvent::SubAgentStart {
-                                                    task_index,
-                                                    task_count,
-                                                    goal,
-                                                } => {
+                                                    edgecrab_core::StreamEvent::SubAgentStart {
+                                                        task_index,
+                                                        task_count,
+                                                        goal,
+                                                        depth: _,
+                                                        agent_id: _,
+                                                        parent_id: _,
+                                                    } => {
                                                     if let Some(adapter) = adapter.as_ref() {
                                                         let _ = adapter
                                                             .send_status(

@@ -385,6 +385,95 @@ impl DiscordAdapter {
         anyhow::bail!("Discord editMessage failed ({}): {}", status, body_text)
     }
 
+    fn resolve_delivery_channel(metadata: &MessageMetadata) -> anyhow::Result<&str> {
+        metadata
+            .thread_id
+            .as_deref()
+            .or(metadata.channel_id.as_deref())
+            .ok_or_else(|| anyhow::anyhow!("Discord delivery requires channel_id or thread_id"))
+    }
+
+    /// Create a thread under a text channel for CLI session handoff.
+    async fn create_handoff_thread_on_channel(
+        &self,
+        parent_channel_id: &str,
+        name: &str,
+    ) -> anyhow::Result<Option<String>> {
+        let thread_name = name.trim();
+        let thread_name = if thread_name.is_empty() {
+            "handoff"
+        } else {
+            &thread_name[..thread_name.len().min(80)]
+        };
+
+        #[derive(Serialize)]
+        struct CreateThreadRequest<'a> {
+            name: &'a str,
+            auto_archive_duration: u32,
+        }
+
+        #[derive(Deserialize)]
+        struct ThreadChannel {
+            id: String,
+        }
+
+        let direct_url = format!("{}/channels/{}/threads", self.api_base, parent_channel_id);
+        let direct_body = CreateThreadRequest {
+            name: thread_name,
+            auto_archive_duration: 1440,
+        };
+        let direct = self
+            .client
+            .post(&direct_url)
+            .header("Authorization", format!("Bot {}", self.token))
+            .json(&direct_body)
+            .send()
+            .await?;
+
+        if direct.status().is_success() {
+            let created: ThreadChannel = direct.json().await?;
+            return Ok(Some(created.id));
+        }
+
+        debug!(
+            status = %direct.status(),
+            parent = %parent_channel_id,
+            "Discord direct thread create failed; trying seed-message fallback"
+        );
+
+        let seed = format!("🧵 EdgeCrab handoff: **{thread_name}**");
+        let seed_message_id = self
+            .send_rest_message_with_id(parent_channel_id, &seed, None)
+            .await?;
+
+        let fallback_url = format!(
+            "{}/channels/{}/messages/{}/threads",
+            self.api_base, parent_channel_id, seed_message_id
+        );
+        let fallback = self
+            .client
+            .post(&fallback_url)
+            .header("Authorization", format!("Bot {}", self.token))
+            .json(&direct_body)
+            .send()
+            .await?;
+
+        if fallback.status().is_success() {
+            let created: ThreadChannel = fallback.json().await?;
+            return Ok(Some(created.id));
+        }
+
+        let status = fallback.status();
+        let body_text = fallback.text().await.unwrap_or_default();
+        warn!(
+            status = %status,
+            body = %body_text,
+            parent = %parent_channel_id,
+            "Discord handoff thread creation failed"
+        );
+        Ok(None)
+    }
+
     /// Upload a local file as a Discord message attachment using multipart POST.
     ///
     /// Protocol: `POST /channels/{id}/messages` with `multipart/form-data`:
@@ -816,11 +905,7 @@ impl PlatformAdapter for DiscordAdapter {
     }
 
     async fn send(&self, msg: OutgoingMessage) -> anyhow::Result<()> {
-        let channel_id = msg
-            .metadata
-            .channel_id
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("Discord send requires channel_id"))?;
+        let channel_id = Self::resolve_delivery_channel(&msg.metadata)?;
 
         let reply_to = msg.metadata.message_id.as_deref();
 
@@ -866,19 +951,12 @@ impl PlatformAdapter for DiscordAdapter {
     }
 
     async fn send_typing(&self, metadata: &MessageMetadata) -> anyhow::Result<()> {
-        let channel_id = metadata
-            .channel_id
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("Discord send_typing requires channel_id"))?;
+        let channel_id = Self::resolve_delivery_channel(metadata)?;
         self.trigger_typing(channel_id).await
     }
 
     async fn send_and_get_id(&self, msg: OutgoingMessage) -> anyhow::Result<Option<String>> {
-        let channel_id = msg
-            .metadata
-            .channel_id
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("Discord send_and_get_id requires channel_id"))?;
+        let channel_id = Self::resolve_delivery_channel(&msg.metadata)?;
         let reply_to = msg.metadata.message_id.as_deref();
         let formatted = self.format_response(&msg.text, &msg.metadata);
         let chunks = split_message(&formatted, MAX_MESSAGE_LENGTH);
@@ -898,10 +976,7 @@ impl PlatformAdapter for DiscordAdapter {
         metadata: &MessageMetadata,
         new_text: &str,
     ) -> anyhow::Result<String> {
-        let channel_id = metadata
-            .channel_id
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("Discord edit_message requires channel_id"))?;
+        let channel_id = Self::resolve_delivery_channel(metadata)?;
         let formatted = self.format_response(new_text, metadata);
         let truncated = if formatted.len() > MAX_MESSAGE_LENGTH {
             edgecrab_core::safe_truncate(&formatted, MAX_MESSAGE_LENGTH)
@@ -923,10 +998,7 @@ impl PlatformAdapter for DiscordAdapter {
         caption: Option<&str>,
         metadata: &crate::platform::MessageMetadata,
     ) -> anyhow::Result<()> {
-        let channel_id = metadata
-            .channel_id
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("Discord send_photo requires channel_id"))?;
+        let channel_id = Self::resolve_delivery_channel(metadata)?;
 
         self.send_file_attachment(channel_id, path, caption).await
     }
@@ -941,10 +1013,7 @@ impl PlatformAdapter for DiscordAdapter {
         caption: Option<&str>,
         metadata: &crate::platform::MessageMetadata,
     ) -> anyhow::Result<()> {
-        let channel_id = metadata
-            .channel_id
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("Discord send_document requires channel_id"))?;
+        let channel_id = Self::resolve_delivery_channel(metadata)?;
 
         self.send_file_attachment(channel_id, path, caption).await
     }
@@ -957,10 +1026,7 @@ impl PlatformAdapter for DiscordAdapter {
     ) -> anyhow::Result<()> {
         use base64::{Engine as _, engine::general_purpose::STANDARD};
 
-        let channel_id = metadata
-            .channel_id
-            .as_deref()
-            .ok_or_else(|| anyhow::anyhow!("Discord send_voice requires channel_id"))?;
+        let channel_id = Self::resolve_delivery_channel(metadata)?;
 
         let prepared = prepare_voice_attachment(path, Platform::Discord).await?;
         let result = async {
@@ -1034,6 +1100,27 @@ impl PlatformAdapter for DiscordAdapter {
 
         prepared.cleanup().await;
         result
+    }
+
+    async fn create_handoff_thread(
+        &self,
+        parent_chat_id: &str,
+        name: &str,
+    ) -> anyhow::Result<Option<String>> {
+        match self
+            .create_handoff_thread_on_channel(parent_chat_id, name)
+            .await
+        {
+            Ok(thread_id) => Ok(thread_id),
+            Err(err) => {
+                warn!(
+                    error = %err,
+                    parent = %parent_chat_id,
+                    "Discord handoff thread creation failed; falling back to home channel"
+                );
+                Ok(None)
+            }
+        }
     }
 }
 

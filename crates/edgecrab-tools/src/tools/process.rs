@@ -173,22 +173,17 @@ pub(crate) async fn start_background_process(
 
     let process_id = table.register(command.to_string(), cwd.clone(), session_key);
 
+    if let Some(sink) = ctx.watch_notification_tx.clone() {
+        table.set_watch_sink(&process_id, sink).await;
+    }
+
     // Set watch patterns if provided
     if !watch_patterns.is_empty() {
         table.set_watch_patterns(&process_id, watch_patterns).await;
     }
 
     if ctx.config.terminal_backend == BackendKind::Local {
-        spawn_local_process(
-            tool_name,
-            command,
-            &cwd,
-            pty,
-            table,
-            process_id,
-            ctx.watch_notification_tx.clone(),
-        )
-        .await
+        spawn_local_process(tool_name, command, &cwd, pty, table, process_id).await
     } else {
         let backend = get_or_create_backend(ctx).await?;
         spawn_remote_process(
@@ -294,7 +289,6 @@ async fn spawn_local_process(
     pty: bool,
     table: &Arc<ProcessTable>,
     process_id: String,
-    watch_sink: Option<tokio::sync::mpsc::UnboundedSender<crate::process_table::WatchEvent>>,
 ) -> Result<String, ToolError> {
     if pty {
         return crate::local_pty::spawn_background(tool_name, command, cwd, table, process_id)
@@ -360,18 +354,16 @@ async fn spawn_local_process(
     if let Some(stdout_reader) = stdout {
         let t = Arc::clone(&table_clone);
         let p = pid_clone.clone();
-        let ws = watch_sink.clone();
         tokio::spawn(async move {
-            drain_reader(stdout_reader, &t, &p, ws).await;
+            drain_reader(stdout_reader, &t, &p).await;
         });
     }
 
     if let Some(stderr_reader) = stderr {
         let t = Arc::clone(&table_clone);
         let p = pid_clone.clone();
-        let ws = watch_sink;
         tokio::spawn(async move {
-            drain_reader(stderr_reader, &t, &p, ws).await;
+            drain_reader(stderr_reader, &t, &p).await;
         });
     }
 
@@ -444,6 +436,7 @@ async fn spawn_remote_process(
             cwd,
             Duration::from_secs(10),
             CancellationToken::new(),
+            crate::tool_progress_tail::ExecuteOptions::default(),
         )
         .await?;
 
@@ -489,7 +482,13 @@ async fn spawn_remote_process(
                         exit = shell_quote(&exit_path),
                     );
                     let _ = backend_poll
-                        .execute(&kill_cmd, &cwd_poll, Duration::from_secs(5), CancellationToken::new())
+                        .execute(
+                            &kill_cmd,
+                            &cwd_poll,
+                            Duration::from_secs(5),
+                            CancellationToken::new(),
+                            crate::tool_progress_tail::ExecuteOptions::default(),
+                        )
                         .await;
                     table_poll.mark_killed(&pid_poll).await;
                     break;
@@ -539,6 +538,7 @@ async fn refresh_remote_output(
             cwd,
             Duration::from_secs(5),
             CancellationToken::new(),
+            crate::tool_progress_tail::ExecuteOptions::default(),
         )
         .await?;
     table
@@ -562,6 +562,7 @@ async fn read_remote_exit_code(
             cwd,
             Duration::from_secs(5),
             CancellationToken::new(),
+            crate::tool_progress_tail::ExecuteOptions::default(),
         )
         .await?;
     Ok(output
@@ -602,7 +603,6 @@ async fn drain_reader(
     mut reader: BufReader<impl tokio::io::AsyncRead + Unpin>,
     table: &ProcessTable,
     process_id: &str,
-    watch_sink: Option<tokio::sync::mpsc::UnboundedSender<crate::process_table::WatchEvent>>,
 ) {
     let mut first_lines = true; // still scanning the startup noise prefix
     let mut line = String::new();
@@ -622,18 +622,6 @@ async fn drain_reader(
                 table
                     .append_output(process_id, vec![trimmed.to_string()])
                     .await;
-
-                // Check watch patterns if configured
-                if let Some(ref sink) = watch_sink
-                    && let Some(entry) = table.get_record(process_id)
-                {
-                    let mut rec = entry.lock().await;
-                    if let Some(ref mut watch) = rec.watch_state {
-                        crate::process_table::check_watch_patterns(
-                            trimmed, process_id, watch, sink,
-                        );
-                    }
-                }
             }
             Err(_) => break,
         }
@@ -943,6 +931,8 @@ impl ToolHandler for WaitForProcessTool {
 
         let timeout_secs = args.timeout_secs.unwrap_or(60).clamp(1, 3600);
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
+        let mut last_heartbeat = std::time::Instant::now()
+            - std::time::Duration::from_secs(crate::tool_progress_tail::HEARTBEAT_INTERVAL_SECS);
 
         // Poll the table every 500ms until the process is no longer Running.
         //
@@ -974,6 +964,19 @@ impl ToolHandler for WaitForProcessTool {
                         return Ok(format!(
                             "[{}: still running after {}s — use get_process_output to poll]\n{}",
                             args.process_id, timeout_secs, output
+                        ));
+                    }
+
+                    let now = std::time::Instant::now();
+                    if now.duration_since(last_heartbeat)
+                        >= std::time::Duration::from_secs(
+                            crate::tool_progress_tail::HEARTBEAT_INTERVAL_SECS,
+                        )
+                    {
+                        last_heartbeat = now;
+                        ctx.emit_progress(crate::tool_progress_tail::format_wait_heartbeat(
+                            &args.process_id,
+                            &output,
                         ));
                     }
 

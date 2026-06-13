@@ -1450,6 +1450,35 @@ dependencies = [
 ]
 
 [[package]]
+name = "cookie"
+version = "0.18.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "4ddef33a339a91ea89fb53151bd0a4689cfce27055c291dfa69945475d22c747"
+dependencies = [
+ "percent-encoding",
+ "time",
+ "version_check",
+]
+
+[[package]]
+name = "cookie_store"
+version = "0.21.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2eac901828f88a5241ee0600950ab981148a18f2f756900ffba1b125ca6a3ef9"
+dependencies = [
+ "cookie",
+ "document-features",
+ "idna",
+ "log",
+ "publicsuffix",
+ "serde",
+ "serde_derive",
+ "serde_json",
+ "time",
+ "url",
+]
+
+[[package]]
 name = "core-foundation"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1858,7 +1887,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users 0.5.2",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1947,7 +1976,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-acp"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1967,7 +1996,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-cli"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -1987,6 +2016,7 @@ dependencies = [
  "edgecrab-gateway",
  "edgecrab-migrate",
  "edgecrab-plugins",
+ "edgecrab-proxy",
  "edgecrab-state",
  "edgecrab-tools",
  "edgecrab-types",
@@ -2020,16 +2050,17 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-command-catalog"
-version = "0.9.0"
+version = "0.10.0"
 
 [[package]]
 name = "edgecrab-core"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
  "aws-config",
  "aws-sdk-bedrock",
+ "base64 0.22.1",
  "chrono",
  "dirs 5.0.1",
  "dotenvy",
@@ -2048,16 +2079,18 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_norway",
+ "sha2 0.10.9",
  "tempfile",
  "tokio",
  "tokio-util",
  "tracing",
+ "url",
  "uuid",
 ]
 
 [[package]]
 name = "edgecrab-cron"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2076,7 +2109,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-gateway"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "aes",
  "anyhow",
@@ -2123,7 +2156,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-lsp"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-lsp",
@@ -2152,7 +2185,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-migrate"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2185,7 +2218,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-plugins"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2212,6 +2245,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "edgecrab-proxy"
+version = "0.10.0"
+dependencies = [
+ "anyhow",
+ "async-stream",
+ "async-trait",
+ "axum",
+ "base64 0.22.1",
+ "chrono",
+ "dirs 5.0.1",
+ "edgecrab-core",
+ "edgecrab-security",
+ "edgecrab-tools",
+ "edgecrab-types",
+ "edgequake-llm",
+ "futures",
+ "libc",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "serial_test",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tower",
+ "tracing",
+ "url",
+ "uuid",
+]
+
+[[package]]
 name = "edgecrab-python"
 version = "0.1.0"
 dependencies = [
@@ -2230,7 +2296,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-sdk"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "edgecrab-sdk-core",
@@ -2243,7 +2309,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-sdk-core"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "edgecrab-core",
@@ -2262,7 +2328,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-sdk-macros"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2271,7 +2337,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-security"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "aho-corasick",
  "edgecrab-types",
@@ -2280,6 +2346,7 @@ dependencies = [
  "secrecy",
  "serde",
  "serde_json",
+ "serde_norway",
  "strip-ansi-escapes",
  "subtle",
  "tempfile",
@@ -2292,7 +2359,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-state"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
@@ -2309,7 +2376,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-tools"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2318,6 +2385,7 @@ dependencies = [
  "cron",
  "dashmap",
  "dirs 5.0.1",
+ "edgecrab-core",
  "edgecrab-cron",
  "edgecrab-security",
  "edgecrab-state",
@@ -2331,6 +2399,7 @@ dependencies = [
  "mockall",
  "openssh",
  "portable-pty",
+ "rand 0.9.4",
  "regex",
  "reqwest",
  "serde",
@@ -2346,6 +2415,7 @@ dependencies = [
  "tokio-tungstenite",
  "tokio-util",
  "tracing",
+ "unicode-normalization",
  "url",
  "uuid",
  "which",
@@ -2354,7 +2424,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-types"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "edgequake-llm",
@@ -2393,8 +2463,8 @@ dependencies = [
 
 [[package]]
 name = "edgequake-llm"
-version = "0.6.23"
-source = "git+https://github.com/raphaelmansuy/edgequake-llm.git?tag=v0.6.23#d2b437572489dde8ab2a7de903fb5cc0ee900c25"
+version = "0.6.24"
+source = "git+https://github.com/raphaelmansuy/edgequake-llm.git?tag=v0.6.24#fef81399a6537df14b8004a7a3887876d5b93e06"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -2503,7 +2573,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3650,7 +3720,7 @@ dependencies = [
  "portable-atomic",
  "portable-atomic-util",
  "serde_core",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3738,9 +3808,9 @@ checksum = "7a79a3332a6609480d7d0c9eab957bca6b455b91bb84e66d19f5ff66294b85b8"
 
 [[package]]
 name = "lettre"
-version = "0.11.21"
+version = "0.11.22"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "dabda5859ee7c06b995b9d1165aa52c39110e079ef609db97178d86aeb051fa7"
+checksum = "0da65617f6cb926332d039cb578aad56178da86e128db6a1b09f4c94fa5b3349"
 dependencies = [
  "base64 0.22.1",
  "email-encoding",
@@ -4251,7 +4321,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4885,6 +4955,22 @@ dependencies = [
  "rusty-fork",
  "tempfile",
  "unarray",
+]
+
+[[package]]
+name = "psl-types"
+version = "2.0.11"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
+
+[[package]]
+name = "publicsuffix"
+version = "2.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6f42ea446cab60335f76979ec15e12619a2165b5ae2c12166bef27d283a9fadf"
+dependencies = [
+ "idna",
+ "psl-types",
 ]
 
 [[package]]
@@ -5549,7 +5635,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6268,7 +6354,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7767,6 +7853,8 @@ dependencies = [
  "base64 0.22.1",
  "boring2",
  "bytes",
+ "cookie",
+ "cookie_store",
  "futures-util",
  "http 1.4.0",
  "http-body 1.0.1",

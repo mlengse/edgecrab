@@ -111,6 +111,88 @@ impl Message {
         }
     }
 
+    /// Build a tool result message, promoting computer_use multimodal JSON to parts.
+    pub fn tool_result_from_output(tool_call_id: &str, name: &str, content: &str) -> Self {
+        Self::tool_result_from_output_with_policy(tool_call_id, name, content, true)
+    }
+
+    /// Like [`tool_result_from_output`], but when `store_inline_images` is false,
+    /// never promotes inline screenshots into `Content::Parts` (Hermes session cache parity).
+    pub fn tool_result_from_output_with_policy(
+        tool_call_id: &str,
+        name: &str,
+        content: &str,
+        store_inline_images: bool,
+    ) -> Self {
+        let content = if store_inline_images {
+            content.to_string()
+        } else {
+            crate::multimodal::strip_inline_images_from_tool_output(name, content)
+        };
+        let content = content.as_str();
+        if name == "computer_use"
+            && let Some(value) = crate::multimodal::parse_multimodal_value(content)
+        {
+            // Session downgrade: keep compact JSON/text only (API attach policy is separate).
+            if !store_inline_images {
+                return Self::tool_result(tool_call_id, name, content);
+            }
+            // Path-only envelope: compact JSON in history; image attached at API boundary.
+            if crate::multimodal::multimodal_disk_image(&value).is_some()
+                && !crate::multimodal::multimodal_value_has_inline_image(&value)
+            {
+                return Self::tool_result(tool_call_id, name, content);
+            }
+
+            let summary = value
+                .get("text_summary")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let mut parts = vec![ContentPart::Text { text: summary }];
+            if let Some(items) = value.get("content").and_then(|c| c.as_array()) {
+                for item in items {
+                    if item.get("type").and_then(|t| t.as_str()) == Some("image_url")
+                        && let Some(url) = item
+                            .get("image_url")
+                            .and_then(|iu| iu.get("url"))
+                            .and_then(|u| u.as_str())
+                    {
+                        parts.push(ContentPart::ImageUrl {
+                            image_url: ImageUrl {
+                                url: url.to_string(),
+                                detail: Some("auto".into()),
+                            },
+                        });
+                    }
+                }
+            }
+            return Self {
+                role: Role::Tool,
+                content: Some(Content::Parts(parts)),
+                tool_call_id: Some(tool_call_id.to_string()),
+                name: Some(name.to_string()),
+                ..Default::default()
+            };
+        }
+        Self::tool_result(tool_call_id, name, content)
+    }
+
+    /// Persist a tool result using the multimodal attach policy for this session.
+    pub fn tool_result_for_session_policy(
+        tool_call_id: &str,
+        name: &str,
+        raw_output: &str,
+        store_inline_images: bool,
+    ) -> Self {
+        Self::tool_result_from_output_with_policy(
+            tool_call_id,
+            name,
+            raw_output,
+            store_inline_images,
+        )
+    }
+
     /// Assistant message that requested tool calls.
     ///
     /// WHY store tool_calls on assistant messages: When rebuilding the

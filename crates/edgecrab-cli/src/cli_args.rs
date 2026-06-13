@@ -289,6 +289,14 @@ pub enum Command {
     /// Equivalent to `hermes doctor`. Prints a colored status report.
     Doctor,
 
+    /// Inspect and maintain the filesystem checkpoint store
+    ///
+    /// Equivalent to `hermes checkpoints`. Safe to run while EdgeCrab is idle.
+    Checkpoints {
+        #[command(subcommand)]
+        command: Option<CheckpointsCommand>,
+    },
+
     /// Migrate from hermes-agent (~/.hermes/) to EdgeCrab (~/.edgecrab/)
     ///
     /// Copies config, memories, skills, and .env. Safe to re-run.
@@ -437,6 +445,22 @@ pub enum Command {
     Cron {
         #[command(subcommand)]
         command: CronCommand,
+    },
+
+    /// Local OpenAI-compatible proxy for raw LLM inference (subscription bridge)
+    ///
+    /// Equivalent to `hermes proxy`. Exposes configured providers at `/v1/chat/completions`
+    /// without running the agent loop.
+    #[command(
+        about = "OpenAI-compatible local inference proxy",
+        long_about = "OpenAI-compatible local inference proxy for Aider, Cline, and OpenAI SDK.\n\n\
+                      Quick start (Grok): edgecrab proxy setup grok && edgecrab proxy start --provider xai\n\
+                      Doctor: edgecrab proxy doctor\n\
+                      Clients: http://127.0.0.1:11434/v1 with the local proxy token (not provider OAuth)."
+    )]
+    Proxy {
+        #[command(subcommand)]
+        command: Option<ProxyCommand>,
     },
 
     #[command(
@@ -633,6 +657,22 @@ pub enum MemoryCommand {
 }
 
 #[derive(Subcommand, Debug, Clone)]
+pub enum GrokAuthCommand {
+    /// Open x.ai sign-in and save a short-lived PKCE session (~10 min)
+    Start {
+        /// Do not open a browser (print URL only)
+        #[arg(long)]
+        no_browser: bool,
+    },
+    /// Paste the authorization code from x.ai and save tokens
+    Finish {
+        /// Code from the x.ai page (skips interactive paste)
+        #[arg(long = "oauth-code")]
+        oauth_code: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
 pub enum AuthCommand {
     /// List auth targets and their local state
     List,
@@ -643,16 +683,45 @@ pub enum AuthCommand {
     },
     /// Add or cache credentials for one auth target
     Add {
-        /// Auth target: `copilot`, `mcp/<server>`, or a configured MCP server name
+        /// Auth target: `copilot`, `nous`, `grok`, `mcp/<server>`, or a configured MCP server name
         target: String,
         /// Token value to cache (required for MCP bearer-token targets; optional for Copilot)
         #[arg(long)]
         token: Option<String>,
+        /// OAuth: do not open a browser (print URL only; for SSH/remote hosts)
+        #[arg(long)]
+        no_browser: bool,
+        /// OAuth: paste code flow (default for grok; x.ai rarely reaches localhost)
+        #[arg(long)]
+        manual_paste: bool,
+        /// OAuth: try localhost callback (often fails on x.ai; use paste flow instead)
+        #[arg(long)]
+        loopback: bool,
+        /// OAuth: authorization code (use after `auth grok start`, or with `--oauth-code`)
+        #[arg(long = "oauth-code")]
+        oauth_code: Option<String>,
     },
     /// Start an interactive login/import flow
     Login {
-        /// Auth target: `copilot`, `mcp/<server>`, or a configured MCP server name (defaults to `copilot`)
+        /// Auth target: `copilot`, `nous`, `grok`, `mcp/<server>`, etc. (defaults to `copilot`)
         target: Option<String>,
+        /// OAuth: do not open a browser (print URL only)
+        #[arg(long)]
+        no_browser: bool,
+        /// OAuth: paste code flow (default for grok)
+        #[arg(long)]
+        manual_paste: bool,
+        /// OAuth: try localhost callback
+        #[arg(long)]
+        loopback: bool,
+        /// OAuth: authorization code
+        #[arg(long = "oauth-code")]
+        oauth_code: Option<String>,
+    },
+    /// xAI Grok OAuth — two-step sign-in (recommended)
+    Grok {
+        #[command(subcommand)]
+        command: GrokAuthCommand,
     },
     /// Remove local cached credentials for one target
     #[command(visible_aliases = ["logout", "rm"])]
@@ -1012,6 +1081,95 @@ pub enum CronCommand {
     Run { id: String },
     /// Remove a scheduled job
     Remove { id: String },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum CheckpointsCommand {
+    /// Show total size, project count, and per-project breakdown (default)
+    #[command(visible_alias = "list")]
+    Status {
+        #[arg(long, default_value_t = 20)]
+        limit: usize,
+    },
+    /// Delete orphan/stale checkpoints and GC the store
+    Prune {
+        #[arg(long, default_value_t = 7)]
+        retention_days: u32,
+        #[arg(long, default_value_t = 200)]
+        max_size_mb: u32,
+        #[arg(long)]
+        keep_orphans: bool,
+    },
+    /// Delete the entire checkpoint base (all /rollback history)
+    Clear {
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Delete only legacy-* archives from v1 migration
+    ClearLegacy {
+        #[arg(short, long)]
+        force: bool,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum ProxyCommand {
+    /// Guided setup: enable upstream, token, and print client snippet
+    Setup {
+        /// Preset: grok, xai, or nous
+        provider: Option<String>,
+        /// Non-interactive: apply without confirmation
+        #[arg(long)]
+        yes: bool,
+    },
+    /// Add a built-in upstream preset to config.yaml (grok, xai, nous)
+    Enable { provider: String },
+    /// Preflight: token, upstream auth, config
+    Doctor,
+    /// Print OPENAI_API_BASE / Aider snippet for clients
+    Client {
+        #[arg(long)]
+        show_token: bool,
+    },
+    /// Run the proxy server in the foreground (Ctrl+C to stop)
+    Start {
+        #[arg(long, default_value = "127.0.0.1")]
+        host: String,
+        #[arg(long, default_value_t = 11_434)]
+        port: u16,
+        /// Allow binding to non-loopback addresses (requires proxy token)
+        #[arg(long)]
+        allow_public: bool,
+        /// Hermes-style: forward all allowed `/v1/*` routes to this upstream key
+        #[arg(long)]
+        provider: Option<String>,
+    },
+    /// Show proxy configuration and token path status
+    Status,
+    /// List configured forward upstreams (Hermes `proxy providers`)
+    #[command(name = "upstreams", alias = "providers")]
+    Upstreams,
+    /// Manage the local client bearer token
+    Token {
+        #[command(subcommand)]
+        command: ProxyTokenCommand,
+    },
+}
+
+#[derive(Subcommand, Debug, Clone)]
+pub enum ProxyTokenCommand {
+    /// Write or generate the proxy token
+    Set {
+        /// Token value (generated when omitted)
+        token: Option<String>,
+    },
+    /// Print the current token (redacted unless --show)
+    Show {
+        #[arg(long)]
+        show: bool,
+    },
+    /// Generate a new token
+    Rotate,
 }
 
 #[derive(Subcommand, Debug, Clone)]
@@ -1863,8 +2021,20 @@ mod tests {
         assert!(matches!(
             args.command,
             Some(Command::Auth {
-                command: AuthCommand::Add { target, token }
-            }) if target == "copilot" && token.as_deref() == Some("ghu_test")
+                command: AuthCommand::Add {
+                target,
+                token,
+                no_browser,
+                manual_paste,
+                loopback,
+                oauth_code,
+            }
+            }) if target == "copilot"
+                && token.as_deref() == Some("ghu_test")
+                && !no_browser
+                && !manual_paste
+                && !loopback
+                && oauth_code.is_none()
         ));
     }
 

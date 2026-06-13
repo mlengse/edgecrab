@@ -14,7 +14,7 @@
 
 EdgeCrab is a **SuperAgent** — a personal assistant and coding agent forged in Rust. It carries the soul of **Nous Hermes Agent** (autonomous reasoning, persistent memory, user-first alignment) and the always-on presence of **OpenClaw** (17 messaging gateways, smart-home integration), packaged as a stripped native release binary of about **49 MB** on current macOS arm64 builds, with zero Python or Node.js runtime dependencies. Runs on Linux, macOS, and Android (Termux).
 
-> **Latest release: v0.9.0** — an opt-in Shadow Judge completion oracle, structured `report_task_status` harness signals, and tighter anti-loop tool contracts that help EdgeCrab recover from premature stops and repeated malformed tool retries.
+> **Latest release: v0.10.0** — Hermes-parity **terminal UX**: live activity shelf with tool-progress tails, `/agents` delegation dashboard (kill · replay · Gantt · spawn pause), queued-message composer, `/model` instant hot-swap, and modular TUI overlay stack. Plus Ralph loop goals, LSP diagnostics, native web search, OpenAI proxy, and subscription OAuth.
 
 
 ## Architecture
@@ -192,6 +192,58 @@ edgecrab --quiet "count lines in src/**/*.rs"   # pipe-safe, no banner
 edgecrab -C "continue-my-refactor"              # resume named session
 edgecrab -w "explore that perf idea"            # isolated git worktree
 ```
+
+### OpenAI-compatible proxy (Aider, Cline, OpenAI SDK)
+
+Expose EdgeCrab-configured LLM providers to third-party clients — **not** the full agent API
+(distinct from the gateway `api_server` platform):
+
+```bash
+# Grok / xAI OAuth (recommended path)
+edgecrab proxy setup grok             # writes config + token + client snippet
+edgecrab proxy doctor
+edgecrab proxy start --provider xai
+
+# Or step by step
+edgecrab proxy enable grok
+edgecrab proxy token set
+edgecrab proxy client                 # print OPENAI_API_BASE / Aider vars
+edgecrab proxy start --provider xai
+```
+
+Point any OpenAI client at `http://127.0.0.1:11434/v1` with `Authorization: Bearer <proxy-token>`.
+Map friendly names in `~/.edgecrab/config.yaml`:
+
+```yaml
+proxy:
+  port: 11434
+  model_aliases:
+    claude-sonnet: anthropic/claude-sonnet-4-20250514
+    gpt-4o: openai/gpt-4o
+    nous-portal: forward:nous          # Mode A — credential forwarder
+  forward_upstreams:
+    nous:
+      adapter: nous_portal          # OAuth refresh + invoke JWT (Hermes NousPortalAdapter)
+      auth_provider: nous
+      base_url: https://inference-api.nousresearch.com/v1
+      # Or read-only: adapter: hermes_auth
+      # Or static bearer: bearer_env: NOUS_API_KEY
+    xai:
+      adapter: xai_oauth
+      auth_provider: xai-oauth
+      base_url: https://api.x.ai/v1
+  default_forward_upstream: nous   # optional: GET /v1/models → upstream (Hermes-style)
+  cors_allow_origins: []           # e.g. ["http://localhost:3000"] for browser clients
+```
+
+**Aider** (`~/.aider.conf.yml`):
+
+```yaml
+openai-api-base: http://127.0.0.1:11434/v1
+openai-api-key: <your-proxy-token>
+```
+
+Default bind is loopback-only; use `--allow-public` only with a strong token.
 
 ---
 
@@ -960,6 +1012,11 @@ The `acp_registry/agent.json` manifest declares capabilities for extension disco
 ```
 
 **Features:**
+- **Live activity shelf** — thinking / tool / delegate phases with spinners, parallel tool rows, and streaming tool-arg previews between transcript and status bar
+- **`/agents` overlay** — monitor subagents, kill subtree, spawn pause, turn diff, Gantt timeline, disk `/replay`
+- **`/details` disclosure picker** — per-section hidden/collapsed/expanded modes persisted to YAML
+- **`/indicator`** — hot-swap status-bar animation style (kaomoji, emoji, unicode, ascii)
+- **Queued messages** — compose while the agent runs; edit with Esc / Ctrl+X / ↑↓
 - Streaming output with token-by-token rendering
 - Fish-style ghost text (type-ahead) completion
 - Tab-complete slash commands with fuzzy match overlay

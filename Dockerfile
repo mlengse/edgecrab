@@ -53,6 +53,7 @@ RUN for dir in crates/*/ sdks/python/ sdks/nodejs-native/; do \
 
 # Copy real source and rebuild
 COPY crates/ crates/
+COPY skills/ skills/
 COPY sdks/python/ sdks/python/
 COPY sdks/nodejs-native/ sdks/nodejs-native/
 RUN find crates/ sdks/python/ sdks/nodejs-native/ -name '*.rs' -exec touch {} + \

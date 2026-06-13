@@ -20,6 +20,8 @@ pub mod path_policy;
 pub mod proxy;
 pub mod redact;
 pub mod url_safety;
+pub mod url_validation;
+pub mod website_policy;
 
 /// Re-export injection checks at crate root for convenience.
 pub use injection::{check_injection, check_memory_content};

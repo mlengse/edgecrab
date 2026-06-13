@@ -250,6 +250,7 @@ impl ExecutionBackend for DaytonaBackend {
         cwd: &str,
         timeout: Duration,
         cancel: CancellationToken,
+        options: super::ExecuteOptions,
     ) -> Result<ExecOutput, ToolError> {
         if self.dead.load(Ordering::Relaxed) {
             return Err(ToolError::ExecutionFailed {
@@ -257,6 +258,8 @@ impl ExecutionBackend for DaytonaBackend {
                 message: "Daytona backend has been cleaned up".into(),
             });
         }
+
+        super::start_execute_progress(&options, "Daytona", command);
 
         let response = run_helper(
             "exec",
@@ -278,11 +281,13 @@ impl ExecutionBackend for DaytonaBackend {
             });
         }
 
-        Ok(ExecOutput {
+        let output = ExecOutput {
             stdout: response.stdout.unwrap_or_default(),
             stderr: response.stderr.unwrap_or_default(),
             exit_code: response.exit_code.unwrap_or(0),
-        })
+        };
+        super::finalize_execute_progress(&options, &output);
+        Ok(output)
     }
 
     async fn execute_oneshot(
@@ -292,7 +297,14 @@ impl ExecutionBackend for DaytonaBackend {
         timeout: Duration,
         cancel: CancellationToken,
     ) -> Result<ExecOutput, ToolError> {
-        self.execute(command, cwd, timeout, cancel).await
+        self.execute(
+            command,
+            cwd,
+            timeout,
+            cancel,
+            crate::tools::backends::ExecuteOptions::default(),
+        )
+        .await
     }
 
     async fn cleanup(&self) -> Result<(), ToolError> {
@@ -380,6 +392,7 @@ fi
                 "/workspace",
                 Duration::from_secs(2),
                 CancellationToken::new(),
+                crate::tools::backends::ExecuteOptions::default(),
             )
             .await
             .expect("execute");
@@ -448,6 +461,7 @@ sleep 10
                 "/workspace",
                 Duration::from_millis(50),
                 CancellationToken::new(),
+                crate::tools::backends::ExecuteOptions::default(),
             )
             .await
             .expect("execute");

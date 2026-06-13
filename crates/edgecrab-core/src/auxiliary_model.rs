@@ -54,7 +54,8 @@ mod tests {
     #[test]
     fn falls_back_to_main_when_no_override() {
         let main = Arc::new(MockProvider::new()) as Arc<dyn LLMProvider>;
-        let (p, m) = resolve_side_task_provider_and_model(None, None, main.clone(), "main/m", "test");
+        let (p, m) =
+            resolve_side_task_provider_and_model(None, None, main.clone(), "main/m", "test");
         assert!(Arc::ptr_eq(&p, &main));
         assert_eq!(m, "main/m");
     }

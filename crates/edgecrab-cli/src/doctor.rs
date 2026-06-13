@@ -98,11 +98,17 @@ pub async fn run(config_override: Option<&str>) -> anyhow::Result<bool> {
     load_dot_env(&context.home.join(".env"));
 
     checks.push(check_config_file(&context.config_path));
+    if let Ok(config) = edgecrab_core::AppConfig::load()
+        && config.computer_use.enabled
+    {
+        checks.push(check_computer_use(&config));
+    }
     checks.push(check_state_dir(&context.home));
     checks.push(check_memories(&context.home));
     checks.push(check_skills(&context.home));
     checks.extend(check_mcp_servers());
     checks.extend(check_provider_keys());
+    checks.extend(check_web_providers());
     checks.push(check_vertexai_adc());
     // macOS FFI permission probing disabled — AEDeterminePermissionToAutomateTarget
     // can hang and create zombie processes on some terminal hosts.
@@ -156,6 +162,55 @@ pub async fn run(config_override: Option<&str>) -> anyhow::Result<bool> {
     println!();
 
     Ok(failures == 0)
+}
+
+fn check_computer_use(config: &edgecrab_core::AppConfig) -> Check {
+    use edgecrab_tools::{ComputerUseReportContext, ComputerUseStatusConfig, collect_snapshot};
+
+    let status_cfg = ComputerUseStatusConfig {
+        enabled: config.computer_use.enabled,
+        keep_last_n_screenshots: config.computer_use.keep_last_n_screenshots,
+        confirm_destructive: config.computer_use.confirm_destructive,
+        cua_driver_cmd: config.computer_use.cua_driver_cmd.clone(),
+    };
+    let ctx = ComputerUseReportContext {
+        enabled_toolsets: config.tools.enabled_toolsets.clone().unwrap_or_default(),
+        disabled_toolsets: config.tools.disabled_toolsets.clone().unwrap_or_default(),
+        auxiliary_provider: config.auxiliary.provider.clone(),
+        auxiliary_model: config.auxiliary.model.clone(),
+        auxiliary_base_url: config.auxiliary.base_url.clone(),
+        ..Default::default()
+    };
+    let snap = collect_snapshot(&status_cfg, &ctx);
+    if snap.ready {
+        Check::pass(
+            "computer_use",
+            "ready — driver, toolset, and permissions look good",
+        )
+    } else if !snap.platform_supported {
+        Check::warn(
+            "computer_use",
+            "enabled in config but this host is not macOS (or noop test backend)",
+        )
+    } else if !snap.driver_installed {
+        Check::fail(
+            "computer_use",
+            format!(
+                "enabled but `{}` not found — run `/computer permissions`",
+                snap.driver_cmd
+            ),
+        )
+    } else if !snap.toolset_active {
+        Check::warn(
+            "computer_use",
+            "enabled but computer_use toolset is not active — run `/computer enable`",
+        )
+    } else {
+        Check::warn(
+            "computer_use",
+            "enabled but Accessibility is not granted — run `/computer open`",
+        )
+    }
 }
 
 fn check_config_file(home: &Path) -> Check {
@@ -504,6 +559,45 @@ fn check_provider_keys() -> Vec<Check> {
     }
 }
 
+/// Web search / extract provider readiness (Hermes tools picker + credential parity).
+fn check_web_providers() -> Vec<Check> {
+    use edgecrab_tools::{
+        collect_web_diagnostics, format_extract_doctor_detail, format_search_doctor_detail,
+    };
+
+    let report = collect_web_diagnostics();
+    let search_detail = format_search_doctor_detail(&report);
+    let extract_detail = format_extract_doctor_detail(&report);
+
+    let search_check = if !report.search_ready {
+        Check::fail("Web search", search_detail)
+    } else if report.configured_search_override.is_some()
+        && report.resolved_search_backend.is_none()
+    {
+        Check::warn(
+            "Web search",
+            format!("{search_detail} — configured override unavailable"),
+        )
+    } else {
+        Check::pass("Web search", search_detail)
+    };
+
+    let extract_check = if report.configured_extract_override.is_some()
+        && report.resolved_extract_backend.is_none()
+    {
+        Check::warn(
+            "Web extract",
+            format!("{extract_detail} — configured override unavailable"),
+        )
+    } else if report.paid_extract_configured {
+        Check::pass("Web extract", extract_detail)
+    } else {
+        Check::warn("Web extract", extract_detail)
+    };
+
+    vec![search_check, extract_check]
+}
+
 /// Check if a local TCP port is listening (for Ollama/LMStudio detection).
 fn check_local_port(port: u16) -> bool {
     use std::net::{TcpStream, ToSocketAddrs};
@@ -762,6 +856,22 @@ mod tests {
         std::fs::create_dir(tmp.path().join("memories")).expect("mkdir");
         let check = check_memories(tmp.path());
         assert_eq!(check.status, CheckStatus::Pass);
+    }
+
+    #[test]
+    fn check_web_providers_reports_search_and_extract() {
+        let checks = check_web_providers();
+        assert_eq!(checks.len(), 2);
+        assert!(checks.iter().any(|c| c.label == "Web search"));
+        assert!(checks.iter().any(|c| c.label == "Web extract"));
+        // ddgs makes search_ready true even without API keys
+        assert!(
+            checks
+                .iter()
+                .find(|c| c.label == "Web search")
+                .map(|c| c.status == CheckStatus::Pass)
+                .unwrap_or(false)
+        );
     }
 
     #[test]

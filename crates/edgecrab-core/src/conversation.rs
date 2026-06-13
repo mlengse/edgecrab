@@ -309,6 +309,41 @@ pub(crate) fn should_use_native_streaming(
     !provider_prefers_nonstreaming_tool_turns(provider)
 }
 
+fn forward_process_watch_event(
+    event: edgecrab_tools::process_table::WatchEvent,
+    ev_tx: &tokio::sync::mpsc::UnboundedSender<crate::StreamEvent>,
+) {
+    use edgecrab_tools::process_table::WatchEventType;
+    match event.event_type {
+        WatchEventType::TailPreview => {
+            let command_preview = crate::safe_truncate(&event.command, 80).to_string();
+            let _ = ev_tx.send(crate::StreamEvent::BackgroundProcessTail {
+                process_id: event.process_id,
+                command_preview,
+                tail: event.matched_output,
+            });
+        }
+        WatchEventType::Exited => {
+            let _ = ev_tx.send(crate::StreamEvent::BackgroundProcessFinished {
+                process_id: event.process_id,
+                exit_code: event.exit_code,
+            });
+        }
+        _ => {
+            let notice = edgecrab_tools::process_table::format_watch_activity_notice(&event);
+            let _ = ev_tx.send(crate::StreamEvent::ActivityNotice(notice));
+        }
+    }
+}
+
+/// Delegation identity passed into child `execute_loop` runs.
+#[derive(Clone, Debug, Default)]
+pub struct ExecuteLoopDelegateCtx {
+    pub depth: u32,
+    pub agent_id: String,
+    pub parent_id: Option<String>,
+}
+
 /// Build a `ToolContext` from shared agent state.
 ///
 /// WHY extracted: This was duplicated in `execute_loop` and
@@ -333,6 +368,9 @@ fn build_tool_context(
     tool_progress_tx: Option<
         tokio::sync::mpsc::UnboundedSender<edgecrab_tools::ToolProgressUpdate>,
     >,
+    watch_notification_tx: Option<
+        tokio::sync::mpsc::UnboundedSender<edgecrab_tools::process_table::WatchEvent>,
+    >,
     gateway_sender: Option<Arc<dyn edgecrab_tools::registry::GatewaySender>>,
     origin_chat: Option<edgecrab_types::OriginChat>,
     current_tool_call_id: Option<String>,
@@ -345,7 +383,12 @@ fn build_tool_context(
     injected_messages: Option<Arc<tokio::sync::Mutex<Vec<Message>>>>,
     mutation_turn: Option<Arc<edgecrab_tools::MutationTurnState>>,
     lsp_gate: Option<Arc<dyn edgecrab_tools::LspGate>>,
+    delegate_ctx: Option<ExecuteLoopDelegateCtx>,
 ) -> ToolContext {
+    let (delegate_depth, delegate_agent_id, delegate_parent_id) = match &delegate_ctx {
+        Some(d) => (d.depth, Some(d.agent_id.clone()), d.parent_id.clone()),
+        None => (0, None, None),
+    };
     ToolContext {
         task_id: uuid::Uuid::new_v4().to_string(),
         cwd: cwd.to_path_buf(),
@@ -358,7 +401,9 @@ fn build_tool_context(
         process_table: Some(process_table.clone()),
         provider,
         tool_registry,
-        delegate_depth: 0,
+        delegate_depth,
+        delegate_agent_id,
+        delegate_parent_id,
         sub_agent_runner,
         delegation_event_tx,
         clarify_tx,
@@ -387,7 +432,7 @@ fn build_tool_context(
         current_tool_name,
         injected_messages,
         tool_progress_tx,
-        watch_notification_tx: None,
+        watch_notification_tx,
         mutation_turn,
         lsp_gate,
     }
@@ -569,6 +614,14 @@ struct DispatchContext {
     mutation_turn: Arc<edgecrab_tools::MutationTurnState>,
     /// Post-write LSP gate for file mutation tools.
     lsp_gate: Option<Arc<dyn edgecrab_tools::LspGate>>,
+    /// Shared progress channel for all tools in this dispatch batch (parallel-safe).
+    tool_progress_tx:
+        Option<tokio::sync::mpsc::UnboundedSender<edgecrab_tools::ToolProgressUpdate>>,
+    /// Forward background process watch hits to the UI stream.
+    watch_notification_tx:
+        Option<tokio::sync::mpsc::UnboundedSender<edgecrab_tools::process_table::WatchEvent>>,
+    /// Child delegation identity when this loop runs inside a sub-agent.
+    delegate_ctx: Option<ExecuteLoopDelegateCtx>,
 }
 
 fn post_write_lsp_gate(
@@ -594,6 +647,7 @@ impl Agent {
         history: Option<Vec<Message>>,
         event_tx: Option<&tokio::sync::mpsc::UnboundedSender<crate::StreamEvent>>,
         cwd_override: Option<&std::path::Path>,
+        delegate_ctx: Option<ExecuteLoopDelegateCtx>,
     ) -> Result<ConversationResult, AgentError> {
         tracing::info!(
             msg_len = user_message.len(),
@@ -629,9 +683,18 @@ impl Agent {
             let mut guard = self.steer_rx.lock().expect("steer_rx mutex not poisoned");
             guard.take()
         };
+        if let Some(tx) = event_tx.cloned() {
+            *self
+                .steer_event_tx
+                .lock()
+                .expect("steer_event_tx mutex not poisoned") = Some(tx);
+        }
+        self.steer_pending
+            .store(0, std::sync::atomic::Ordering::Relaxed);
 
         let mutation_turn = Arc::new(edgecrab_tools::MutationTurnState::new());
         mutation_turn.clear();
+        edgecrab_tools::tools::checkpoint::checkpoint_new_turn();
 
         // Snapshot config and provider at loop start so in-flight
         // conversations are not affected by a /model hot-swap.
@@ -706,6 +769,7 @@ impl Agent {
                     None, // clarify_tx not needed for schema resolution
                     None, // approval_tx not needed for schema resolution
                     None, // tool_progress_tx not needed for schema resolution
+                    None, // watch_notification_tx not needed for schema resolution
                     self.gateway_sender.read().await.clone(),
                     config.origin_chat.clone(),
                     None,                // current_tool_call_id not needed for schema resolution
@@ -715,6 +779,7 @@ impl Agent {
                     None, // schema resolution never injects conversation messages
                     None, // mutation_turn not needed for schema resolution
                     None, // lsp_gate not needed for schema resolution
+                    delegate_ctx.clone(),
                 );
 
                 // "all" sentinel / genuinely empty → pass None (no filtering).
@@ -1191,6 +1256,9 @@ impl Agent {
             tokio::spawn(async move {
                 while let Some(req) = approval_req_rx.recv().await {
                     pending_approvals.fetch_add(1, Ordering::Relaxed);
+                    let _ = approval_ev_tx.send(crate::StreamEvent::ActivityNotice(
+                        edgecrab_tools::tool_progress_tail::format_approval_waiting(&req.command),
+                    ));
                     let (decision_tx, decision_rx) =
                         tokio::sync::oneshot::channel::<crate::ApprovalChoice>();
                     if approval_ev_tx
@@ -1225,12 +1293,18 @@ impl Agent {
                             task_index,
                             task_count,
                             goal,
+                            depth,
+                            agent_id,
+                            parent_id,
                         } => {
                             child_runs_in_flight.fetch_add(1, Ordering::Relaxed);
                             let _ = delegation_ev_tx.send(crate::StreamEvent::SubAgentStart {
                                 task_index,
                                 task_count,
                                 goal,
+                                depth,
+                                agent_id,
+                                parent_id,
                             });
                         }
                         DelegationEvent::Thinking {
@@ -1350,6 +1424,20 @@ impl Agent {
             (effective_provider.clone(), config.model.clone())
         };
 
+        let turn_tool_progress_tx = make_tool_progress_tx(event_tx);
+        let watch_notification_tx = if let Some(ev_tx) = event_tx.cloned() {
+            let (tx, mut rx) =
+                tokio::sync::mpsc::unbounded_channel::<edgecrab_tools::process_table::WatchEvent>();
+            tokio::spawn(async move {
+                while let Some(event) = rx.recv().await {
+                    forward_process_watch_event(event, &ev_tx);
+                }
+            });
+            Some(tx)
+        } else {
+            None
+        };
+
         'conversation_loop: loop {
             if tool_defs_dirty {
                 active_tool_defs = if let Some(ref registry) = tool_registry {
@@ -1367,6 +1455,7 @@ impl Agent {
                         None,
                         None,
                         None,
+                        None,
                         self.gateway_sender.read().await.clone(),
                         config.origin_chat.clone(),
                         None,
@@ -1376,6 +1465,7 @@ impl Agent {
                         None,
                         None,
                         None,
+                        delegate_ctx.clone(),
                     );
                     let enabled_filter = if config.enabled_toolsets.is_empty()
                         || edgecrab_tools::toolsets::contains_all_sentinel(&config.enabled_toolsets)
@@ -1435,6 +1525,15 @@ impl Agent {
             // Cross-ref: Hermes `_strip_budget_warnings_from_history()` in `run_agent.py`.
             strip_budget_warnings_from_history(&mut session.messages);
 
+            // Strip stale computer_use screenshots before token estimation / compression.
+            // Keeps only the last N capture images in history (default 3).
+            if app_config_ref.computer_use_keep_last_n_screenshots > 0 {
+                session.messages = crate::compression::prune_computer_use_screenshots(
+                    &session.messages,
+                    app_config_ref.computer_use_keep_last_n_screenshots,
+                );
+            }
+
             // Context compression: check status, emit pressure warning, compress if needed.
             //
             // WHY before the API call: Compressing after the call is too late —
@@ -1455,6 +1554,11 @@ impl Agent {
                 &compression_params,
             ) {
                 CompressionStatus::NeedsCompression => {
+                    if let Some(tx) = event_tx {
+                        let _ = tx.send(crate::StreamEvent::ActivityNotice(
+                            edgecrab_tools::tool_progress_tail::format_compression_started(),
+                        ));
+                    }
                     tracing::info!(
                         messages = session.messages.len(),
                         estimated_prompt_tokens,
@@ -1474,6 +1578,13 @@ impl Agent {
                     // failed 3 times consecutively, skip the LLM call and use
                     // structural-only compression (cheap, never fails).
                     if compression_llm_failures >= MAX_COMPRESSION_LLM_FAILURES {
+                        if let Some(tx) = event_tx {
+                            let _ = tx.send(crate::StreamEvent::ActivityNotice(
+                                edgecrab_tools::tool_progress_tail::format_compression_circuit_breaker(
+                                    compression_llm_failures,
+                                ),
+                            ));
+                        }
                         tracing::warn!(
                             failures = compression_llm_failures,
                             "compression circuit breaker active — using structural fallback only"
@@ -1519,14 +1630,8 @@ impl Agent {
                     // triggers the note (both pathways compact context).
                     if !session.first_compression_done {
                         session.first_compression_done = true;
-                        const COMPRESSION_NOTE: &str = concat!(
-                            "\n\n[Note: Earlier conversation turns have been compacted into a ",
-                            "handoff summary to stay within the context window. The current ",
-                            "session state already reflects that earlier work — build on it ",
-                            "rather than re-doing completed steps.]"
-                        );
                         if let Some(ref mut sys) = session.cached_system_prompt {
-                            sys.push_str(COMPRESSION_NOTE);
+                            sys.push_str(crate::compression::FIRST_COMPRESSION_NOTE);
                             tracing::debug!(
                                 "FP33: appended compression note to cached system prompt"
                             );
@@ -1550,6 +1655,13 @@ impl Agent {
                         session_id = %conversation_session_id,
                         "read dedup cache cleared after compression (FP17)"
                     );
+                    if let Some(tx) = event_tx {
+                        let _ = tx.send(crate::StreamEvent::ActivityNotice(
+                            edgecrab_tools::tool_progress_tail::format_compression_done(
+                                session.messages.len(),
+                            ),
+                        ));
+                    }
                     // Re-check: if compression succeeded, clear the pressure flag.
                     let recomputed_prompt_tokens = estimate_request_prompt_tokens(
                         session.cached_system_prompt.as_deref(),
@@ -1616,19 +1728,13 @@ impl Agent {
                 extended
             };
 
-            let chat_messages = match (session.cached_stable_prompt.as_deref(), cache_cfg.as_ref())
-            {
-                (Some(stable), Some(cfg)) => {
-                    let combined = session.cached_system_prompt.as_deref().unwrap_or("");
-                    let dynamic = split_dynamic_from_stable(combined, stable);
-                    build_chat_messages_blocks(stable, dynamic, &messages_for_api, Some(cfg))
-                }
-                _ => build_chat_messages(
-                    session.cached_system_prompt.as_deref(),
-                    &messages_for_api,
-                    cache_cfg.as_ref(),
-                ),
-            };
+            let mut chat_messages = build_api_chat_messages(
+                &session,
+                &messages_for_api,
+                cache_cfg.as_ref(),
+                effective_provider.as_ref(),
+                &app_config_ref,
+            );
             let completion_options = completion_options_for(&config);
 
             // API call with retry — sends tool definitions so LLM can request tool calls.
@@ -1672,14 +1778,79 @@ impl Agent {
                         elapsed_ms = turn_started_at.elapsed().as_millis() as u64,
                         "execute_loop: api_call_with_retry succeeded"
                     );
-                    outcome
+                    Ok(outcome)
                 }
                 // Cancellation during the API call — break cleanly without
                 // attempting the fallback provider (user wants to stop NOW).
                 Err(AgentError::Interrupted) => {
                     interrupted = true;
-                    break;
+                    break 'conversation_loop;
                 }
+                Err(primary_err) => {
+                    let err_text = primary_err.to_string();
+                    if crate::multimodal_tool_content::is_tool_content_rejection_error(&err_text) {
+                        let key = crate::multimodal_tool_content::provider_model_key(
+                            effective_provider.name(),
+                            effective_provider.model(),
+                        );
+                        if !session.tool_result_image_downgrades.contains(&key) {
+                            session.tool_result_image_downgrades.insert(key);
+                            tracing::warn!(
+                                provider = effective_provider.name(),
+                                model = effective_provider.model(),
+                                "provider rejected tool-result images; retrying with text-only tool messages"
+                            );
+                            chat_messages = build_api_chat_messages(
+                                &session,
+                                &messages_for_api,
+                                cache_cfg.as_ref(),
+                                effective_provider.as_ref(),
+                                &app_config_ref,
+                            );
+                            crate::multimodal_tool_content::downgrade_tool_images_in_chat_messages(
+                                &mut chat_messages,
+                                Some((
+                                    effective_provider.name(),
+                                    effective_provider.model(),
+                                    &mut session.tool_result_image_downgrades,
+                                )),
+                            );
+                            match api_call_with_retry(
+                                &effective_provider,
+                                &chat_messages,
+                                &active_tool_defs,
+                                MAX_RETRIES,
+                                ApiCallContext {
+                                    options: Some(&completion_options),
+                                    cancel: &cancel,
+                                    event_tx,
+                                    use_native_streaming: native_streaming_active,
+                                    discovered_plugins: discovered_plugins.as_deref(),
+                                    conversation_session_id: &conversation_session_id,
+                                    platform: config.platform,
+                                    api_call_count: session.api_call_count,
+                                },
+                            )
+                            .await
+                            {
+                                Ok(outcome) => Ok(outcome),
+                                Err(AgentError::Interrupted) => {
+                                    interrupted = true;
+                                    break 'conversation_loop;
+                                }
+                                Err(retry_err) => Err(retry_err),
+                            }
+                        } else {
+                            Err(primary_err)
+                        }
+                    } else {
+                        Err(primary_err)
+                    }
+                }
+            };
+
+            let api_outcome = match api_outcome {
+                Ok(outcome) => outcome,
                 Err(primary_err) => 'recover: {
                     // In native streaming mode, partial output may already have
                     // been shown to the user. Retrying or swapping to a fallback
@@ -1901,6 +2072,9 @@ impl Agent {
                 engine_tool_names: engine_tool_names.clone(),
                 mutation_turn: Arc::clone(&mutation_turn),
                 lsp_gate: lsp_gate.clone(),
+                tool_progress_tx: turn_tool_progress_tx.clone(),
+                watch_notification_tx: watch_notification_tx.clone(),
+                delegate_ctx: delegate_ctx.clone(),
             };
             let action = match process_response(
                 &response,
@@ -2070,6 +2244,8 @@ impl Agent {
                         && let Some((steer_msg, steer_kind)) =
                             crate::steering::drain_pending_steers(rx)
                     {
+                        self.steer_pending
+                            .store(0, std::sync::atomic::Ordering::Relaxed);
                         tracing::info!(
                             kind = %steer_kind,
                             len = steer_msg.len(),
@@ -2414,6 +2590,10 @@ impl Agent {
             let mut guard = self.steer_rx.lock().expect("steer_rx mutex not poisoned");
             *guard = Some(rx);
         }
+        *self
+            .steer_event_tx
+            .lock()
+            .expect("steer_event_tx mutex not poisoned") = None;
 
         Ok(ConversationResult {
             final_response,
@@ -2431,13 +2611,52 @@ impl Agent {
     }
 }
 
+/// Build provider-ready chat messages with multimodal attach policy applied.
+fn build_api_chat_messages(
+    session: &SessionState,
+    messages_for_api: &[Message],
+    cache_cfg: Option<&CachePromptConfig>,
+    provider: &dyn LLMProvider,
+    app_cfg: &edgecrab_tools::config_ref::AppConfigRef,
+) -> Vec<edgequake_llm::ChatMessage> {
+    let messages_for_api =
+        crate::compression::ensure_api_safe_tool_pairs(messages_for_api.to_vec());
+    let messages_for_api = messages_for_api.as_slice();
+    let attach = crate::multimodal_tool_content::should_attach_computer_use_screenshot(
+        provider.name(),
+        provider.model(),
+        app_cfg,
+        &session.tool_result_image_downgrades,
+    );
+    match (session.cached_stable_prompt.as_deref(), cache_cfg) {
+        (Some(stable), Some(cfg)) => {
+            let combined = session.cached_system_prompt.as_deref().unwrap_or("");
+            let dynamic = split_dynamic_from_stable(combined, stable);
+            build_chat_messages_blocks(stable, dynamic, messages_for_api, Some(cfg), attach)
+        }
+        _ => build_chat_messages(
+            session.cached_system_prompt.as_deref(),
+            messages_for_api,
+            cache_cfg,
+            attach,
+        ),
+    }
+}
+
 /// Shared helper: append `messages` as edgequake-llm `ChatMessage`s into `out`.
 ///
 /// Extracted to avoid duplicating the role-mapping logic between
 /// `build_chat_messages` (single system block) and
 /// `build_chat_messages_blocks` (stable + dynamic blocks).
-fn append_conversation_messages(out: &mut Vec<edgequake_llm::ChatMessage>, messages: &[Message]) {
-    for m in messages {
+fn append_conversation_messages(
+    out: &mut Vec<edgequake_llm::ChatMessage>,
+    messages: &[Message],
+    attach_computer_use_images: bool,
+) {
+    let last_disk_image_idx =
+        crate::multimodal_tool_content::last_computer_use_disk_capture_index(messages);
+
+    for (idx, m) in messages.iter().enumerate() {
         let text = m.text_content();
         match m.role {
             Role::System => out.push(edgequake_llm::ChatMessage::system(&text)),
@@ -2446,7 +2665,6 @@ fn append_conversation_messages(out: &mut Vec<edgequake_llm::ChatMessage>, messa
                 if let Some(ref tool_calls) = m.tool_calls
                     && !tool_calls.is_empty()
                 {
-                    // Convert our ToolCall → edgequake-llm ToolCall
                     let llm_calls: Vec<edgequake_llm::ToolCall> =
                         tool_calls.iter().map(|tc| tc.to_llm()).collect();
                     out.push(edgequake_llm::ChatMessage::assistant_with_tools(
@@ -2457,13 +2675,15 @@ fn append_conversation_messages(out: &mut Vec<edgequake_llm::ChatMessage>, messa
                 out.push(edgequake_llm::ChatMessage::assistant(&text));
             }
             Role::Tool => {
-                // Map tool result messages with their tool_call_id for correlation.
                 let tool_call_id = m.tool_call_id.as_deref().unwrap_or("unknown");
                 let mut chat_msg = edgequake_llm::ChatMessage::tool_result(tool_call_id, &text);
-                // Propagate the tool function name so Gemini/VertexAI providers can
-                // build the correct FunctionResponse.name in convert_messages().
-                // The name is stored in Message::name by Message::tool_result().
                 chat_msg.name = m.name.clone();
+                crate::multimodal_tool_content::enrich_tool_chat_message(
+                    &mut chat_msg,
+                    m,
+                    attach_computer_use_images,
+                    last_disk_image_idx == Some(idx),
+                );
                 out.push(chat_msg);
             }
         }
@@ -2511,6 +2731,7 @@ pub fn build_chat_messages_blocks(
     dynamic: &str,
     messages: &[Message],
     cache_config: Option<&CachePromptConfig>,
+    attach_computer_use_images: bool,
 ) -> Vec<edgequake_llm::ChatMessage> {
     let mut out = Vec::with_capacity(messages.len() + 2);
 
@@ -2529,7 +2750,7 @@ pub fn build_chat_messages_blocks(
         out.push(edgequake_llm::ChatMessage::system(dynamic));
     }
 
-    append_conversation_messages(&mut out, messages);
+    append_conversation_messages(&mut out, messages, attach_computer_use_images);
 
     // Cache breakpoints on last N user messages.
     // cache_system_prompt: false → system messages already handled above.
@@ -2571,6 +2792,7 @@ pub fn build_chat_messages(
     system_prompt: Option<&str>,
     messages: &[Message],
     cache_config: Option<&CachePromptConfig>,
+    attach_computer_use_images: bool,
 ) -> Vec<edgequake_llm::ChatMessage> {
     let mut out = Vec::with_capacity(messages.len() + 1);
 
@@ -2579,7 +2801,7 @@ pub fn build_chat_messages(
         out.push(edgequake_llm::ChatMessage::system(sys));
     }
 
-    append_conversation_messages(&mut out, messages);
+    append_conversation_messages(&mut out, messages, attach_computer_use_images);
 
     // Inject Anthropic cache_control breakpoints when prompt caching is enabled.
     // System message → always cacheable; last N user messages → breakpoints.
@@ -2633,6 +2855,13 @@ fn augment_provider_error(provider: &Arc<dyn LLMProvider>, error: String) -> Str
         if error.contains("api.githubcopilot.com") {
             return format!(
                 "{error} GitHub Copilot direct mode could not reach the remote API. If you rely on a local Copilot proxy, set `VSCODE_COPILOT_DIRECT=false` or configure `VSCODE_COPILOT_PROXY_URL`."
+            );
+        }
+        if lower.contains("unsupported_api_for_model")
+            || (lower.contains("not accessible via the /chat/completions endpoint"))
+        {
+            return format!(
+                "{error} This Copilot model cannot drive the agent loop via /chat/completions. Run `/model copilot/auto` or choose a chat-capable model (not a `*-picker` routing model)."
             );
         }
     }
@@ -2885,7 +3114,17 @@ fn summarize_tool_result_preview(name: &str, tool_result: &str, is_error: bool) 
                     .and_then(|v| v.as_array())
                     .map(|arr| arr.len())?;
                 let backend = obj.get("backend").and_then(|v| v.as_str()).unwrap_or("web");
-                Some(format!("{count} result(s) via {backend}"))
+                let fallback = obj
+                    .get("fallback_from")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty());
+                let skipped = obj
+                    .get("skipped_tool_override")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty());
+                Some(edgecrab_tools::format_web_search_status_line(
+                    count, backend, fallback, skipped,
+                ))
             }
             "web_extract" | "web_crawl" => {
                 let backend = obj.get("backend").and_then(|v| v.as_str()).unwrap_or("web");
@@ -3006,6 +3245,43 @@ fn summarize_tool_result_preview(name: &str, tool_result: &str, is_error: bool) 
         }
     }
 
+    if tool_result.trim().starts_with("[tool_result_spill]") {
+        if name == "computer_use" {
+            for line in tool_result.lines() {
+                if line.starts_with("--- BEGIN PREVIEW") {
+                    continue;
+                }
+                if line.starts_with("--- END PREVIEW") {
+                    break;
+                }
+                let trimmed = line.trim();
+                if trimmed.is_empty()
+                    || trimmed.starts_with("tool:")
+                    || trimmed.starts_with("bytes:")
+                {
+                    continue;
+                }
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(trimmed) {
+                    if let Some(msg) = val.get("message").and_then(|v| v.as_str()) {
+                        return Some(truncate(msg, 88));
+                    }
+                    if let Some(summary) = val
+                        .get("text_summary")
+                        .or_else(|| val.get("summary"))
+                        .and_then(|v| v.as_str())
+                    {
+                        let first = summary.lines().next().unwrap_or(summary);
+                        return Some(truncate(first, 88));
+                    }
+                }
+                if trimmed.contains("capture mode=") {
+                    return Some(truncate(trimmed, 88));
+                }
+            }
+        }
+        return Some(truncate("[spilled — use read_file on artifact]", 88));
+    }
+
     if is_error {
         let line = extract_tool_error_text(tool_result);
         let line = if line.trim().is_empty() {
@@ -3014,6 +3290,26 @@ fn summarize_tool_result_preview(name: &str, tool_result: &str, is_error: bool) 
             line
         };
         return Some(truncate(&line, 88));
+    }
+
+    if name == "computer_use"
+        && let Ok(value) = serde_json::from_str::<serde_json::Value>(tool_result)
+    {
+        if let Some(msg) = value.get("message").and_then(|v| v.as_str()) {
+            return Some(truncate(msg.trim(), 88));
+        }
+        if value.get("_multimodal").and_then(|v| v.as_bool()) == Some(true) {
+            let summary = value
+                .get("text_summary")
+                .and_then(|v| v.as_str())
+                .unwrap_or("capture");
+            let first = summary.lines().next().unwrap_or(summary);
+            return Some(truncate(first, 88));
+        }
+        if let Some(summary) = value.get("summary").and_then(|v| v.as_str()) {
+            let first = summary.lines().next().unwrap_or(summary);
+            return Some(truncate(first, 88));
+        }
     }
 
     if let Ok(value) = serde_json::from_str::<serde_json::Value>(tool_result)
@@ -3059,6 +3355,7 @@ struct PartialToolCall {
     function_name: Option<String>,
     arguments: String,
     thought_signature: Option<String>,
+    last_generating_emit: Option<std::time::Instant>,
 }
 
 fn finalize_streamed_tool_calls(
@@ -3197,9 +3494,6 @@ async fn api_call_streaming(
                 if let Some(id) = id {
                     entry.id = Some(id);
                 }
-                if let Some(name) = function_name {
-                    entry.function_name = Some(name);
-                }
                 if let Some(args) = function_arguments {
                     entry.arguments.push_str(&args);
                 }
@@ -3207,6 +3501,28 @@ async fn api_call_streaming(
                     entry.thought_signature = thought_signature;
                 }
                 saw_meaningful_chunk = true;
+                let name_just_arrived = function_name.is_some();
+                let tool_id = entry
+                    .id
+                    .clone()
+                    .unwrap_or_else(|| format!("stream-tool-{index}"));
+                if let Some(name) = function_name {
+                    entry.function_name = Some(name.clone());
+                    let now = std::time::Instant::now();
+                    if name_just_arrived
+                        || edgecrab_tools::tool_progress_tail::should_emit_progress(
+                            entry.last_generating_emit,
+                            now,
+                        )
+                    {
+                        entry.last_generating_emit = Some(now);
+                        let _ = event_tx.send(crate::StreamEvent::ToolGenerating {
+                            tool_call_id: tool_id,
+                            name,
+                            partial_args: entry.arguments.clone(),
+                        });
+                    }
+                }
             }
             StreamChunk::Finished { reason, usage, .. } => {
                 saw_meaningful_chunk = true;
@@ -3283,7 +3599,16 @@ fn estimate_stream_prompt_tokens(
     messages: &[edgequake_llm::ChatMessage],
     tool_defs: &[edgequake_llm::ToolDefinition],
 ) -> usize {
-    estimate_tokens_from_json(&(messages, tool_defs))
+    use edgecrab_types::MULTIMODAL_IMAGE_TOKEN_ESTIMATE;
+
+    let mut total = estimate_tokens_from_json(tool_defs);
+    for m in messages {
+        total += estimate_tokens_from_text(&m.content);
+        if let Some(images) = &m.images {
+            total += images.len() * MULTIMODAL_IMAGE_TOKEN_ESTIMATE;
+        }
+    }
+    total
 }
 
 fn estimate_request_prompt_tokens(
@@ -3291,8 +3616,11 @@ fn estimate_request_prompt_tokens(
     messages: &[Message],
     tool_defs: &[edgequake_llm::ToolDefinition],
 ) -> usize {
-    let chat_messages = build_chat_messages(system_prompt, messages, None);
-    estimate_stream_prompt_tokens(&chat_messages, tool_defs)
+    let mut total = estimate_tokens_from_json(tool_defs);
+    if let Some(sp) = system_prompt {
+        total += estimate_tokens_from_text(sp);
+    }
+    total + crate::compression::estimate_tokens(messages)
 }
 
 async fn invoke_pre_api_request_hooks(
@@ -3421,7 +3749,7 @@ fn estimate_stream_completion_tokens(
     estimate_tokens_from_json(&(content, thinking, tool_calls))
 }
 
-fn estimate_tokens_from_json<T: serde::Serialize>(value: &T) -> usize {
+fn estimate_tokens_from_json<T: serde::Serialize + ?Sized>(value: &T) -> usize {
     let serialized = match serde_json::to_string(value) {
         Ok(serialized) => serialized,
         Err(_) => return 0,
@@ -3690,6 +4018,8 @@ async fn api_call_with_retry(
                             | edgequake_llm::LlmError::InvalidRequest(_)
                             | edgequake_llm::LlmError::ModelNotFound(_)
                             | edgequake_llm::LlmError::TokenLimitExceeded { .. }
+                    ) || crate::multimodal_tool_content::is_tool_message_order_error(
+                        &e.to_string(),
                     ) {
                         break 'attempt_loop;
                     }
@@ -4028,6 +4358,43 @@ fn remember_tool_suppression(
 ///       ├── parallel safe? ──→ JoinSet::spawn (concurrent)
 ///       └── sequential?    ──→ await inline (ordered)
 /// ```
+fn append_tool_result_to_session(
+    session: &mut SessionState,
+    dctx: &DispatchContext,
+    tool_call_id: &str,
+    tool_name: &str,
+    tool_result: &str,
+) {
+    let (provider, model) = dctx
+        .provider
+        .as_ref()
+        .map(|p| (p.name().to_string(), p.model().to_string()))
+        .unwrap_or_else(|| {
+            if let Some((p, m)) = edgecrab_tools::vision_models::parse_provider_model_spec(
+                &dctx.app_config_ref.active_model,
+            ) {
+                (p, m)
+            } else {
+                ("unknown".into(), dctx.app_config_ref.active_model.clone())
+            }
+        });
+    let store_images = crate::multimodal_tool_content::should_store_computer_use_images_in_session(
+        tool_name,
+        &provider,
+        &model,
+        &dctx.app_config_ref,
+        &session.tool_result_image_downgrades,
+    );
+    session
+        .messages
+        .push(Message::tool_result_for_session_policy(
+            tool_call_id,
+            tool_name,
+            tool_result,
+            store_images,
+        ));
+}
+
 async fn process_response(
     response: &edgequake_llm::LLMResponse,
     session: &mut SessionState,
@@ -4062,6 +4429,7 @@ async fn process_response(
         }
         session.messages.push(assistant_msg);
         session.session_tool_call_count += effective_tool_calls.len() as u32;
+        let tool_turn_start = session.messages.len();
 
         // Partition tools into parallel-safe and sequential
         let mut parallel_tasks = tokio::task::JoinSet::new();
@@ -4133,6 +4501,9 @@ async fn process_response(
                 let engine_tool_names = dctx.engine_tool_names.clone();
                 let mutation_turn = Arc::clone(&dctx.mutation_turn);
                 let lsp_gate = dctx.lsp_gate.clone();
+                let tool_progress_tx = dctx.tool_progress_tx.clone();
+                let watch_notification_tx = dctx.watch_notification_tx.clone();
+                let delegate_ctx = dctx.delegate_ctx.clone();
 
                 parallel_tasks.spawn(async move {
                     let started = std::time::Instant::now();
@@ -4161,6 +4532,9 @@ async fn process_response(
                         engine_tool_names,
                         mutation_turn,
                         lsp_gate,
+                        tool_progress_tx,
+                        watch_notification_tx,
+                        delegate_ctx,
                     };
                     let result = dispatch_single_tool(&tc_id, &tc_name, &tc_args, &inner).await;
                     let duration_ms = started.elapsed().as_millis() as u64;
@@ -4213,9 +4587,11 @@ async fn process_response(
                     received_parallel_ids.insert(tc_id.clone());
                     // Record for duplicate detection (FP11)
                     dedup_tracker.record(&tc_name, &args_json, &tool_result);
-                    session
-                        .messages
-                        .push(Message::tool_result(&tc_id, &tc_name, &tool_result));
+                    append_tool_result_to_session(session, dctx, &tc_id, &tc_name, &tool_result);
+                    crate::compression::maybe_prune_computer_use_screenshots(
+                        &mut session.messages,
+                        dctx.app_config_ref.computer_use_keep_last_n_screenshots,
+                    );
                     session.messages.extend(injected_messages);
                 }
                 Err(e) => {
@@ -4320,12 +4696,35 @@ async fn process_response(
             }
             // Record for duplicate detection (FP11)
             dedup_tracker.record(&tc.function.name, &tc.function.arguments, &tool_result);
-            session.messages.push(Message::tool_result(
-                &tc.id,
-                &tc.function.name,
-                &tool_result,
-            ));
+            append_tool_result_to_session(session, dctx, &tc.id, &tc.function.name, &tool_result);
+            crate::compression::maybe_prune_computer_use_screenshots(
+                &mut session.messages,
+                dctx.app_config_ref.computer_use_keep_last_n_screenshots,
+            );
             session.messages.extend(injected_messages);
+        }
+
+        if dctx.app_config_ref.result_turn_budget_chars > 0 {
+            let spill_config = crate::tool_result_spill::SpillConfig {
+                enabled: dctx.app_config_ref.result_spill,
+                threshold: dctx.app_config_ref.result_spill_threshold,
+                preview_lines: dctx.app_config_ref.result_spill_preview_lines,
+            };
+            let spilled = crate::tool_result_spill::enforce_turn_budget(
+                &mut session.messages[tool_turn_start..],
+                dctx.app_config_ref.result_turn_budget_chars,
+                &spill_config,
+                &dctx.conversation_session_id,
+                &dctx.cwd,
+                &dctx.spill_seq,
+            );
+            if spilled > 0 {
+                tracing::info!(
+                    spilled,
+                    turn_budget = dctx.app_config_ref.result_turn_budget_chars,
+                    "per-turn tool result budget enforced"
+                );
+            }
         }
 
         if argument_loop_blocked {
@@ -4674,7 +5073,8 @@ async fn dispatch_single_tool(
         dctx.delegation_event_tx.clone(),
         dctx.clarify_tx.clone(),
         dctx.approval_tx.clone(),
-        make_tool_progress_tx(dctx.event_tx.as_ref()),
+        dctx.tool_progress_tx.clone(),
+        dctx.watch_notification_tx.clone(),
         dctx.gateway_sender.clone(),
         dctx.origin_chat.clone(),
         Some(tool_call_id.to_string()),
@@ -4684,6 +5084,7 @@ async fn dispatch_single_tool(
         Some(injected_messages.clone()),
         Some(Arc::clone(&dctx.mutation_turn)),
         dctx.lsp_gate.clone(),
+        dctx.delegate_ctx.clone(),
     );
 
     let args: serde_json::Value = match serde_json::from_str(args_json) {
@@ -4944,6 +5345,9 @@ async fn run_learning_reflection_bg(ctx: BackgroundReflectionCtx) {
         engine_tool_names: Arc::new(std::collections::HashSet::new()),
         mutation_turn: Arc::new(edgecrab_tools::MutationTurnState::new()),
         lsp_gate: post_write_lsp_gate(&ctx.app_config_ref),
+        tool_progress_tx: None,
+        watch_notification_tx: None,
+        delegate_ctx: None,
     };
 
     // Work on local session clone — we don't need results propagated back.
@@ -4998,7 +5402,8 @@ and stop — do NOT call any tools.";
     let chat_messages = build_chat_messages(
         session.cached_system_prompt.as_deref(),
         &session.messages,
-        None, // No cache control for reflection turn
+        None,  // No cache control for reflection turn
+        false, // reflection is text-only; never attach tool screenshots
     );
 
     let response = match provider
@@ -6257,7 +6662,7 @@ def register(ctx):
             .expect("build");
 
         let result = agent
-            .execute_loop("hello", Some("Be helpful."), None, None, None)
+            .execute_loop("hello", Some("Be helpful."), None, None, None, None)
             .await
             .expect("loop");
 
@@ -6280,7 +6685,7 @@ def register(ctx):
         ];
 
         let result = agent
-            .execute_loop("follow-up", None, Some(history), None, None)
+            .execute_loop("follow-up", None, Some(history), None, None, None)
             .await
             .expect("loop");
 
@@ -6301,7 +6706,7 @@ def register(ctx):
         ];
 
         let result = agent
-            .execute_loop("follow-up", None, Some(history), None, None)
+            .execute_loop("follow-up", None, Some(history), None, None, None)
             .await
             .expect("loop");
 
@@ -6400,7 +6805,7 @@ def register(ctx):
         .expect("write AGENTS.md");
 
         agent
-            .execute_loop("hello", None, None, None, Some(workspace.path()))
+            .execute_loop("hello", None, None, None, Some(workspace.path()), None)
             .await
             .expect("loop");
 
@@ -6453,7 +6858,7 @@ def register(ctx):
         agent.interrupt();
 
         let result = agent
-            .execute_loop("hello", None, None, None, None)
+            .execute_loop("hello", None, None, None, None, None)
             .await
             .expect("loop");
 
@@ -6478,7 +6883,7 @@ def register(ctx):
             .expect("build");
 
         let result = agent
-            .execute_loop("hello", None, None, None, None)
+            .execute_loop("hello", None, None, None, None, None)
             .await
             .expect("loop");
 
@@ -6489,15 +6894,74 @@ def register(ctx):
     #[test]
     fn build_chat_messages_prepends_system() {
         let messages = vec![Message::user("hi")];
-        let chat_msgs = build_chat_messages(Some("system prompt"), &messages, None);
+        let chat_msgs = build_chat_messages(Some("system prompt"), &messages, None, true);
         assert_eq!(chat_msgs.len(), 2);
     }
 
     #[test]
     fn build_chat_messages_no_system() {
         let messages = vec![Message::user("hi")];
-        let chat_msgs = build_chat_messages(None, &messages, None);
+        let chat_msgs = build_chat_messages(None, &messages, None, true);
         assert_eq!(chat_msgs.len(), 1);
+    }
+
+    #[test]
+    fn build_chat_messages_omits_computer_use_image_when_downgraded() {
+        use edgecrab_types::multimodal_disk_image_from_content;
+
+        let envelope = serde_json::json!({
+            "_multimodal": true,
+            "_image_path": "/tmp/test-capture.png",
+            "_image_mime": "image/png",
+            "text_summary": "capture summary",
+            "content": [{"type": "text", "text": "capture summary"}]
+        });
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test-capture.png");
+        std::fs::write(&path, b"\x89PNG\r\n\x1a\n").expect("png");
+        let body = envelope
+            .to_string()
+            .replace("/tmp/test-capture.png", path.display().to_string().as_str());
+
+        let messages = vec![Message::tool_result("tc1", "computer_use", &body)];
+        let mut session = SessionState::default();
+        session
+            .tool_result_image_downgrades
+            .insert(("anthropic".into(), "claude-opus-4.6".into()));
+
+        let cfg = edgecrab_tools::config_ref::AppConfigRef::default();
+        let attach = crate::multimodal_tool_content::should_attach_computer_use_screenshot(
+            "anthropic",
+            "claude-opus-4.6",
+            &cfg,
+            &session.tool_result_image_downgrades,
+        );
+        assert!(!attach);
+        let chat = build_chat_messages(None, &messages, None, attach);
+        let tool = chat
+            .iter()
+            .find(|m| m.role == edgequake_llm::ChatRole::Tool)
+            .expect("tool");
+        assert!(tool.images.is_none());
+        assert!(multimodal_disk_image_from_content(&tool.content).is_some());
+    }
+
+    #[test]
+    fn build_chat_messages_attaches_disk_capture_when_policy_allows() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("test-capture.png");
+        std::fs::write(&path, b"\x89PNG\r\n\x1a\n").expect("png");
+        let body = format!(
+            r#"{{"_multimodal":true,"_image_path":"{}","_image_mime":"image/png","text_summary":"capture summary","content":[{{"type":"text","text":"capture summary"}}]}}"#,
+            path.display()
+        );
+        let messages = vec![Message::tool_result("tc1", "computer_use", &body)];
+        let chat = build_chat_messages(None, &messages, None, true);
+        let tool = chat
+            .iter()
+            .find(|m| m.role == edgequake_llm::ChatRole::Tool)
+            .expect("tool");
+        assert!(tool.images.as_ref().is_some_and(|imgs| !imgs.is_empty()));
     }
 
     #[test]
@@ -6508,7 +6972,7 @@ def register(ctx):
                 .as_str(),
         )];
         let cfg = CachePromptConfig::default();
-        let chat_msgs = build_chat_messages(Some("system prompt"), &messages, Some(&cfg));
+        let chat_msgs = build_chat_messages(Some("system prompt"), &messages, Some(&cfg), true);
         // System + user = 2 messages; cache breakpoints should be set
         assert_eq!(chat_msgs.len(), 2);
         // System message should have cache_control set
@@ -6520,7 +6984,7 @@ def register(ctx):
     #[test]
     fn build_chat_messages_blocks_emits_two_system_messages() {
         let msgs = vec![Message::user("hello")];
-        let out = build_chat_messages_blocks("STABLE", "DYNAMIC", &msgs, None);
+        let out = build_chat_messages_blocks("STABLE", "DYNAMIC", &msgs, None, true);
         // stable + dynamic + user = 3 messages
         assert_eq!(out.len(), 3);
     }
@@ -6528,7 +6992,8 @@ def register(ctx):
     #[test]
     fn build_chat_messages_blocks_stable_has_cache_control() {
         let msgs: Vec<Message> = vec![];
-        let out = build_chat_messages_blocks("STABLE CONTENT", "DYNAMIC CONTENT", &msgs, None);
+        let out =
+            build_chat_messages_blocks("STABLE CONTENT", "DYNAMIC CONTENT", &msgs, None, true);
         assert_eq!(out.len(), 2);
         assert!(
             out[0].cache_control.is_some(),
@@ -6543,7 +7008,7 @@ def register(ctx):
     #[test]
     fn build_chat_messages_blocks_dynamic_has_no_cache_control() {
         let msgs: Vec<Message> = vec![];
-        let out = build_chat_messages_blocks("", "DYNAMIC ONLY", &msgs, None);
+        let out = build_chat_messages_blocks("", "DYNAMIC ONLY", &msgs, None, true);
         // Only dynamic message — no stable block
         assert_eq!(out.len(), 1);
         assert!(
@@ -6556,7 +7021,7 @@ def register(ctx):
     fn build_chat_messages_blocks_with_cache_config_does_not_double_mark_system() {
         let msgs = vec![Message::user("hi")];
         let cfg = CachePromptConfig::default();
-        let out = build_chat_messages_blocks("STABLE", "DYNAMIC", &msgs, Some(&cfg));
+        let out = build_chat_messages_blocks("STABLE", "DYNAMIC", &msgs, Some(&cfg), true);
         // stable[0] already has cache_control set by us, not apply_cache_control
         assert!(out[0].cache_control.is_some());
         // dynamic[1] must NOT get cache_control even with cache config active
@@ -6693,7 +7158,7 @@ def register(ctx):
             .expect("build");
 
         let result = agent
-            .execute_loop("do something", Some("Be helpful."), None, None, None)
+            .execute_loop("do something", Some("Be helpful."), None, None, None, None)
             .await
             .expect("loop should not error on budget exhaustion");
 
@@ -6757,7 +7222,7 @@ def register(ctx):
             .expect("build");
 
         let result = agent
-            .execute_loop("hello", Some("Be helpful."), None, None, None)
+            .execute_loop("hello", Some("Be helpful."), None, None, None, None)
             .await
             .expect("loop");
 
@@ -6782,7 +7247,7 @@ def register(ctx):
             .expect("build");
 
         let result = agent
-            .execute_loop("hello", None, None, None, None)
+            .execute_loop("hello", None, None, None, None, None)
             .await
             .expect("loop");
 
@@ -6809,7 +7274,7 @@ def register(ctx):
             .expect("build");
 
         let result = agent
-            .execute_loop("run", None, None, None, None)
+            .execute_loop("run", None, None, None, None, None)
             .await
             .expect("loop");
 
@@ -6836,7 +7301,7 @@ def register(ctx):
             .expect("build");
 
         let result = agent
-            .execute_loop("do something and respond", None, None, None, None)
+            .execute_loop("do something and respond", None, None, None, None, None)
             .await
             .expect("loop");
 
@@ -7144,7 +7609,29 @@ def register(ctx):
             false,
         )
         .expect("preview");
-        assert_eq!(preview, "2 result(s) via Brave");
+        assert_eq!(preview, "2 results via Brave");
+    }
+
+    #[test]
+    fn summarize_tool_result_preview_shows_web_search_fallback() {
+        let preview = summarize_tool_result_preview(
+            "web_search",
+            r#"{"success":true,"backend":"ddgs","fallback_from":"tavily","results":[{"title":"A"}]}"#,
+            false,
+        )
+        .expect("preview");
+        assert_eq!(preview, "1 result via ddgs (fallback from tavily)");
+    }
+
+    #[test]
+    fn summarize_tool_result_preview_shows_skipped_tool_override() {
+        let preview = summarize_tool_result_preview(
+            "web_search",
+            r#"{"success":true,"backend":"ddgs","skipped_tool_override":"parallel","results":[{"title":"A"}]}"#,
+            false,
+        )
+        .expect("preview");
+        assert_eq!(preview, "(ignored parallel) 1 result via ddgs");
     }
 
     #[test]
@@ -7209,14 +7696,14 @@ def register(ctx):
             Message::assistant_with_tool_calls("sure", vec![tc]),
             Message::tool_result("tc-abc", "read_file", "contents"),
         ];
-        let chat_msgs = build_chat_messages(None, &messages, None);
+        let chat_msgs = build_chat_messages(None, &messages, None, true);
         // user + assistant_with_tools + tool_result = 3 messages
         assert_eq!(chat_msgs.len(), 3);
     }
 
     #[test]
     fn build_chat_messages_empty_input() {
-        let chat_msgs = build_chat_messages(None, &[], None);
+        let chat_msgs = build_chat_messages(None, &[], None, true);
         assert_eq!(
             chat_msgs.len(),
             0,
@@ -7256,6 +7743,9 @@ def register(ctx):
             engine_tool_names: Arc::new(std::collections::HashSet::new()),
             mutation_turn: Arc::new(edgecrab_tools::MutationTurnState::new()),
             lsp_gate: None,
+            tool_progress_tx: None,
+            watch_notification_tx: None,
+            delegate_ctx: None,
         }
     }
 
@@ -7438,7 +7928,7 @@ def register(ctx):
 
         // A single text iteration completes normally; no budget exhausted, no interrupt.
         let result = agent
-            .execute_loop("hello", None, None, None, None)
+            .execute_loop("hello", None, None, None, None, None)
             .await
             .expect("loop");
 

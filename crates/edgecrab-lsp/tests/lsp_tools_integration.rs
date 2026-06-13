@@ -38,6 +38,8 @@ fn make_ctx(workspace: &TempDir, home: &TempDir) -> ToolContext {
         provider: None,
         tool_registry: None,
         delegate_depth: 0,
+        delegate_agent_id: None,
+        delegate_parent_id: None,
         sub_agent_runner: None,
         delegation_event_tx: None,
         clarify_tx: None,
@@ -443,10 +445,15 @@ async fn write_file_delta_filters_preexisting_diagnostics() {
 
     let first = dispatch_json(&registry, &ctx, "write_file", args.clone()).await;
     let diags = first["diagnostics"].as_array().expect("first write diags");
-    assert!(!diags.is_empty(), "first write should surface mock diagnostic");
+    assert!(
+        !diags.is_empty(),
+        "first write should surface mock diagnostic"
+    );
 
     let second = dispatch_json(&registry, &ctx, "write_file", args).await;
-    let second_diags = second["diagnostics"].as_array().expect("second write diags");
+    let second_diags = second["diagnostics"]
+        .as_array()
+        .expect("second write diags");
     assert!(
         second_diags.is_empty(),
         "delta filter should drop unchanged diagnostics on rewrite: {second}"

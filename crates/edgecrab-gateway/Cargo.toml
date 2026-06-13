@@ -42,7 +42,7 @@ subtle = "2"
 hmac = "0.12"
 sha1 = "0.10"
 async-stream = "0.3"
-lettre = { version = "0.11", default-features = false, features = ["smtp-transport", "pool", "rustls-tls", "hostname", "builder"] }
+lettre = { version = "0.11.22", default-features = false, features = ["smtp-transport", "pool", "rustls-tls", "hostname", "builder"] }
 md5 = "0.7"
 
 [dev-dependencies]

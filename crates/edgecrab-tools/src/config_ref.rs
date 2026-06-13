@@ -14,6 +14,53 @@ use crate::tools::backends::{
 };
 use edgecrab_security::path_policy::PathPolicy;
 
+/// Per-backend settings under `web_search.backends.<name>` in config.yaml.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct WebSearchBackendConfigRef {
+    pub api_key: Option<String>,
+    pub endpoint: Option<String>,
+    pub rps: Option<f64>,
+    pub timeout_secs: Option<u64>,
+}
+
+/// Hermes-aligned `web:` section — per-capability backend overrides.
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct WebToolsConfigRef {
+    /// Override for `web_search` when non-empty (Hermes `web.search_backend`).
+    pub search_backend: String,
+    /// Default backend for `web_extract` / `web_crawl` (Hermes `web.extract_backend`).
+    pub extract_backend: String,
+    /// Shared fallback for both capabilities (Hermes `web.backend`).
+    pub backend: String,
+}
+
+/// Web search chain configuration (`web_search` section in config.yaml).
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct WebSearchConfigRef {
+    /// Primary backend name (`searxng`, `brave`, `ddgs`, …).
+    pub primary: String,
+    /// Ordered fallback backends when primary fails transiently.
+    pub fallbacks: Vec<String>,
+    /// Default request timeout in seconds.
+    pub timeout_secs: u64,
+    /// Per-backend overrides keyed by backend name.
+    pub backends: HashMap<String, WebSearchBackendConfigRef>,
+}
+
+impl Default for WebSearchConfigRef {
+    fn default() -> Self {
+        Self {
+            primary: "searxng".into(),
+            fallbacks: vec!["brave".into(), "ddgs".into()],
+            timeout_secs: 8,
+            backends: HashMap::new(),
+        }
+    }
+}
+
 /// Resolve the EdgeCrab home directory.
 ///
 /// Resolution order:
@@ -133,8 +180,22 @@ pub struct AppConfigRef {
     /// Mirrors `checkpoints.enabled` in config.yaml (default: true).
     pub checkpoints_enabled: bool,
     /// Maximum number of checkpoints to keep per working directory.
-    /// Mirrors `checkpoints.max_snapshots` in config.yaml (default: 50).
+    /// Mirrors `checkpoints.max_snapshots` in config.yaml (default: 20).
     pub checkpoints_max_snapshots: u32,
+    /// Total checkpoint store size cap in MB (`checkpoints.max_total_size_mb`).
+    pub checkpoints_max_total_size_mb: u32,
+    /// Per-file size cap when staging checkpoints (`checkpoints.max_file_size_mb`).
+    pub checkpoints_max_file_size_mb: u32,
+    /// Whether computer_use desktop control is enabled (`computer_use.enabled`).
+    pub computer_use_enabled: bool,
+    /// Screenshot history cap for compression (`computer_use.keep_last_n_screenshots`).
+    pub computer_use_keep_last_n_screenshots: u32,
+    /// Require approval for destructive computer_use actions.
+    pub computer_use_confirm_destructive: bool,
+    /// cua-driver command (`computer_use.cua_driver_cmd`).
+    pub computer_use_cua_cmd: String,
+    /// Active session model in `provider/model` form.
+    pub active_model: String,
     /// Skills to preload into the system prompt (from -s/--skill flags).
     pub preloaded_skills: Vec<String>,
 
@@ -208,6 +269,8 @@ pub struct AppConfigRef {
     pub result_spill_threshold: usize,
     /// Number of preview lines kept in the spill stub.
     pub result_spill_preview_lines: usize,
+    /// Aggregate tool-result char budget per assistant turn (`0` = off).
+    pub result_turn_budget_chars: usize,
     /// Maximum write payload size in KiB for file mutation tools.
     ///
     /// WHY FP16 "Defaults protect, overrides empower": the default (32 KiB)
@@ -215,6 +278,10 @@ pub struct AppConfigRef {
     /// larger JSON tool arguments can increase this. The value is clamped to
     /// [8, 256] KiB to prevent mis-configuration.
     pub max_write_payload_kib: usize,
+    /// Pluggable web search backend chain configuration.
+    pub web_search: WebSearchConfigRef,
+    /// Hermes-aligned web tool backend overrides (`web:` in config.yaml).
+    pub web: WebToolsConfigRef,
 }
 
 impl Default for AppConfigRef {
@@ -249,7 +316,14 @@ impl Default for AppConfigRef {
             browser_command_timeout: 30,
             browser_recording_max_age_hours: 72,
             checkpoints_enabled: true,
-            checkpoints_max_snapshots: 50,
+            checkpoints_max_snapshots: 20,
+            checkpoints_max_total_size_mb: 200,
+            checkpoints_max_file_size_mb: 10,
+            computer_use_enabled: false,
+            computer_use_keep_last_n_screenshots: 1,
+            computer_use_confirm_destructive: true,
+            computer_use_cua_cmd: "cua-driver".into(),
+            active_model: String::new(),
             preloaded_skills: Vec::new(),
             terminal_env_passthrough: Vec::new(),
             terminal_backend: BackendKind::Local,
@@ -279,7 +353,10 @@ impl Default for AppConfigRef {
             result_spill: true,
             result_spill_threshold: 16_384,
             result_spill_preview_lines: 80,
+            result_turn_budget_chars: 200_000,
             max_write_payload_kib: crate::edit_contract::DEFAULT_MAX_MUTATION_PAYLOAD_KIB,
+            web_search: WebSearchConfigRef::default(),
+            web: WebToolsConfigRef::default(),
         }
     }
 }

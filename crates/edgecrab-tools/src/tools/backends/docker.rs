@@ -314,6 +314,7 @@ impl DockerState {
         command: &str,
         timeout: Duration,
         cancel: CancellationToken,
+        options: super::ExecuteOptions,
     ) -> Result<ExecOutput, ToolError> {
         if self.dead.load(Ordering::Relaxed) {
             return Err(ToolError::ExecutionFailed {
@@ -354,19 +355,27 @@ impl DockerState {
         // Collect streamed output
         let mut stdout_parts: Vec<String> = Vec::new();
         let mut stderr_parts: Vec<String> = Vec::new();
+        let mut progress =
+            crate::tool_progress_tail::OutputProgressSink::from_execute_options(&options);
 
         if let StartExecResults::Attached { mut output, .. } = start_result {
             let collect_fut = async {
                 while let Some(msg_result) = output.next().await {
                     match msg_result {
                         Ok(bollard::container::LogOutput::StdOut { message }) => {
-                            stdout_parts.push(String::from_utf8_lossy(&message).into_owned());
+                            let text = String::from_utf8_lossy(&message);
+                            stdout_parts.push(text.into_owned());
+                            progress.push_stdout(&message);
                         }
                         Ok(bollard::container::LogOutput::StdErr { message }) => {
-                            stderr_parts.push(String::from_utf8_lossy(&message).into_owned());
+                            let text = String::from_utf8_lossy(&message);
+                            stderr_parts.push(text.into_owned());
+                            progress.push_stderr(&message);
                         }
                         Ok(bollard::container::LogOutput::Console { message }) => {
-                            stdout_parts.push(String::from_utf8_lossy(&message).into_owned());
+                            let text = String::from_utf8_lossy(&message);
+                            stdout_parts.push(text.into_owned());
+                            progress.push_stdout(&message);
                         }
                         Ok(_) => {}
                         Err(e) => {
@@ -402,6 +411,8 @@ impl DockerState {
                 })?;
 
         let exit_code = inspect.exit_code.unwrap_or(0) as i32;
+
+        progress.finish();
 
         Ok(ExecOutput {
             stdout: stdout_parts.join(""),
@@ -473,6 +484,7 @@ impl ExecutionBackend for DockerBackend {
         cwd: &str,
         timeout: Duration,
         cancel: CancellationToken,
+        options: super::ExecuteOptions,
     ) -> Result<ExecOutput, ToolError> {
         let state = self.ensure_state().await?;
         let effective_command = if let Some(binding) = &self.workspace_binding {
@@ -485,7 +497,9 @@ impl ExecutionBackend for DockerBackend {
         } else {
             command.to_string()
         };
-        state.exec(&effective_command, timeout, cancel).await
+        state
+            .exec(&effective_command, timeout, cancel, options)
+            .await
     }
 
     async fn execute_oneshot(
@@ -506,7 +520,14 @@ impl ExecutionBackend for DockerBackend {
         } else {
             command.to_string()
         };
-        state.exec(&effective_command, timeout, cancel).await
+        state
+            .exec(
+                &effective_command,
+                timeout,
+                cancel,
+                super::ExecuteOptions::default(),
+            )
+            .await
     }
 
     async fn cleanup(&self) -> Result<(), ToolError> {
@@ -613,6 +634,7 @@ mod tests {
                 "/workspace",
                 Duration::from_secs(30),
                 CancellationToken::new(),
+                crate::tools::backends::ExecuteOptions::default(),
             )
             .await
         {

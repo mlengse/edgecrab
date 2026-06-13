@@ -1,26 +1,30 @@
 # 005 — EdgeCrab Current State
 
-| Existing | File |
-|----------|------|
-| `/model` hot-swap | `crates/edgecrab-cli/src/commands.rs` |
-| Agent hot-swap | `crates/edgecrab-core/src/agent.rs` (`Agent::set_model`) |
-| Provider factory | `crates/edgecrab-core/src/model_router.rs` |
-| Model catalog (ctx windows) | `crates/edgecrab-core/src/model_catalog.rs` |
+## `/handoff <platform>` — CLI → gateway (implemented)
 
-## What Is Missing
+| Layer | Module |
+|-------|--------|
+| CLI handler | `crates/edgecrab-cli/src/app.rs` → `handle_session_handoff` |
+| Command | `commands.rs` → `SessionHandoff` (CLI only; not gateway-visible) |
+| State machine | `edgecrab-state/session_db.rs` → `handoff_state` columns + API |
+| Gateway watcher | `edgecrab-gateway/platform_handoff.rs` → `SessionHandoffWatcher` |
+| Session rebind | `edgecrab-gateway/session.rs` → `rebind_cli_session` |
+| Synthetic message | `edgecrab-core/session_handoff.rs` |
+| Thread hook | `PlatformAdapter::create_handoff_thread` — Telegram (`createForumTopic`), Discord (channel thread + seed fallback), Slack (seed `thread_ts`) |
 
-1. No handoff-brief auxiliary call.
-2. No context-window check / auto-compress before swap.
-3. No `/handoff` slash command (separate from `/model` which is implicit).
-4. No gateway surface.
-5. No persistence of "this session was handed off from X → Y" for `/insights`.
+## `/transfer-model <provider/model>` — model transfer (implemented)
 
-## Honest Assessment
+| Layer | Module |
+|-------|--------|
+| Orchestrator | `edgecrab-core/model_transfer.rs` |
+| Agent API | `Agent::perform_model_transfer` |
+| Persistence | `model_transfers` table + `/insights` |
+| CLI + gateway | `/model` and `/transfer-model` → `perform_model_transfer` |
 
-`/model` works but is silent. Users don't trust silent swaps. The fix
-is a small wrapper around the existing hot-swap that adds:
-brief + window-check + confirmation.
+## Remaining gaps vs Hermes
+
+- **Profile/OAuth pool rotation** on model transfer (tracked in spec 024-oauth-providers; `create_provider_for_model` is already the single factory).
 
 ## Cross-References
 
-- [001-overview.md](001-overview.md) · [004-implementation-plan.md](004-implementation-plan.md)
+- [proof/implementation-proof.md](proof/implementation-proof.md)

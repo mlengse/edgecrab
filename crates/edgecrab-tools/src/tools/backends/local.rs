@@ -391,6 +391,7 @@ impl PersistentShell {
         fence_id: &str,
         timeout: Duration,
         cancel: CancellationToken,
+        on_output_line: Option<&super::OutputProgressFn>,
     ) -> Result<ExecOutput, ToolError> {
         if self.dead.load(Ordering::Relaxed) {
             return Err(ToolError::ExecutionFailed {
@@ -494,6 +495,9 @@ impl PersistentShell {
                             } else {
                                 if !line.is_empty() {
                                     saw_nonempty_output = true;
+                                    if let Some(progress) = on_output_line {
+                                        progress(&line);
+                                    }
                                 }
                                 out_lines.push(line);
                             }
@@ -574,6 +578,7 @@ impl LocalBackend {
         cwd: &str,
         timeout: Duration,
         cancel: CancellationToken,
+        on_output_line: Option<&super::OutputProgressFn>,
     ) -> Result<ExecOutput, ToolError> {
         let tmp_root = ensure_default_shared_tmp_dir()?;
         let cwd_path = std::path::Path::new(cwd);
@@ -605,10 +610,16 @@ impl LocalBackend {
         })?;
         let stdout = child.stdout.take().expect("stdout is piped");
         let stderr = child.stderr.take().expect("stderr is piped");
-        let stdout_task =
-            tokio::spawn(drain_oneshot_pipe(stdout, Arc::clone(&saw_nonempty_output)));
-        let stderr_task =
-            tokio::spawn(drain_oneshot_pipe(stderr, Arc::clone(&saw_nonempty_output)));
+        let stdout_task = tokio::spawn(drain_oneshot_pipe(
+            stdout,
+            Arc::clone(&saw_nonempty_output),
+            on_output_line.cloned(),
+        ));
+        let stderr_task = tokio::spawn(drain_oneshot_pipe(
+            stderr,
+            Arc::clone(&saw_nonempty_output),
+            on_output_line.cloned(),
+        ));
 
         let deadline = tokio::time::Instant::now() + timeout;
         let exit_code = loop {
@@ -658,12 +669,14 @@ impl LocalBackend {
 async fn drain_oneshot_pipe<R>(
     mut reader: R,
     saw_nonempty_output: Arc<AtomicBool>,
+    on_output_line: Option<super::OutputProgressFn>,
 ) -> std::io::Result<Vec<u8>>
 where
     R: AsyncRead + Unpin + Send + 'static,
 {
     let mut bytes = Vec::new();
     let mut buf = [0u8; 4096];
+    let mut splitter = crate::tool_progress_tail::LineSplitter::default();
     loop {
         let read = reader.read(&mut buf).await?;
         if read == 0 {
@@ -671,6 +684,13 @@ where
         }
         saw_nonempty_output.store(true, Ordering::Relaxed);
         bytes.extend_from_slice(&buf[..read]);
+        if let Some(ref progress) = on_output_line {
+            let chunk = String::from_utf8_lossy(&buf[..read]);
+            splitter.push_chunk(&chunk, |line| progress(line));
+        }
+    }
+    if let Some(ref progress) = on_output_line {
+        splitter.finish(|line| progress(line));
     }
     Ok(bytes)
 }
@@ -699,7 +719,9 @@ impl ExecutionBackend for LocalBackend {
         cwd: &str,
         timeout: Duration,
         cancel: CancellationToken,
+        options: super::ExecuteOptions,
     ) -> Result<ExecOutput, ToolError> {
+        let on_output_line = options.on_output_line.as_ref();
         // Try persistent shell first
         let shell_init = self.ensure_shell().await;
         if shell_init.is_ok() {
@@ -715,7 +737,13 @@ impl ExecutionBackend for LocalBackend {
             let mut guard = self.shell.lock().await;
             if let Some(shell) = guard.as_mut() {
                 let result = shell
-                    .run(&full_cmd, &fence_id, timeout, cancel.clone())
+                    .run(
+                        &full_cmd,
+                        &fence_id,
+                        timeout,
+                        cancel.clone(),
+                        on_output_line,
+                    )
                     .await;
                 match result {
                     Ok(out) => return Ok(out),
@@ -733,7 +761,7 @@ impl ExecutionBackend for LocalBackend {
             "LocalBackend[{}]: using oneshot (persistent shell unavailable)",
             self.task_id
         );
-        Self::oneshot(command, cwd, timeout, cancel).await
+        Self::oneshot(command, cwd, timeout, cancel, on_output_line).await
     }
 
     async fn cleanup(&self) -> Result<(), ToolError> {
@@ -761,6 +789,7 @@ impl ExecutionBackend for LocalBackend {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::tools::backends::ExecuteOptions;
 
     fn cancel() -> CancellationToken {
         CancellationToken::new()
@@ -815,7 +844,13 @@ mod tests {
     async fn local_backend_echo() {
         let b = LocalBackend::new("test-echo");
         let out = b
-            .execute("echo hello", "/tmp", Duration::from_secs(5), cancel())
+            .execute(
+                "echo hello",
+                "/tmp",
+                Duration::from_secs(5),
+                cancel(),
+                ExecuteOptions::default(),
+            )
             .await
             .expect("execute");
         assert!(out.stdout.contains("hello"));
@@ -826,7 +861,13 @@ mod tests {
     async fn local_backend_exit_code() {
         let b = LocalBackend::new("test-exit");
         let out = b
-            .execute("exit 42", "/tmp", Duration::from_secs(5), cancel())
+            .execute(
+                "exit 42",
+                "/tmp",
+                Duration::from_secs(5),
+                cancel(),
+                ExecuteOptions::default(),
+            )
             .await
             .expect("execute");
         assert_eq!(out.exit_code, 42);
@@ -836,7 +877,13 @@ mod tests {
     async fn local_backend_timeout() {
         let b = LocalBackend::new("test-timeout");
         let out = b
-            .execute("sleep 60", "/tmp", Duration::from_millis(200), cancel())
+            .execute(
+                "sleep 60",
+                "/tmp",
+                Duration::from_millis(200),
+                cancel(),
+                ExecuteOptions::default(),
+            )
             .await
             .expect("execute");
         assert_eq!(out.exit_code, 124, "expected timeout exit code");
@@ -852,7 +899,13 @@ mod tests {
             token_clone.cancel();
         });
         let out = b
-            .execute("sleep 60", "/tmp", Duration::from_secs(10), token)
+            .execute(
+                "sleep 60",
+                "/tmp",
+                Duration::from_secs(10),
+                token,
+                ExecuteOptions::default(),
+            )
             .await
             .expect("execute");
         assert_eq!(out.exit_code, 130, "expected cancelled exit code");
@@ -863,11 +916,23 @@ mod tests {
         // Verify that variables set in one call persist to the next (persistent shell)
         let b = LocalBackend::new("test-persistent");
         let _out1 = b
-            .execute("export MY_VAR=42", "/tmp", Duration::from_secs(5), cancel())
+            .execute(
+                "export MY_VAR=42",
+                "/tmp",
+                Duration::from_secs(5),
+                cancel(),
+                ExecuteOptions::default(),
+            )
             .await
             .expect("set var");
         let out2 = b
-            .execute("echo $MY_VAR", "/tmp", Duration::from_secs(5), cancel())
+            .execute(
+                "echo $MY_VAR",
+                "/tmp",
+                Duration::from_secs(5),
+                cancel(),
+                ExecuteOptions::default(),
+            )
             .await
             .expect("read var");
         assert!(
@@ -886,6 +951,7 @@ mod tests {
                 "/tmp",
                 Duration::from_secs(5),
                 cancel(),
+                ExecuteOptions::default(),
             )
             .await
             .expect("execute");
@@ -909,6 +975,7 @@ mod tests {
                 "/tmp",
                 Duration::from_secs(5),
                 cancel(),
+                ExecuteOptions::default(),
             )
             .await
             .expect("execute");
@@ -930,7 +997,13 @@ mod tests {
     async fn local_backend_cleanup_idempotent() {
         let b = LocalBackend::new("test-cleanup");
         let _ = b
-            .execute("echo x", "/tmp", Duration::from_secs(5), cancel())
+            .execute(
+                "echo x",
+                "/tmp",
+                Duration::from_secs(5),
+                cancel(),
+                ExecuteOptions::default(),
+            )
             .await;
         b.cleanup().await.expect("first cleanup");
         b.cleanup().await.expect("second cleanup (idempotent)");
@@ -1031,7 +1104,13 @@ mod tests {
         let path_str = dir.path().to_str().expect("utf8").to_string();
         let b = LocalBackend::new("test-cwd");
         let out = b
-            .execute("pwd", &path_str, Duration::from_secs(5), cancel())
+            .execute(
+                "pwd",
+                &path_str,
+                Duration::from_secs(5),
+                cancel(),
+                ExecuteOptions::default(),
+            )
             .await
             .expect("execute");
         assert!(out.stdout.contains(dir.path().to_str().expect("utf8")));

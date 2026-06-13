@@ -306,6 +306,7 @@ async fn e2e_agent_streaming_with_copilot() {
     while let Some(event) = chunk_rx.recv().await {
         match event {
             StreamEvent::Token(text) => accumulated.push_str(&text),
+            StreamEvent::ToolGenerating { .. } => {} // tool drafting — ignore in this test
             StreamEvent::ToolExec { .. } => {} // tool execution events — just ignore in this test
             StreamEvent::ToolProgress { .. } => {} // tool progress events — just ignore in this test
             StreamEvent::ToolDone { .. } => {} // tool completion events — just ignore in this test
@@ -343,6 +344,10 @@ async fn e2e_agent_streaming_with_copilot() {
             }
             StreamEvent::SteerPending { .. } => {} // steering notification — not relevant in this test
             StreamEvent::SteerApplied { .. } => {} // steering applied — not relevant in this test
+            StreamEvent::ActivityNotice { .. } => {} // compression / process notices — ignore
+            StreamEvent::BackgroundProcessTail { .. } => {} // bg process tail — ignore
+            StreamEvent::BackgroundProcessFinished { .. } => {} // bg process exit — ignore
+            StreamEvent::ModelTransferComplete { .. } => {} // handoff — not relevant in this test
             StreamEvent::Footer(text) => accumulated.push_str(&text),
         }
     }
@@ -626,7 +631,10 @@ async fn e2e_lsp_write_diagnostics_with_copilot_gpt5_mini() {
     };
 
     let broken = workspace.path().join("src/lsp_e2e_broken.rs");
-    assert!(broken.is_file(), "write_file should create src/lsp_e2e_broken.rs");
+    assert!(
+        broken.is_file(),
+        "write_file should create src/lsp_e2e_broken.rs"
+    );
 
     let tool_has_lsp = result.messages.iter().any(|m| {
         m.role == edgecrab_types::Role::Tool

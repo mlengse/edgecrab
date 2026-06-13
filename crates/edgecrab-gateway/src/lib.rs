@@ -43,6 +43,7 @@ pub mod mattermost;
 pub mod mirror;
 pub mod pairing;
 pub mod platform;
+pub mod platform_handoff;
 pub mod proxy;
 pub mod run;
 pub mod sender;

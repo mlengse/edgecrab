@@ -1203,12 +1203,16 @@ impl ExecutionBackend for ModalBackend {
         cwd: &str,
         timeout: Duration,
         cancel: CancellationToken,
+        options: super::ExecuteOptions,
     ) -> Result<ExecOutput, ToolError> {
         let state = self.ensure_state().await?;
-        match state.as_ref() {
-            ModalState::Direct(state) => state.exec(command, cwd, timeout, cancel).await,
-            ModalState::Managed(state) => state.execute_once(command, cwd, timeout, cancel).await,
-        }
+        super::start_execute_progress(&options, "Modal", command);
+        let output = match state.as_ref() {
+            ModalState::Direct(state) => state.exec(command, cwd, timeout, cancel).await?,
+            ModalState::Managed(state) => state.execute_once(command, cwd, timeout, cancel).await?,
+        };
+        super::finalize_execute_progress(&options, &output);
+        Ok(output)
     }
 
     async fn execute_oneshot(
@@ -1366,6 +1370,7 @@ mod tests {
                 "/",
                 Duration::from_secs(60),
                 CancellationToken::new(),
+                crate::tools::backends::ExecuteOptions::default(),
             )
             .await
             .expect("execute");

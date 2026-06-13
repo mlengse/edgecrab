@@ -1,0 +1,34 @@
+# Local SearXNG for 014 web_search E2E — not for production.
+#
+# Usage:
+#   docker compose -f docker-compose.searxng.yml up -d
+#   curl 'http://127.0.0.1:8888/search?q=test&format=json' | head
+#   docker compose -f docker-compose.searxng.yml down
+
+services:
+  searxng:
+    image: searxng/searxng:latest
+    container_name: edgecrab-searxng-e2e
+    ports:
+      - "127.0.0.1:8888:8080"
+    volumes:
+      - ./searxng/settings.yml:/etc/searxng/settings.yml:ro
+    environment:
+      SEARXNG_BASE_URL: "http://127.0.0.1:8888/"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "wget -q -O /dev/null 'http://127.0.0.1:8080/search?q=health&format=json' || exit 1",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 15
+      start_period: 15s
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - SETGID
+      - SETUID
+    restart: "no"

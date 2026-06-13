@@ -45,6 +45,8 @@ pub struct GatewayStreamingConfig {
     /// When `true`, reasoning text is forwarded to the platform before the
     /// response tokens start. Useful for debugging; generally off for production.
     pub show_reasoning: bool,
+    /// Max characters of background-process tail in gateway status pushes (default: 500).
+    pub bg_tail_chars: usize,
 }
 
 impl Default for GatewayStreamingConfig {
@@ -56,6 +58,7 @@ impl Default for GatewayStreamingConfig {
             cursor: " ▉".into(),
             tool_progress: true,
             show_reasoning: false,
+            bg_tail_chars: 500,
         }
     }
 }

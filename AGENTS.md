@@ -440,7 +440,7 @@ The `send_message` tool (in `advanced.rs`) uses the `GatewaySender` trait to sen
 | Tools | `/tools` `/toolsets` `/reload-mcp` `/mcp-token` `/plugins` |
 | Memory | `/memory` |
 | Analysis | `/cost` `/usage` `/compress` `/insights` |
-| Appearance | `/theme` `/paste` |
+| Appearance | `/theme` `/paste` `/details` `/tail` |
 | Advanced | `/goal` `/subgoal` `/done` `/queue` `/background` `/rollback [checkpoint]` `/debug` `/dump` |
 | Gateway | `/platforms` `/approve` `/deny` `/sethome` `/update` |
 | Scheduling | `/cron` |
@@ -466,6 +466,20 @@ The `send_message` tool (in `advanced.rs`) uses the `GatewaySender` trait to sen
 | `/skills install owner/repo/path` | Install a skill directly from a public GitHub repo |
 | `/skills remove <name>` | Delete an installed skill |
 | `/skills hub` | Show Skills Hub usage guidance |
+
+### Activity Shelf & Disclosure
+
+When `display.activity_shelf: true` (default), live turn state renders between transcript and status bar.
+
+| Command | Description |
+|---------|-------------|
+| `/details` | Opens interactive picker (like `/reasoning`, `/statusbar`) |
+| `/details [mode\|status\|cycle]` | Global shelf disclosure: `hidden`, `collapsed`, `expanded` |
+| `/details <section> [mode\|reset]` | Per-section override: `thinking`, `tools`, `subagents`, `activity` |
+| `/tail <process_id>` | Full-screen overlay for background process output (4KB tail) |
+| `/agents` | Full-screen delegate monitor (sort, STOP steer via `i`) |
+
+Settings persist to `display.shelf_details` in `config.yaml` (Hermes `details_mode` parity).
 
 ### Voice Mode
 
@@ -530,6 +544,81 @@ Platform adapters implement `PlatformAdapter` trait. Available platforms:
 ### Media Delivery (MEDIA:// Protocol)
 
 When the agent includes `MEDIA:/path/to/file` in its response, `DeliveryRouter` intercepts it before sending and uses the platform's native media upload API (photo for images, voice for audio, document for others).
+
+---
+
+## Subscription OAuth (spec 024)
+
+Consumer subscriptions use Hermes-parity OAuth in `edgecrab-core/src/oauth/`:
+
+| Target | Storage | Flow |
+|--------|---------|------|
+| `grok` / `nous` | `~/.edgecrab/auth.json` | Proxy: PKCE loopback / device code |
+| `claude-pro` | `~/.edgecrab/.anthropic_oauth.json` | PKCE + paste auth code |
+| `chatgpt-pro` | `auth.json` `providers.openai-codex` | OpenAI device code |
+| `copilot` | `~/.config/edgequake/copilot` | `edgequake_llm` GitHub device flow |
+
+```bash
+edgecrab auth add grok          # xAI PKCE loopback (SuperGrok / X Premium+)
+edgecrab auth add nous          # Nous device code
+edgecrab auth add claude-pro    # Claude Pro / Max OAuth (paste code)
+edgecrab auth add chatgpt-pro   # ChatGPT Pro / Codex device code
+edgecrab auth login copilot     # GitHub device code → Copilot token cache
+edgecrab auth status grok
+edgecrab auth remove grok
+```
+
+TUI: `/login claude-pro`, `/login grok`, `/login chatgpt-pro` (terminal handoff like Copilot).
+
+Shared PKCE: `edgecrab-core/src/oauth/pkce.rs`. Proxy loopback login:
+`edgecrab-proxy/src/oauth/` + `backend/xai/oauth_login.rs`,
+`backend/nous/device_flow.rs`.
+
+When `ANTHROPIC_API_KEY` is unset, `anthropic/…` models use `.anthropic_oauth.json`.
+
+Remote OAuth: `edgecrab auth add grok --no-browser` or `--manual-paste`.
+
+---
+
+## OpenAI-Compatible Proxy (edgecrab-proxy)
+
+Local **provider bridge** (not the gateway agent API): exposes configured LLM
+providers to OpenAI-shaped clients (Aider, OpenAI SDK, LiteLLM).
+
+```bash
+/proxy                          # TUI setup wizard (default in EdgeCrab TUI)
+/proxy enable grok              # inline enable without opening TUI
+edgecrab proxy setup grok       # guided: config + token + client snippet
+edgecrab auth add grok          # once: SuperGrok OAuth → ~/.edgecrab/auth.json
+edgecrab proxy enable grok      # add xai_oauth upstream to config.yaml
+edgecrab proxy doctor           # preflight (token + OAuth auth.json)
+edgecrab proxy client           # OPENAI_API_BASE / Aider env snippet
+edgecrab proxy start --provider xai
+edgecrab proxy upstreams        # list forward upstreams (alias: providers)
+edgecrab proxy status
+```
+
+TUI hub: `edgecrab-cli/src/proxy_hub.rs` + `proxy_setup_tui.rs` (shared with CLI `proxy_cmd/`).
+
+| Module | Purpose |
+|--------|---------|
+| `edgecrab-proxy/src/server.rs` | axum: `/v1/chat/completions`, `/v1/models`, `/health` |
+| `wire/messages.rs` | OpenAI messages/tools → `edgequake_llm::ChatMessage` |
+| `wire/sse.rs` | `StreamChunk` → OpenAI SSE + `[DONE]` |
+| `backend/provider.rs` | Mode B: `LLMProvider::chat_with_tools` (+ stream fallback) |
+| `backend/adapter.rs` | `UpstreamAdapter` trait (Hermes `adapters/base.py`) |
+| `backend/forwarder.rs` | Mode A: verbatim forward + upstream bearer swap |
+| `backend/nous/` | `NousPortalAdapter` — OAuth refresh + 401 retry |
+| `backend/xai/` | `XaiGrokAdapter` — OIDC refresh + pool rotate on 429 |
+| `backend/auth_store.rs` | `HermesAuthFileAdapter` — read-only auth.json bearer |
+| `auth.rs` | Bearer check vs `proxy.token_path` |
+
+Mode A `proxy.forward_upstreams.<key>.adapter`: `static` | `hermes_auth` | `nous_portal` | `xai_oauth`.
+Hermes builtins: `nous`, `xai` (`edgecrab proxy upstreams` when config empty).
+
+Config keys: `proxy.bind`, `proxy.port`, `proxy.model_aliases`, `proxy.token_path`,
+`proxy.max_body_bytes`, `proxy.cors_allow_origins`. Distinct from gateway
+`api_server` which runs the full ReAct agent.
 
 ---
 

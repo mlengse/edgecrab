@@ -17,7 +17,7 @@
 //!     ├── memory.rs         — memory_read, memory_write
 //!     ├── skills.rs         — skills_list, skill_view
 //!     ├── session_search.rs — session full-text search
-//!     ├── checkpoint.rs     — filesystem snapshot for rollback
+//!     ├── checkpoint/       — filesystem snapshot for rollback (v2 git store)
 //!     ├── execute_code.rs   — sandboxed code execution
 //!     ├── delegate_task.rs  — sub-agent task delegation
 //!     └── advanced.rs       — generate_image, send_message stubs
@@ -29,6 +29,7 @@ pub mod backends;
 pub mod browser;
 pub mod checkpoint;
 pub mod clarify;
+pub mod computer_use;
 pub mod cron;
 pub mod delegate_task;
 pub mod execute_code;

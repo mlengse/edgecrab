@@ -26,6 +26,7 @@ edgecrab-tools = { workspace = true }
 edgecrab-cron = { workspace = true }
 edgecrab-acp = { workspace = true }
 edgecrab-gateway = { workspace = true }
+edgecrab-proxy = { workspace = true }
 edgecrab-migrate = { workspace = true }
 edgequake-llm = { workspace = true }
 clap = { workspace = true }
@@ -66,4 +67,5 @@ tempfile = { workspace = true }
 
 [dev-dependencies]
 tokio = { workspace = true }
+serde_json = { workspace = true }
 serial_test = "3"

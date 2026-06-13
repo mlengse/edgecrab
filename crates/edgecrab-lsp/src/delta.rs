@@ -30,10 +30,7 @@ pub fn diagnostic_key(d: &Diagnostic) -> String {
     let message = d.message.trim();
     format!(
         "{severity}\0{code}\0{source}\0{message}\0{}:{}-{}:{}",
-        d.range.start.line,
-        d.range.start.character,
-        d.range.end.line,
-        d.range.end.character
+        d.range.start.line, d.range.start.character, d.range.end.line, d.range.end.character
     )
 }
 
@@ -66,14 +63,8 @@ mod tests {
     fn diag(line: u32, msg: &str) -> Diagnostic {
         Diagnostic {
             range: Range {
-                start: Position {
-                    line,
-                    character: 0,
-                },
-                end: Position {
-                    line,
-                    character: 1,
-                },
+                start: Position { line, character: 0 },
+                end: Position { line, character: 1 },
             },
             severity: Some(DiagnosticSeverity::ERROR),
             code: Some(NumberOrString::String("E".into())),

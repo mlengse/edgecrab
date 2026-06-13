@@ -124,16 +124,12 @@ pub(crate) fn supports_allowlist(platform_id: &str) -> bool {
 }
 
 pub(crate) fn supports_home_channel(platform_id: &str) -> bool {
-    matches!(platform_id, "telegram" | "discord" | "slack")
+    edgecrab_core::handoff_platform_from_name(platform_id).is_some()
 }
 
 fn gateway_home_channel(config: &AppConfig, platform_id: &str) -> Option<String> {
-    match platform_id {
-        "telegram" => config.gateway.telegram.home_channel.clone(),
-        "discord" => config.gateway.discord.home_channel.clone(),
-        "slack" => config.gateway.slack.home_channel.clone(),
-        _ => None,
-    }
+    edgecrab_core::handoff_platform_from_name(platform_id)
+        .and_then(|platform| edgecrab_core::resolve_gateway_home_channel(&config.gateway, platform))
 }
 
 fn state_glyph(state: PlatformState) -> &'static str {

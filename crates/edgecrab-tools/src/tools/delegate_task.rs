@@ -238,10 +238,19 @@ async fn run_child_task(parent_ctx: &ToolContext, request: ChildTaskRequest) -> 
 
     let system_prompt = build_child_system_prompt(&goal, context.as_deref());
     if let Some(tx) = &parent_ctx.delegation_event_tx {
+        let agent_id = crate::subagent_ids::resolve_subagent_agent_id(
+            parent_ctx.delegate_agent_id.as_deref(),
+            task_index,
+        );
+        let parent_id = parent_ctx.delegate_agent_id.clone();
+        let depth = parent_ctx.delegate_depth.saturating_add(1);
         let _ = tx.send(DelegationEvent::TaskStarted {
             task_index,
             task_count,
             goal: goal.clone(),
+            depth,
+            agent_id: agent_id.clone(),
+            parent_id: parent_id.clone(),
         });
     }
 
@@ -263,6 +272,12 @@ async fn run_child_task(parent_ctx: &ToolContext, request: ChildTaskRequest) -> 
             progress_tx: parent_ctx.delegation_event_tx.clone(),
             task_index,
             task_count,
+            agent_id: crate::subagent_ids::resolve_subagent_agent_id(
+                parent_ctx.delegate_agent_id.as_deref(),
+                task_index,
+            ),
+            parent_id: parent_ctx.delegate_agent_id.clone(),
+            depth: parent_ctx.delegate_depth.saturating_add(1),
         })
         .await
     {
@@ -428,6 +443,10 @@ impl ToolHandler for DelegateTaskToolReal {
             ));
         }
 
+        if let Some(message) = crate::delegation_state::spawn_blocked_message() {
+            return Err(ToolError::Other(message));
+        }
+
         // Depth limit
         if ctx.delegate_depth >= MAX_DEPTH {
             return Err(ToolError::Other(format!(
@@ -555,6 +574,11 @@ impl ToolHandler for DelegateTaskToolReal {
                     provider: None,
                     tool_registry: None,
                     delegate_depth: ctx.delegate_depth + 1,
+                    delegate_agent_id: Some(crate::subagent_ids::resolve_subagent_agent_id(
+                        ctx.delegate_agent_id.as_deref(),
+                        i,
+                    )),
+                    delegate_parent_id: ctx.delegate_agent_id.clone(),
                     sub_agent_runner: runner,
                     delegation_event_tx: ctx.delegation_event_tx.clone(),
                     clarify_tx: None, // sub-agents don't propagate interactive clarify
@@ -711,6 +735,14 @@ mod tests {
         assert!(result.is_err());
         let err = result.unwrap_err().to_string();
         assert!(err.contains("depth limit"));
+    }
+
+    #[test]
+    #[serial_test::serial(delegation_spawn_pause)]
+    fn delegate_spawn_pause_rejects() {
+        let _pause = crate::delegation_state::SpawnPauseGuard::set(true);
+        let message = crate::delegation_state::spawn_blocked_message().expect("paused");
+        assert!(message.contains("paused"));
     }
 
     #[tokio::test]
@@ -1009,10 +1041,16 @@ mod tests {
                 task_index,
                 task_count,
                 goal,
+                depth,
+                agent_id,
+                parent_id,
             } => {
                 assert_eq!(task_index, 0);
                 assert_eq!(task_count, 1);
                 assert_eq!(goal, "inspect repo");
+                assert_eq!(depth, 1);
+                assert_eq!(agent_id, "sa-0");
+                assert_eq!(parent_id, None);
             }
             other => panic!("unexpected first event: {other:?}"),
         }

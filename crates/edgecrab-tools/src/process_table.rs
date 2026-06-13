@@ -110,19 +110,23 @@ impl WatchState {
     }
 }
 
-/// Notification payload from watch pattern matching.
+/// Notification payload from watch pattern matching or background tail previews.
 #[derive(Debug, Clone)]
 pub struct WatchEvent {
     /// Which process fired the event.
     pub process_id: String,
-    /// Which pattern matched.
+    /// Spawn command (for TUI labels on background tail events).
+    pub command: String,
+    /// Which pattern matched (empty for tail previews).
     pub pattern: String,
     /// Trimmed matched output (max 20 lines, 2000 chars).
     pub matched_output: String,
     /// How many matches were suppressed since last delivery.
     pub suppressed_count: u64,
-    /// Event type (match or disabled).
+    /// Event type (match, disabled, tail preview, or exit).
     pub event_type: WatchEventType,
+    /// Set when `event_type` is [`WatchEventType::Exited`].
+    pub exit_code: Option<i32>,
 }
 
 /// Type of watch event.
@@ -132,6 +136,34 @@ pub enum WatchEventType {
     Match,
     /// Overload protection permanently disabled watching.
     Disabled,
+    /// Throttled tail preview for background process visibility (no pattern required).
+    TailPreview,
+    /// Background process exited or was killed.
+    Exited,
+}
+
+/// Human-readable notice for watch events surfaced as `ActivityNotice`.
+pub fn format_watch_activity_notice(event: &WatchEvent) -> String {
+    match event.event_type {
+        WatchEventType::Match => format!(
+            "🔔 process {} matched `{}`: {}",
+            event.process_id,
+            event.pattern,
+            event.matched_output.lines().next().unwrap_or("").trim()
+        ),
+        WatchEventType::Disabled => format!(
+            "🔔 process {} watch disabled (rate limit)",
+            event.process_id
+        ),
+        WatchEventType::TailPreview => {
+            format!("📟 {} …\n{}", event.process_id, event.matched_output)
+        }
+        WatchEventType::Exited => format!(
+            "✅ process {} {}",
+            event.process_id,
+            crate::tool_progress_tail::format_process_exit_status(event.exit_code)
+        ),
+    }
 }
 
 /// Check a single output line against watch patterns, emitting events via the sink.
@@ -143,6 +175,7 @@ pub enum WatchEventType {
 pub fn check_watch_patterns(
     line: &str,
     process_id: &str,
+    command: &str,
     state: &mut WatchState,
     sink: &mpsc::UnboundedSender<WatchEvent>,
 ) {
@@ -183,10 +216,12 @@ pub fn check_watch_patterns(
                 );
                 let _ = sink.send(WatchEvent {
                     process_id: process_id.to_string(),
+                    command: command.to_string(),
                     pattern: pattern.clone(),
                     matched_output: trim_watch_output(line),
                     suppressed_count: state.suppressed,
                     event_type: WatchEventType::Disabled,
+                    exit_code: None,
                 });
                 state.suppressed = 0;
             }
@@ -201,10 +236,12 @@ pub fn check_watch_patterns(
 
         let _ = sink.send(WatchEvent {
             process_id: process_id.to_string(),
+            command: command.to_string(),
             pattern: pattern.clone(),
             matched_output: trim_watch_output(line),
             suppressed_count,
             event_type: WatchEventType::Match,
+            exit_code: None,
         });
 
         break; // one notification per line
@@ -285,6 +322,10 @@ pub struct ProcessRecord {
     /// Watch pattern state for background process monitoring.
     /// When set, each output line is checked against the patterns.
     pub watch_state: Option<WatchState>,
+    /// Last time a throttled tail preview was emitted to the TUI.
+    pub last_tail_notify: Option<Instant>,
+    /// Optional sink for tail previews and lifecycle events (set by `run_process`).
+    watch_sink: Option<mpsc::UnboundedSender<WatchEvent>>,
 }
 
 /// Process lifecycle states.
@@ -330,6 +371,19 @@ fn snapshot_output_lines(rec: &ProcessRecord) -> Vec<String> {
         lines.push(redact_terminal_control(&rec.partial_line));
     }
     lines
+}
+
+fn tail_chars_from_end(text: &str, max_chars: usize) -> String {
+    let trimmed = text.trim();
+    if trimmed.chars().count() <= max_chars {
+        return trimmed.to_string();
+    }
+    let start = trimmed
+        .char_indices()
+        .nth(trimmed.chars().count().saturating_sub(max_chars))
+        .map(|(i, _)| i)
+        .unwrap_or(0);
+    format!("…{}", &trimmed[start..])
 }
 
 // ─── ProcessTable ─────────────────────────────────────────────────────
@@ -429,10 +483,87 @@ impl ProcessTable {
             session_key: session_key.into(),
             stdin_tx: None,
             watch_state: None,
+            last_tail_notify: None,
+            watch_sink: None,
         };
         self.records
             .insert(id.clone(), Arc::new(Mutex::new(record)));
         id
+    }
+
+    /// Emit a throttled tail preview when a background process produces output.
+    pub async fn maybe_emit_tail_preview(
+        &self,
+        process_id: &str,
+        sink: &mpsc::UnboundedSender<WatchEvent>,
+    ) {
+        let Some(entry) = self.get_record(process_id) else {
+            return;
+        };
+        let mut rec = entry.lock().await;
+        let now = Instant::now();
+        if !crate::tool_progress_tail::should_emit_progress(rec.last_tail_notify, now) {
+            return;
+        }
+
+        let lines = snapshot_output_lines(&rec);
+        let tail_lines: Vec<String> = lines
+            .iter()
+            .map(|line| crate::tool_progress_tail::sanitize_output_line(line))
+            .filter(|line| !line.is_empty())
+            .collect();
+        let matched_output = crate::tool_progress_tail::format_tail_from_lines(&tail_lines);
+        if matched_output.is_empty() {
+            return;
+        }
+
+        rec.last_tail_notify = Some(now);
+        let _ = sink.send(WatchEvent {
+            process_id: process_id.to_string(),
+            command: rec.command.clone(),
+            pattern: String::new(),
+            matched_output,
+            suppressed_count: 0,
+            event_type: WatchEventType::TailPreview,
+            exit_code: None,
+        });
+    }
+
+    /// Attach a watch/tail notification sink (typically from the agent loop).
+    pub async fn set_watch_sink(&self, process_id: &str, sink: mpsc::UnboundedSender<WatchEvent>) {
+        if let Some(entry) = self.get_record(process_id) {
+            let mut rec = entry.lock().await;
+            rec.watch_sink = Some(sink.clone());
+            drop(rec);
+            // Emit current tail immediately so output produced before attach is visible.
+            self.maybe_emit_tail_preview(process_id, &sink).await;
+        }
+    }
+
+    async fn maybe_notify_tail(&self, process_id: &str) {
+        let sink = if let Some(entry) = self.get_record(process_id) {
+            entry.lock().await.watch_sink.clone()
+        } else {
+            None
+        };
+        if let Some(sink) = sink {
+            self.maybe_emit_tail_preview(process_id, &sink).await;
+        }
+    }
+
+    fn emit_lifecycle_event(rec: &ProcessRecord, process_id: &str, exit_code: Option<i32>) {
+        let Some(ref sink) = rec.watch_sink else {
+            return;
+        };
+        let _ = sink.send(WatchEvent {
+            process_id: process_id.to_string(),
+            command: rec.command.clone(),
+            pattern: String::new(),
+            matched_output: String::new(),
+            suppressed_count: 0,
+            event_type: WatchEventType::Exited,
+            exit_code,
+        });
     }
 
     /// Set the stdin channel sender for an already-registered process.
@@ -520,33 +651,47 @@ impl ProcessTable {
         }
     }
 
+    /// Check watch patterns for one completed output line (called while record is locked).
+    fn maybe_check_watch_line(rec: &mut ProcessRecord, process_id: &str, line: &str) {
+        let trimmed = line.trim_end_matches('\n').trim_end_matches('\r');
+        if trimmed.is_empty() {
+            return;
+        }
+        let command = rec.command.clone();
+        if let (Some(watch), Some(sink)) = (&mut rec.watch_state, rec.watch_sink.as_ref()) {
+            check_watch_patterns(trimmed, process_id, &command, watch, sink);
+        }
+    }
+
     /// Append output lines to a process (called by background drain task).
     pub async fn append_output(&self, process_id: &str, lines: Vec<String>) {
         if let Some(entry) = self.records.get(process_id) {
             let mut rec: tokio::sync::MutexGuard<'_, ProcessRecord> = entry.value().lock().await;
             for line in lines {
-                if rec.partial_line.is_empty() {
-                    push_output_line(&mut rec, line);
+                let merged = if rec.partial_line.is_empty() {
+                    line
                 } else {
                     rec.partial_line.push_str(&line);
-                    let merged = std::mem::take(&mut rec.partial_line);
-                    push_output_line(&mut rec, merged);
-                }
+                    std::mem::take(&mut rec.partial_line)
+                };
+                push_output_line(&mut rec, merged.clone());
+                Self::maybe_check_watch_line(&mut rec, process_id, &merged);
             }
         }
+        self.maybe_notify_tail(process_id).await;
     }
 
     /// Append a raw output chunk, preserving prompts that do not end in `\n`.
     pub async fn append_output_chunk(&self, process_id: &str, chunk: &str) {
         if let Some(entry) = self.records.get(process_id) {
             let mut rec = entry.value().lock().await;
+            let mut completed_lines: Vec<String> = Vec::new();
             let mut chars = chunk.chars().peekable();
             while let Some(ch) = chars.next() {
                 match ch {
                     '\r' => {
                         if matches!(chars.peek(), Some('\n')) {
-                            let line = std::mem::take(&mut rec.partial_line);
-                            push_output_line(&mut rec, line);
+                            completed_lines.push(std::mem::take(&mut rec.partial_line));
                             rec.carriage_return_pending = false;
                             let _ = chars.next();
                         } else {
@@ -554,8 +699,7 @@ impl ProcessTable {
                         }
                     }
                     '\n' => {
-                        let line = std::mem::take(&mut rec.partial_line);
-                        push_output_line(&mut rec, line);
+                        completed_lines.push(std::mem::take(&mut rec.partial_line));
                         rec.carriage_return_pending = false;
                     }
                     _ => {
@@ -565,13 +709,17 @@ impl ProcessTable {
                         }
                         rec.partial_line.push(ch);
                         if rec.partial_line.len() >= PARTIAL_LINE_FLUSH_BYTES {
-                            let line = std::mem::take(&mut rec.partial_line);
-                            push_output_line(&mut rec, line);
+                            completed_lines.push(std::mem::take(&mut rec.partial_line));
                         }
                     }
                 }
             }
+            for line in completed_lines {
+                push_output_line(&mut rec, line.clone());
+                Self::maybe_check_watch_line(&mut rec, process_id, &line);
+            }
         }
+        self.maybe_notify_tail(process_id).await;
     }
 
     /// Replace the buffered output with a fresh snapshot.
@@ -585,10 +733,15 @@ impl ProcessTable {
             rec.output_lines.clear();
             rec.partial_line.clear();
             rec.carriage_return_pending = false;
-            for line in lines {
-                push_output_line(&mut rec, line);
+            for line in &lines {
+                push_output_line(&mut rec, line.clone());
+            }
+            // Watch patterns: check the latest lines only (avoids floods on window shift).
+            for line in lines.iter().rev().take(3).rev() {
+                Self::maybe_check_watch_line(&mut rec, process_id, line);
             }
         }
+        self.maybe_notify_tail(process_id).await;
     }
 
     /// Mark a process as exited with an exit code.
@@ -597,6 +750,7 @@ impl ProcessTable {
             let mut rec: tokio::sync::MutexGuard<'_, ProcessRecord> = entry.value().lock().await;
             rec.status = ProcessStatus::Exited;
             rec.exit_code = Some(exit_code);
+            Self::emit_lifecycle_event(&rec, process_id, Some(exit_code));
         }
         self.controls.remove(process_id);
     }
@@ -608,6 +762,7 @@ impl ProcessTable {
             if rec.status == ProcessStatus::Running {
                 rec.status = ProcessStatus::Exited;
                 rec.exit_code = Some(exit_code);
+                Self::emit_lifecycle_event(&rec, process_id, Some(exit_code));
                 drop(rec);
                 self.controls.remove(process_id);
             }
@@ -619,6 +774,8 @@ impl ProcessTable {
         if let Some(entry) = self.records.get(process_id) {
             let mut rec: tokio::sync::MutexGuard<'_, ProcessRecord> = entry.value().lock().await;
             rec.status = ProcessStatus::Killed;
+            rec.exit_code = Some(-1);
+            Self::emit_lifecycle_event(&rec, process_id, Some(-1));
         }
         self.controls.remove(process_id);
     }
@@ -629,6 +786,8 @@ impl ProcessTable {
             let mut rec = entry.value().lock().await;
             if rec.status == ProcessStatus::Running {
                 rec.status = ProcessStatus::Killed;
+                rec.exit_code = Some(-1);
+                Self::emit_lifecycle_event(&rec, process_id, Some(-1));
                 drop(rec);
                 self.controls.remove(process_id);
             }
@@ -715,6 +874,23 @@ impl ProcessTable {
                     .collect()
             };
             let text = selected.join("\n");
+            Some((text, total, rec.status.clone(), rec.exit_code))
+        } else {
+            None
+        }
+    }
+
+    /// Retrieve the last `max_chars` of combined output (Hermes `process.list` parity).
+    pub async fn get_output_tail_chars(
+        &self,
+        process_id: &str,
+        max_chars: usize,
+    ) -> Option<(String, usize, ProcessStatus, Option<i32>)> {
+        if let Some(entry) = self.records.get(process_id) {
+            let rec = entry.value().lock().await;
+            let lines = snapshot_output_lines(&rec);
+            let total = lines.len();
+            let text = tail_chars_from_end(&lines.join("\n"), max_chars);
             Some((text, total, rec.status.clone(), rec.exit_code))
         } else {
             None
@@ -1080,7 +1256,13 @@ mod tests {
     fn watch_single_match() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut state = WatchState::new(vec!["error".to_string()]);
-        check_watch_patterns("compilation error: failed", "proc-1", &mut state, &tx);
+        check_watch_patterns(
+            "compilation error: failed",
+            "proc-1",
+            "cargo build",
+            &mut state,
+            &tx,
+        );
         let event = rx.try_recv().expect("should receive event");
         assert_eq!(event.process_id, "proc-1");
         assert_eq!(event.pattern, "error");
@@ -1093,7 +1275,7 @@ mod tests {
     fn watch_no_match() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut state = WatchState::new(vec!["error".to_string()]);
-        check_watch_patterns("all good here", "proc-1", &mut state, &tx);
+        check_watch_patterns("all good here", "proc-1", "cargo build", &mut state, &tx);
         assert!(rx.try_recv().is_err(), "should not fire on non-match");
     }
 
@@ -1101,7 +1283,7 @@ mod tests {
     fn watch_multiple_patterns_first_wins() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut state = WatchState::new(vec!["err".to_string(), "error".to_string()]);
-        check_watch_patterns("error: something", "proc-1", &mut state, &tx);
+        check_watch_patterns("error: something", "proc-1", "cargo build", &mut state, &tx);
         let event = rx.try_recv().expect("should receive event");
         assert_eq!(event.pattern, "err"); // first pattern matches
         assert!(rx.try_recv().is_err(), "only one notification per line");
@@ -1114,7 +1296,13 @@ mod tests {
 
         // Fire WATCH_MAX_PER_WINDOW + 2 hits in rapid succession
         for i in 0..(WATCH_MAX_PER_WINDOW + 2) {
-            check_watch_patterns(&format!("error line {i}"), "proc-1", &mut state, &tx);
+            check_watch_patterns(
+                &format!("error line {i}"),
+                "proc-1",
+                "cargo build",
+                &mut state,
+                &tx,
+            );
         }
 
         // Drain events — should have at most WATCH_MAX_PER_WINDOW
@@ -1133,7 +1321,13 @@ mod tests {
 
         // Fill the rate window
         for i in 0..(WATCH_MAX_PER_WINDOW + 3) {
-            check_watch_patterns(&format!("error line {i}"), "proc-1", &mut state, &tx);
+            check_watch_patterns(
+                &format!("error line {i}"),
+                "proc-1",
+                "cargo build",
+                &mut state,
+                &tx,
+            );
         }
         // Drain all events from first window
         while rx.try_recv().is_ok() {}
@@ -1143,7 +1337,7 @@ mod tests {
         state.window_hits = 0;
 
         // Next match should carry the suppressed count
-        check_watch_patterns("error again", "proc-1", &mut state, &tx);
+        check_watch_patterns("error again", "proc-1", "cargo build", &mut state, &tx);
         let event = rx.try_recv().expect("should receive after window reset");
         assert!(event.suppressed_count > 0, "should report suppressed count");
     }
@@ -1158,7 +1352,7 @@ mod tests {
         state.overload_since =
             Some(Instant::now() - Duration::from_secs(WATCH_OVERLOAD_KILL_SECONDS + 1));
 
-        check_watch_patterns("error overload", "proc-1", &mut state, &tx);
+        check_watch_patterns("error overload", "proc-1", "cargo build", &mut state, &tx);
         assert!(state.disabled, "should be permanently disabled");
     }
 
@@ -1168,8 +1362,23 @@ mod tests {
         let mut state = WatchState::new(vec!["error".to_string()]);
         state.disabled = true;
 
-        check_watch_patterns("error line", "proc-1", &mut state, &tx);
+        check_watch_patterns("error line", "proc-1", "cargo build", &mut state, &tx);
         assert!(rx.try_recv().is_err(), "disabled state should fire nothing");
+    }
+
+    #[test]
+    fn format_watch_activity_notice_match() {
+        let notice = super::format_watch_activity_notice(&WatchEvent {
+            process_id: "p1".into(),
+            command: "cargo build".into(),
+            pattern: "error".into(),
+            matched_output: "error: failed\nmore".into(),
+            suppressed_count: 0,
+            event_type: WatchEventType::Match,
+            exit_code: None,
+        });
+        assert!(notice.contains("p1"));
+        assert!(notice.contains("error"));
     }
 
     #[test]
@@ -1190,7 +1399,13 @@ mod tests {
 
         // Fill the first window
         for i in 0..WATCH_MAX_PER_WINDOW {
-            check_watch_patterns(&format!("error line {i}"), "proc-1", &mut state, &tx);
+            check_watch_patterns(
+                &format!("error line {i}"),
+                "proc-1",
+                "cargo build",
+                &mut state,
+                &tx,
+            );
         }
         while rx.try_recv().is_ok() {}
 
@@ -1198,7 +1413,7 @@ mod tests {
         state.window_start = Instant::now() - Duration::from_secs(WATCH_WINDOW_SECONDS + 1);
 
         // Should succeed — new window
-        check_watch_patterns("error new window", "proc-1", &mut state, &tx);
+        check_watch_patterns("error new window", "proc-1", "cargo build", &mut state, &tx);
         assert!(rx.try_recv().is_ok(), "should fire in new window");
     }
 

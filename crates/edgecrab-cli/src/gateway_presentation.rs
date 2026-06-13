@@ -20,17 +20,50 @@ pub fn render_gateway_home_channel_summary(config: &AppConfig) -> String {
         (
             "telegram",
             config.gateway.platform_enabled("telegram") || config.gateway.telegram.enabled,
-            config.gateway.telegram.home_channel.as_deref(),
+            edgecrab_core::resolve_gateway_home_channel(
+                &config.gateway,
+                edgecrab_types::Platform::Telegram,
+            ),
         ),
         (
             "discord",
             config.gateway.platform_enabled("discord") || config.gateway.discord.enabled,
-            config.gateway.discord.home_channel.as_deref(),
+            edgecrab_core::resolve_gateway_home_channel(
+                &config.gateway,
+                edgecrab_types::Platform::Discord,
+            ),
         ),
         (
             "slack",
             config.gateway.platform_enabled("slack") || config.gateway.slack.enabled,
-            config.gateway.slack.home_channel.as_deref(),
+            edgecrab_core::resolve_gateway_home_channel(
+                &config.gateway,
+                edgecrab_types::Platform::Slack,
+            ),
+        ),
+        (
+            "whatsapp",
+            config.gateway.platform_enabled("whatsapp") || config.gateway.whatsapp.enabled,
+            edgecrab_core::resolve_gateway_home_channel(
+                &config.gateway,
+                edgecrab_types::Platform::Whatsapp,
+            ),
+        ),
+        (
+            "signal",
+            config.gateway.platform_enabled("signal") || config.gateway.signal.enabled,
+            edgecrab_core::resolve_gateway_home_channel(
+                &config.gateway,
+                edgecrab_types::Platform::Signal,
+            ),
+        ),
+        (
+            "matrix",
+            config.gateway.platform_enabled("matrix"),
+            edgecrab_core::resolve_gateway_home_channel(
+                &config.gateway,
+                edgecrab_types::Platform::Matrix,
+            ),
         ),
     ];
 
@@ -39,7 +72,7 @@ pub fn render_gateway_home_channel_summary(config: &AppConfig) -> String {
         if enabled || home_channel.is_some() {
             lines.push(format!(
                 "  {platform:<9} {}",
-                home_channel.unwrap_or("(not set)")
+                home_channel.as_deref().unwrap_or("(not set)")
             ));
         }
     }
