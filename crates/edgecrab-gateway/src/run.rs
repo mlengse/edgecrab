@@ -177,38 +177,59 @@ fn gateway_builtin_commands() -> Vec<(String, String)> {
     commands
 }
 
-fn installed_skill_commands() -> Vec<String> {
-    let skills_dir = edgecrab_core::edgecrab_home().join("skills");
-    let Ok(entries) = std::fs::read_dir(skills_dir) else {
-        return Vec::new();
-    };
+fn skills_scan_context(platform: Option<&str>) -> edgecrab_tools::skills::SkillsScanContext {
+    let config = edgecrab_core::AppConfig::load().unwrap_or_default();
+    edgecrab_tools::skills::SkillsScanContext::from_config(
+        &edgecrab_core::edgecrab_home(),
+        &config.skills.external_dirs,
+        &config.skills.disabled,
+        &config.skills.platform_disabled,
+        platform,
+    )
+    .with_interactive(false)
+}
 
-    let mut names = Vec::new();
-    for entry in entries.flatten() {
-        let path = entry.path();
-        let Some(raw_name) = path.file_name().and_then(|name| name.to_str()) else {
-            continue;
-        };
-        if path.is_dir() {
-            names.push(raw_name.to_string());
-        } else if path.extension().is_some_and(|ext| ext == "md") {
-            names.push(raw_name.trim_end_matches(".md").to_string());
-        }
+fn persist_skills_write_approval(enabled: bool) -> Result<(), String> {
+    edgecrab_core::AppConfig::persist_skills_write_approval(enabled).map_err(|e| e.to_string())
+}
+
+fn persist_skills_inline_shell(enabled: bool) -> Result<(), String> {
+    edgecrab_core::AppConfig::persist_skills_inline_shell(enabled).map_err(|e| e.to_string())
+}
+
+fn installed_skill_commands() -> Vec<(String, String)> {
+    let ctx = skills_scan_context(None);
+    let mut entries = Vec::new();
+    for (slug, info) in edgecrab_tools::skills::scan_skill_commands(&ctx) {
+        entries.push((format!("/{slug}"), info.description));
     }
-    names.sort();
-    names.dedup();
-    names
+    for (slug, bundle) in edgecrab_tools::skills::get_skill_bundles(&ctx) {
+        entries.push((
+            format!("/{slug}"),
+            format!("Bundle: {}", bundle.description),
+        ));
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    entries
+}
+
+fn enrich_text_for_skill_slash(
+    text: &str,
+    session_id: Option<&str>,
+    platform: Option<&str>,
+) -> String {
+    if !text.trim_start().starts_with('/') {
+        return text.to_string();
+    }
+    let ctx = skills_scan_context(platform);
+    edgecrab_tools::skills::enrich_message_for_skill_slash(&ctx, text, session_id)
 }
 
 fn gateway_commands_page(page: usize) -> String {
     const PAGE_SIZE: usize = 12;
 
     let mut entries = gateway_builtin_commands();
-    entries.extend(
-        installed_skill_commands()
-            .into_iter()
-            .map(|name| (format!("/{name}"), "Installed skill command".to_string())),
-    );
+    entries.extend(installed_skill_commands());
     entries.sort_by(|a, b| a.0.cmp(&b.0));
 
     let total_pages = entries.len().max(1).div_ceil(PAGE_SIZE);
@@ -503,10 +524,13 @@ fn render_gateway_image_context(
 }
 
 async fn build_effective_text(agent: &Agent, msg: &IncomingMessage) -> String {
+    let session_key = format!("gateway-{}", message_origin_recipient(msg));
+    let platform_key = msg.platform.to_string();
+    let base_text = enrich_text_for_skill_slash(&msg.text, Some(&session_key), Some(&platform_key));
     let image_sources = image_attachment_sources(msg);
     let audio_sources = audio_attachment_sources(msg);
     if image_sources.is_empty() && audio_sources.is_empty() {
-        return msg.text.clone();
+        return base_text;
     }
 
     let provider = agent.provider_handle().await;
@@ -528,7 +552,7 @@ async fn build_effective_text(agent: &Agent, msg: &IncomingMessage) -> String {
         ..Default::default()
     };
 
-    let mut effective_text = msg.text.clone();
+    let mut effective_text = base_text;
     let mut analyses = Vec::new();
     let mut failures = Vec::new();
     for (idx, source) in image_sources
@@ -1893,6 +1917,49 @@ impl Gateway {
             }
         });
 
+        // Scheduled skill curator — hourly poll, gated by curator.interval_hours (opt-in).
+        if let Ok(app_cfg) = edgecrab_core::AppConfig::load()
+            && app_cfg.curator.enabled
+        {
+            let _ = edgecrab_tools::skills::seed_curator_deferred_if_needed(
+                &edgecrab_core::edgecrab_home(),
+                true,
+            );
+        }
+        let cancel_curator = self.cancel.clone();
+        tokio::spawn(async move {
+            let mut ticker = tokio::time::interval(std::time::Duration::from_secs(3600));
+            loop {
+                tokio::select! {
+                    _ = ticker.tick() => {
+                        let Ok(config) = edgecrab_core::AppConfig::load() else { continue };
+                        if !config.curator.enabled {
+                            continue;
+                        }
+                        let home = edgecrab_core::edgecrab_home();
+                        let ctx = skills_scan_context(None);
+                        let settings = edgecrab_tools::skills::CuratorSettings {
+                            stale_after_days: config.curator.stale_after_days,
+                            archive_after_days: config.curator.archive_after_days,
+                            prune_builtins: config.curator.prune_builtins,
+                            backup_enabled: config.curator.backup.enabled,
+                            backup_keep: config.curator.backup.keep,
+                        };
+                        if let Some(summary) = edgecrab_tools::skills::maybe_run_scheduled_curator(
+                            &home,
+                            &ctx,
+                            settings,
+                            config.curator.enabled,
+                            config.curator.interval_hours,
+                        ) {
+                            tracing::info!("curator scheduled pass: {summary}");
+                        }
+                    }
+                    _ = cancel_curator.cancelled() => break,
+                }
+            }
+        });
+
         // Message dispatch loop
         loop {
             tokio::select! {
@@ -2941,6 +3008,112 @@ impl Gateway {
                                     }
                                     Some(lines)
                                 }
+                            }
+                            "skills" | "skill" => {
+                                let args = msg.get_command_args().trim();
+                                let config =
+                                    edgecrab_core::AppConfig::load().unwrap_or_default();
+                                let home = edgecrab_core::edgecrab_home();
+                                let ctx = skills_scan_context(Some(&msg.platform.to_string()));
+                                let config_path = home.join("config.yaml");
+                                if let Some(reply) =
+                                    edgecrab_tools::skills::handle_skills_config_subcommand(
+                                        &ctx,
+                                        &config_path,
+                                        args,
+                                    )
+                                {
+                                    Some(reply)
+                                } else if let Some(reply) =
+                                    edgecrab_tools::skills::handle_skills_pending_subcommand(
+                                        &home,
+                                        args,
+                                        &edgecrab_tools::skills::SkillsSubcommandContext {
+                                            write_approval: config.skills.write_approval,
+                                            inline_shell: config.skills.inline_shell,
+                                            set_write_approval: Some(&persist_skills_write_approval),
+                                            set_inline_shell: Some(&persist_skills_inline_shell),
+                                        },
+                                    )
+                                {
+                                    Some(reply)
+                                } else if let Some(reply) =
+                                    edgecrab_tools::tools::skills_hub::handle_skills_hub_slash(
+                                        args,
+                                        &home.join("skills"),
+                                    )
+                                    .await
+                                {
+                                    if edgecrab_tools::tools::skills_hub::hub_slash_mutates_skills(args)
+                                    {
+                                        edgecrab_tools::skills::invalidate_discovery_caches();
+                                        edgecrab_core::prompt_builder::invalidate_skills_cache();
+                                    }
+                                    Some(reply)
+                                } else if args.is_empty() || args.eq_ignore_ascii_case("list") {
+                                    let cmds = edgecrab_tools::skills::scan_skill_commands(&ctx);
+                                    if cmds.is_empty() {
+                                        Some(
+                                            "No skills installed. Add SKILL.md directories under ~/.edgecrab/skills/."
+                                                .into(),
+                                        )
+                                    } else {
+                                        let mut lines =
+                                            format!("*Installed skills ({}):*\n", cmds.len());
+                                        let mut sorted: Vec<_> = cmds.iter().collect();
+                                        sorted.sort_by(|a, b| a.0.cmp(b.0));
+                                        for (slug, info) in sorted {
+                                            lines.push_str(&format!(
+                                                "• /{slug} — {}\n",
+                                                info.description
+                                            ));
+                                        }
+                                        Some(lines)
+                                    }
+                                } else {
+                                    Some(
+                                        "Unknown /skills subcommand. Try: /skills list, /skills search <q>, /skills review <id>, /skills inspect --scan <id>, /skills install <id>, /skills trust <id>, /skills check, /skills update, /skills reset, /skills opt-out, /skills snapshot export, /skills audit, /skills lock, /skills index refresh, /skills config, /skills pending."
+                                            .into(),
+                                    )
+                                }
+                            }
+                            "bundles" | "bundle" => {
+                                let args = msg.get_command_args().trim();
+                                let ctx = skills_scan_context(Some(&msg.platform.to_string()));
+                                if let Some(reply) =
+                                    edgecrab_tools::skills::handle_bundles_subcommand(&ctx, args)
+                                {
+                                    Some(reply)
+                                } else {
+                                    Some(edgecrab_tools::skills::format_bundles_list(&ctx))
+                                }
+                            }
+                            "reload-skills" | "reload_skills" | "reloadskills" => {
+                                let ctx = skills_scan_context(Some(&msg.platform.to_string()));
+                                let before = edgecrab_tools::skills::scan_skill_commands(&ctx);
+                                let (_, diff) =
+                                    edgecrab_tools::skills::reload_skills(&before, &ctx);
+                                edgecrab_tools::skills::invalidate_discovery_caches();
+                                edgecrab_core::prompt_builder::invalidate_skills_cache();
+                                Some(edgecrab_tools::skills::format_reload_diff(&diff))
+                            }
+                            "curator" => {
+                                let args = msg.get_command_args().trim();
+                                let config =
+                                    edgecrab_core::AppConfig::load().unwrap_or_default();
+                                let ctx = skills_scan_context(Some(&msg.platform.to_string()));
+                                Some(edgecrab_tools::skills::handle_curator_subcommand(
+                                    &ctx,
+                                    &edgecrab_core::edgecrab_home(),
+                                    args,
+                                    edgecrab_tools::skills::CuratorSettings {
+                                        stale_after_days: config.curator.stale_after_days,
+                                        archive_after_days: config.curator.archive_after_days,
+                                        prune_builtins: config.curator.prune_builtins,
+                                        backup_enabled: config.curator.backup.enabled,
+                                        backup_keep: config.curator.backup.keep,
+                                    },
+                                ))
                             }
                             _ => {
                                 // Unknown command — fall through to agent dispatch

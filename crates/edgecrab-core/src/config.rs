@@ -47,6 +47,7 @@ pub struct AppConfig {
     pub mcp_servers: HashMap<String, McpServerConfig>,
     pub memory: MemoryConfig,
     pub skills: SkillsConfig,
+    pub curator: CuratorConfig,
     pub plugins: PluginsConfig,
     pub security: SecurityConfig,
     pub terminal: TerminalConfig,
@@ -277,6 +278,20 @@ impl AppConfig {
             lsp.timeout_ms,
             lsp.servers.len()
         )
+    }
+
+    /// Update `skills.write_approval` and persist to `~/.edgecrab/config.yaml`.
+    pub fn persist_skills_write_approval(enabled: bool) -> Result<(), AgentError> {
+        let mut config = Self::load()?;
+        config.skills.write_approval = enabled;
+        config.save()
+    }
+
+    /// Update `skills.inline_shell` and persist to `~/.edgecrab/config.yaml`.
+    pub fn persist_skills_inline_shell(enabled: bool) -> Result<(), AgentError> {
+        let mut config = Self::load()?;
+        config.skills.inline_shell = enabled;
+        config.save()
     }
 
     /// Persist the current config to the default config path.
@@ -1616,6 +1631,27 @@ pub struct SkillsConfig {
     /// Equivalent to `hermes -s skill1,skill2`.
     #[serde(default)]
     pub preloaded: Vec<String>,
+    /// When true, `skill_manage` writes are staged under `pending/skills/`
+    /// until approved via `/skills approve <id>` (Hermes parity).
+    #[serde(default)]
+    pub write_approval: bool,
+    /// Substitute `${HERMES,EDGECRAB,CLAUDE}_*` tokens when loading skills (default on).
+    #[serde(default = "default_true")]
+    pub template_vars: bool,
+    /// Expand `!`cmd`` inline shell snippets in SKILL.md (default off — opt-in).
+    #[serde(default)]
+    pub inline_shell: bool,
+    /// Timeout seconds for each inline shell snippet (default 10).
+    #[serde(default = "default_inline_shell_timeout")]
+    pub inline_shell_timeout: u32,
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_inline_shell_timeout() -> u32 {
+    10
 }
 
 impl Default for SkillsConfig {
@@ -1627,6 +1663,58 @@ impl Default for SkillsConfig {
             platform_disabled: std::collections::HashMap::new(),
             external_dirs: Vec::new(),
             preloaded: Vec::new(),
+            write_approval: false,
+            template_vars: true,
+            inline_shell: false,
+            inline_shell_timeout: 10,
+        }
+    }
+}
+
+/// Skill hygiene — stale detection, archival, optional scheduled prune.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CuratorConfig {
+    /// Enable background deterministic prune on gateway tick (default off — opt-in).
+    pub enabled: bool,
+    /// Minimum hours between scheduled curator passes (default 7 days).
+    pub interval_hours: u32,
+    /// Skills not used in this many days are reported as stale by `/curator stale`.
+    pub stale_after_days: u32,
+    /// Skills idle longer than this may be archived by `/curator prune` (never auto-deletes).
+    pub archive_after_days: u32,
+    /// When true, bundled/synced skills may be archived after idle threshold (hub skills never).
+    pub prune_builtins: bool,
+    /// Pre-run tar.gz snapshots before mutating curator passes.
+    #[serde(default)]
+    pub backup: CuratorBackupConfig,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct CuratorBackupConfig {
+    pub enabled: bool,
+    pub keep: u32,
+}
+
+impl Default for CuratorBackupConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            keep: 5,
+        }
+    }
+}
+
+impl Default for CuratorConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            interval_hours: 168,
+            stale_after_days: 30,
+            archive_after_days: 90,
+            prune_builtins: false,
+            backup: CuratorBackupConfig::default(),
         }
     }
 }

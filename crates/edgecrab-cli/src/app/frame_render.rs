@@ -224,6 +224,11 @@ impl App {
             self.render_steering_overlay(frame, frame.area());
         }
 
+        // Skill guard trust overlay (high precedence)
+        if self.skill_trust_prompt.is_some() {
+            self.render_skill_trust_overlay(frame, frame.area());
+        }
+
         // Approval overlay (full screen, highest precedence)
         if matches!(self.display_state, DisplayState::WaitingForApproval { .. }) {
             self.render_approval_overlay(frame, frame.area());

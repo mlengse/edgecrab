@@ -71,6 +71,7 @@ mod secret_capture_overlay;
 mod setup;
 mod shelf_details;
 mod shelf_visual;
+mod skill_trust_overlay;
 mod skin_engine;
 mod spawn_diff;
 mod spawn_history;
@@ -2080,9 +2081,12 @@ async fn run_skills(command: SkillsCommand) -> anyhow::Result<()> {
             if source_path.exists() {
                 let bundle = build_local_skill_bundle(source_path, name.as_deref())?;
                 let skill_name = bundle.name.clone();
-                let message =
-                    edgecrab_tools::tools::skills_hub::install_skill(&bundle, &skills_dir, false)
-                        .map_err(|e| anyhow::anyhow!(e))?;
+                let message = edgecrab_tools::tools::skills_hub::install_skill(
+                    &bundle,
+                    &skills_dir,
+                    edgecrab_tools::tools::skills_hub::InstallGate::default(),
+                )
+                .map_err(|e| anyhow::anyhow!(e))?;
                 println!("{message}");
                 println!("Activate with: edgecrab skills view {skill_name}");
                 return Ok(());
@@ -2092,7 +2096,7 @@ async fn run_skills(command: SkillsCommand) -> anyhow::Result<()> {
                 &source,
                 &skills_dir,
                 edgecrab_tools::tools::skills_sync::optional_skills_dir().as_deref(),
-                false,
+                edgecrab_tools::tools::skills_hub::InstallGate::default(),
             )
             .await
             .map_err(|e| anyhow::anyhow!(e))?;
@@ -2107,7 +2111,7 @@ async fn run_skills(command: SkillsCommand) -> anyhow::Result<()> {
                     &name,
                     &skills_dir,
                     optional_dir.as_deref(),
-                    false,
+                    edgecrab_tools::tools::skills_hub::InstallGate::default(),
                 )
                 .await
                 .map_err(|e| anyhow::anyhow!(e))?;
@@ -2117,7 +2121,7 @@ async fn run_skills(command: SkillsCommand) -> anyhow::Result<()> {
                 let outcomes = edgecrab_tools::tools::skills_hub::update_all_installed_skills(
                     &skills_dir,
                     optional_dir.as_deref(),
-                    false,
+                    edgecrab_tools::tools::skills_hub::InstallGate::default(),
                 )
                 .await
                 .map_err(|e| anyhow::anyhow!(e))?;

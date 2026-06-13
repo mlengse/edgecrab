@@ -173,6 +173,12 @@ pub enum CommandResult {
     BranchSession(Option<String>),
     /// Show/manage skills
     ShowSkills(String),
+    /// List or manage skill bundles (`/bundles [create|delete|list]`).
+    ShowBundles(String),
+    /// Rescan skills dir and refresh slash commands (`/reload-skills`).
+    ReloadSkills,
+    /// Skill hygiene — stale detection (`/curator [status|stale]`).
+    ShowCurator(String),
     /// Show/manage profiles
     ShowProfiles(String),
     /// Show/manage MCP servers and presets
@@ -1469,6 +1475,27 @@ impl CommandRegistry {
                     CommandResult::ShowSkills(trimmed.to_string())
                 }
             },
+        });
+
+        self.register(Command {
+            name: "bundles",
+            aliases: &["bundle"],
+            description: "List skill bundles (multi-skill slash aliases)",
+            handler: |args| CommandResult::ShowBundles(args.trim().to_string()),
+        });
+
+        self.register(Command {
+            name: "reload-skills",
+            aliases: &["reload_skills", "reloadskills"],
+            description: "Rescan ~/.edgecrab/skills and refresh slash commands",
+            handler: |_| CommandResult::ReloadSkills,
+        });
+
+        self.register(Command {
+            name: "curator",
+            aliases: &[],
+            description: "Skill hygiene — stale detection from usage telemetry",
+            handler: |args| CommandResult::ShowCurator(args.trim().to_string()),
         });
 
         self.register(Command {

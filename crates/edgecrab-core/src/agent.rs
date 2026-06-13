@@ -418,6 +418,7 @@ impl AgentConfig {
             disabled_plugins: self.disabled_plugins_for_platform(),
             plugin_install_dir: self.plugins_config.install_dir.clone(),
             preloaded_skills: self.skills_config.preloaded.clone(),
+            skills_write_approval: self.skills_config.write_approval,
             browser_record_sessions: self.browser.record_sessions,
             browser_command_timeout: self.browser.command_timeout,
             browser_recording_max_age_hours: self.browser.recording_max_age_hours,

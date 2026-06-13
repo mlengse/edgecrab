@@ -38,6 +38,7 @@ pub mod provider_factory;
 pub mod read_tracker;
 pub mod registry;
 mod shell_syntax;
+pub mod skills;
 pub mod subagent_ids;
 pub mod tool_progress_tail;
 pub mod tools;

@@ -1050,6 +1050,28 @@ impl App {
                     );
                     self.needs_redraw = true;
                 }
+                AgentResponse::RemoteSkillGuardPrompt {
+                    entry,
+                    preview,
+                    review_only,
+                } => {
+                    self.remote_skill_browser.action_in_flight = None;
+                    self.skill_trust_prompt = Some(App::build_skill_trust_prompt_state(
+                        entry,
+                        *preview,
+                        review_only,
+                    ));
+                    self.needs_redraw = true;
+                }
+                AgentResponse::RemoteSkillGuardPreviewReady {
+                    identifier,
+                    preview,
+                } => {
+                    self.apply_remote_skill_guard_preview_ready(identifier, *preview);
+                }
+                AgentResponse::RemoteSkillGuardPreviewFailed { identifier, error } => {
+                    self.apply_remote_skill_guard_preview_failed(identifier, error);
+                }
                 AgentResponse::RemoteSkillActionComplete {
                     message,
                     skill_name,

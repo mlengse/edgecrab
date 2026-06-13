@@ -47,6 +47,7 @@ pub mod process;
 pub mod report_task_status;
 pub mod session_search;
 pub mod skills;
+pub mod skills_ast_audit;
 pub mod skills_guard;
 pub mod skills_hub;
 pub mod skills_sync;

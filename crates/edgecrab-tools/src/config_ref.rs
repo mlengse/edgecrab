@@ -198,6 +198,8 @@ pub struct AppConfigRef {
     pub active_model: String,
     /// Skills to preload into the system prompt (from -s/--skill flags).
     pub preloaded_skills: Vec<String>,
+    /// Stage skill_manage writes for `/skills approve` when true.
+    pub skills_write_approval: bool,
 
     /// Env-var names allowed to bypass the subprocess security blocklist.
     ///
@@ -325,6 +327,7 @@ impl Default for AppConfigRef {
             computer_use_cua_cmd: "cua-driver".into(),
             active_model: String::new(),
             preloaded_skills: Vec::new(),
+            skills_write_approval: false,
             terminal_env_passthrough: Vec::new(),
             terminal_backend: BackendKind::Local,
             terminal_docker: DockerBackendConfig::default(),

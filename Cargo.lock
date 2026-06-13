@@ -2392,6 +2392,7 @@ dependencies = [
  "edgecrab-types",
  "edgeparse-core",
  "edgequake-llm",
+ "flate2",
  "futures",
  "image",
  "inventory",
@@ -2411,6 +2412,7 @@ dependencies = [
  "shellexpand",
  "strip-ansi-escapes",
  "strsim",
+ "tar",
  "tempfile",
  "tokio",
  "tokio-tungstenite",
@@ -2421,6 +2423,7 @@ dependencies = [
  "uuid",
  "which",
  "wreq",
+ "zip",
 ]
 
 [[package]]
