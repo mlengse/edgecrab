@@ -53,7 +53,7 @@ set_workspace_version() {
 
 set_workspace_dependency_versions() {
   local version="$1"
-  perl -0pi -e 's/^(edgecrab-(?:command-catalog|types|security|state|plugins|cron|lsp|tools|core|gateway|acp|migrate|sdk-core|sdk-macros|sdk) = \{ path = "(?:crates|sdks)\/[^"]+", version = )"[^"]+"/${1}"'"$version"'"/mg' \
+  perl -0pi -e 's/^(edgecrab-(?:command-catalog|types|security|state|plugins|cron|lsp|tools|core|gateway|proxy|acp|migrate|sdk-core|sdk-macros|sdk) = \{ path = "(?:crates|sdks)\/[^"]+", version = )"[^"]+"/${1}"'"$version"'"/mg' \
     Cargo.toml
 }
 
@@ -137,7 +137,7 @@ check_synced() {
     awk '
       /^\[workspace\.dependencies\]/ { in_section=1; next }
       /^\[/ { in_section=0 }
-      in_section && /^edgecrab-(command-catalog|types|security|state|plugins|cron|lsp|tools|core|gateway|acp|migrate|sdk-core|sdk-macros|sdk) = \{ path = "(crates|sdks)\// {
+      in_section && /^edgecrab-(command-catalog|types|security|state|plugins|cron|lsp|tools|core|gateway|proxy|acp|migrate|sdk-core|sdk-macros|sdk) = \{ path = "(crates|sdks)\// {
         line=$0
         sub(/^.*version = "/, "", line)
         sub(/".*$/, "", line)

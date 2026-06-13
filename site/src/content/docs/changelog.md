@@ -8,11 +8,28 @@ sidebar:
 All notable changes to EdgeCrab are documented here.
 Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
-Last updated: 2026-04-22
+Last updated: 2026-06-13
 
 ---
 
 ## [Unreleased]
+
+## [0.10.0] — 2026-06-13
+
+### Added
+
+- **Hermes-parity terminal UX** — live activity shelf, `/agents` delegation dashboard, queued messages panel, `/details` picker, `/indicator` styles, and `/model` instant hot-swap.
+- **Persistent goals (Ralph loop)**, **LSP diagnostics**, **file-mutation verifier footers**, **handoff/checkpoints v2**, **macOS computer_use**, **native web search**, **OpenAI proxy**, and **subscription OAuth** (Claude / Codex / Grok).
+
+### Changed
+
+- **`edgequake-llm` v0.6.24** — Mistral tool-call history fix; transcript 800-line cap and height cache.
+
+### Verification
+
+| Check | Result |
+|--------|--------|
+| `cargo test --bin edgecrab` | **762 passed** |
 
 ## [0.9.0] — 2026-04-22
 

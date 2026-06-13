@@ -14,7 +14,7 @@
 
 EdgeCrab is a **SuperAgent** — a personal assistant and coding agent forged in Rust. It carries the soul of **Nous Hermes Agent** (autonomous reasoning, persistent memory, user-first alignment) and the always-on presence of **OpenClaw** (17 messaging gateways, smart-home integration), packaged as a stripped native release binary of about **49 MB** on current macOS arm64 builds, with zero Python or Node.js runtime dependencies. Runs on Linux, macOS, and Android (Termux).
 
-> **Latest release: v0.9.0** — an opt-in Shadow Judge completion oracle, structured `report_task_status` harness signals, and tighter anti-loop tool contracts that help EdgeCrab recover from premature stops and repeated malformed tool retries.
+> **Latest release: v0.10.0** — Hermes-parity **terminal UX**: live activity shelf with tool-progress tails, `/agents` delegation dashboard (kill · replay · Gantt · spawn pause), queued-message composer, `/model` instant hot-swap, and modular TUI overlay stack. Plus Ralph loop goals, LSP diagnostics, native web search, OpenAI proxy, and subscription OAuth.
 
 
 ## Architecture
@@ -1012,6 +1012,11 @@ The `acp_registry/agent.json` manifest declares capabilities for extension disco
 ```
 
 **Features:**
+- **Live activity shelf** — thinking / tool / delegate phases with spinners, parallel tool rows, and streaming tool-arg previews between transcript and status bar
+- **`/agents` overlay** — monitor subagents, kill subtree, spawn pause, turn diff, Gantt timeline, disk `/replay`
+- **`/details` disclosure picker** — per-section hidden/collapsed/expanded modes persisted to YAML
+- **`/indicator`** — hot-swap status-bar animation style (kaomoji, emoji, unicode, ascii)
+- **Queued messages** — compose while the agent runs; edit with Esc / Ctrl+X / ↑↓
 - Streaming output with token-by-token rendering
 - Fish-style ghost text (type-ahead) completion
 - Tab-complete slash commands with fuzzy match overlay

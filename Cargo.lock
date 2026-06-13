@@ -1976,7 +1976,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-acp"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1996,7 +1996,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-cli"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "arboard",
@@ -2050,11 +2050,11 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-command-catalog"
-version = "0.9.0"
+version = "0.10.0"
 
 [[package]]
 name = "edgecrab-core"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2090,7 +2090,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-cron"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2109,7 +2109,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-gateway"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "aes",
  "anyhow",
@@ -2156,7 +2156,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-lsp"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-lsp",
@@ -2185,7 +2185,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-migrate"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2218,7 +2218,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-plugins"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2246,7 +2246,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-proxy"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "anyhow",
  "async-stream",
@@ -2296,7 +2296,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-sdk"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "edgecrab-sdk-core",
@@ -2309,7 +2309,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-sdk-core"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "edgecrab-core",
@@ -2328,7 +2328,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-sdk-macros"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -2337,7 +2337,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-security"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "aho-corasick",
  "edgecrab-types",
@@ -2359,7 +2359,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-state"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "dirs 5.0.1",
@@ -2376,7 +2376,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-tools"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "async-trait",
  "base64 0.22.1",
@@ -2424,7 +2424,7 @@ dependencies = [
 
 [[package]]
 name = "edgecrab-types"
-version = "0.9.0"
+version = "0.10.0"
 dependencies = [
  "chrono",
  "edgequake-llm",

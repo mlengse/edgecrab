@@ -7,6 +7,54 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
 ## [Unreleased]
 
+## [0.10.0] — 2026-06-13
+
+### Added
+
+- **Hermes-parity terminal UX** — live **activity shelf** between transcript and status bar: phase-specific spinners, parallel tool rows (up to 12), reasoning COT auto-expand, and **`ToolProgress` tail-3** via `tool_progress_tail.rs` + `stream_bridge.rs`.
+- **`/agents` delegation dashboard** — sortable overlay with per-subagent **kill** (`x`/`X`), STOP steer (`i`), **spawn pause** (`p`), turn **diff** (`d`), **Gantt** timeline, in-memory + disk **`/replay`**, and spawn-tree persistence under `~/.edgecrab/spawn-trees/`.
+- **Queued messages panel** — Hermes-style composer strip with edit mode (Esc cancel, Ctrl+X delete, ↑↓ cycle) via `queued_messages.rs` + `app/queue_edit.rs`.
+- **TUI overlay modularization** — `app/` submodules (~12.5k lines): `key_dispatch`, `event_loop`, `response_dispatch`, `frame_render`, `input_panel`, mode/model/browser selectors, approval/value/secret capture, and stream dispatch harness (**762+ CLI tests**).
+- **`/details` interactive picker** + YAML-backed shelf disclosure; **`/indicator`** status styles (kaomoji / emoji / unicode / ascii); **`/tail`** process panel (4096 chars).
+- **`/model` instant hot-swap** — `Agent::switch_model_fast` with expensive-model confirm overlay; **`/transfer-model`** brief path retained.
+- **Persistent goals (Ralph loop)** — `/goal`, `/subgoal`, `/done` with SQLite-backed standing intent across compress and restart.
+- **LSP post-write diagnostics** — `/lsp` toggle; file write/patch results attach workspace diagnostics.
+- **File-mutation verifier footers** — per-turn footers certifying writes/patches (Copilot E2E covered).
+- **Platform handoff & checkpoints v2** — `/handoff` live model transfer; Hermes-aligned git-backed checkpoints.
+- **macOS `computer_use`** — cua-driver MCP backend, readiness reports, gateway `/computer`.
+- **Native web search chain** — DDGS + primp TLS/UA parity, extract module, gateway `/web`, artifact spill for large results.
+- **OpenAI-compatible proxy** — `edgecrab proxy` server/CLI/TUI with Grok/Nous OAuth login flows.
+- **Subscription OAuth** — Claude Pro, ChatGPT Pro/Codex, Grok SuperGrok device/PKCE flows in CLI + TUI.
+- **Anthropic prompt prefix cache** — stable/dynamic system-prompt split with configurable TTL (`5m` / `1h`).
+- **Specs** — `specs/002-terminal-ux-ui/` and `specs/002-tui-hemes-vs-edgecrab/` (brutal Hermes comparison + lead plan).
+
+### Changed
+
+- **`edgequake-llm` v0.6.24** — Mistral/OpenAI-compatible `tool_calls` history fix, Bedrock tool-result coalesce, Copilot picker-model guard; removes local path `[patch]`.
+- **Transcript scroll engineering** — height cache + **800-line cap** (`transcript_heights.rs`, `transcript_scroll.rs`); verbose trail dual cap (800 chars + 12 lines).
+- **`app.rs` extraction continues** — core still ~24k lines; handlers/overlays moved into dedicated modules (Phase 0 roadmap in specs).
+
+### Fixed
+
+- **Mistral ReAct hangs** — assistant history retains `tool_calls` through `edgequake-llm` (no orphan `tool_call_id` rejections).
+- **Copilot picker models** — filtered at discovery + resolve so routing models cannot stall the agent loop.
+- **`computer_use` note creation** — post-action verification, clipboard paste for long text, MCP id-correlation/timeouts.
+- **Goal chip refresh** — nested-runtime panic in TUI status refresh.
+- **Persistent goals FK** — session upsert survives stub rows.
+
+### Documentation
+
+- Updated README TUI section (activity shelf, `/agents`, disclosure commands).
+- Release notes mirrored to `site/src/content/docs/changelog.md`.
+
+### Verification
+
+| Check | Result |
+|-------|--------|
+| `./scripts/release-version.sh check` | **passed** |
+| `cargo test --bin edgecrab` | **762 passed** |
+| `cargo clippy -p edgecrab-cli -p edgecrab-core -p edgecrab-tools -- -D warnings` | **passed** |
+
 ## [0.9.0] — 2026-04-22
 
 ### Added
