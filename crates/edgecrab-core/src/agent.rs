@@ -3576,13 +3576,17 @@ def register(ctx):
 
     #[tokio::test]
     async fn perform_model_transfer_persists_audit_trail() {
+        use crate::model_transfer::{
+            ModelTransferContext, ModelTransferOrchestrator, resolve_model_transfer_target,
+        };
+
         let provider: Arc<dyn LLMProvider> = Arc::new(edgequake_llm::MockProvider::new());
         let tmp = tempfile::TempDir::new().expect("tempdir");
         let db = Arc::new(
             edgecrab_state::SessionDb::open(&tmp.path().join("sessions.db")).expect("open db"),
         );
         let agent = AgentBuilder::new("anthropic/claude-opus-4.6")
-            .provider(provider)
+            .provider(provider.clone())
             .state_db(db.clone())
             .build()
             .expect("build");
@@ -3593,10 +3597,41 @@ def register(ctx):
             .expect("chat");
         let session_id = agent.session.read().await.session_id.clone().expect("sid");
 
-        let outcome = agent
-            .perform_model_transfer("anthropic/claude-haiku-4.5", None)
-            .await
-            .expect("transfer");
+        // CI has no ANTHROPIC_API_KEY — use mock provider via orchestrator, then apply
+        // the same post-handoff persistence path as `perform_model_transfer`.
+        let target = resolve_model_transfer_target("anthropic/claude-haiku-4.5").expect("catalog");
+        let mut messages = agent.messages().await;
+        let cfg = agent.config.read().await.compression.clone();
+        let mut ctx = ModelTransferContext {
+            current_model: "anthropic/claude-opus-4.6",
+            messages: &mut messages,
+            system_prompt: None,
+            compression_cfg: &cfg,
+            main_provider: provider.clone(),
+            auxiliary_model: None,
+        };
+        let (outcome, new_provider) =
+            ModelTransferOrchestrator::execute_with_provider(&mut ctx, &target, provider)
+                .await
+                .expect("handoff");
+        {
+            let mut session = agent.session.write().await;
+            session.messages = messages;
+            session.apply_model_transfer_outcome(&outcome);
+        }
+        agent
+            .swap_model(outcome.to_model.clone(), new_provider)
+            .await;
+        db.update_session_model(&session_id, &outcome.to_model)
+            .expect("session model update");
+        db.record_model_transfer(
+            &session_id,
+            &outcome.from_model,
+            &outcome.to_model,
+            &outcome.brief,
+            0.0,
+        )
+        .expect("record transfer");
 
         assert_eq!(outcome.to_model, "anthropic/claude-haiku-4.5");
         assert_eq!(agent.model().await, "anthropic/claude-haiku-4.5");

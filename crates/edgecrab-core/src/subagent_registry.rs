@@ -55,12 +55,17 @@ pub fn interrupt_subagent(agent_id: &str) -> bool {
 /// RAII guard — unregister on drop.
 pub struct SubagentRegistration {
     agent_id: String,
+    /// Keeps the registered child alive while the guard is held (`Weak` in the global map).
+    _agent: std::sync::Arc<Agent>,
 }
 
 impl SubagentRegistration {
     pub fn new(agent_id: String, agent: std::sync::Arc<Agent>) -> Self {
-        register_subagent(&agent_id, agent);
-        Self { agent_id }
+        register_subagent(&agent_id, agent.clone());
+        Self {
+            agent_id,
+            _agent: agent,
+        }
     }
 }
 

@@ -482,18 +482,19 @@ impl ModelTransferOrchestrator {
         target_spec: &str,
         prebuilt: Option<(ModelTransferTarget, Arc<dyn LLMProvider>)>,
     ) -> Result<(ModelTransferOutcome, Arc<dyn LLMProvider>), ModelTransferError> {
-        let (target, new_provider) = match prebuilt {
-            Some((target, provider)) => (target, provider),
-            None => {
-                let target = resolve_model_transfer_target(target_spec)?;
-                let provider = create_model_transfer_provider(&target)?;
-                (target, provider)
-            }
+        let target = match &prebuilt {
+            Some((target, _)) => target.clone(),
+            None => resolve_model_transfer_target(target_spec)?,
         };
 
         if ModelCatalog::equivalent_model_specs(&target.display, ctx.current_model) {
             return Err(ModelTransferError::SameModel);
         }
+
+        let new_provider = match prebuilt {
+            Some((_, provider)) => provider,
+            None => create_model_transfer_provider(&target)?,
+        };
 
         let from_context_window =
             context_window_for_model(ctx.current_model).unwrap_or(target.context_window);
