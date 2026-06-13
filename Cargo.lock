@@ -2464,7 +2464,7 @@ dependencies = [
 [[package]]
 name = "edgequake-llm"
 version = "0.6.24"
-source = "git+https://github.com/raphaelmansuy/edgequake-llm.git?tag=v0.6.24#399c185e5422b5fcce1aece7828663148bbaaf43"
+source = "git+https://github.com/raphaelmansuy/edgequake-llm.git?tag=v0.6.24#fef81399a6537df14b8004a7a3887876d5b93e06"
 dependencies = [
  "anyhow",
  "async-openai",
