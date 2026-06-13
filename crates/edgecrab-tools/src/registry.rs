@@ -405,6 +405,7 @@ impl ToolContext {
     /// Create a minimal context for testing
     #[cfg(test)]
     pub fn test_context() -> Self {
+        crate::delegation_state::set_spawn_paused(false);
         Self {
             task_id: "test-task".into(),
             cwd: std::env::temp_dir(),

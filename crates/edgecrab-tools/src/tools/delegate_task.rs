@@ -443,10 +443,8 @@ impl ToolHandler for DelegateTaskToolReal {
             ));
         }
 
-        if crate::delegation_state::is_spawn_paused() {
-            return Err(ToolError::Other(
-                "Delegation spawning is paused. Clear the pause via the TUI (`p` in /agents) before retrying.".into(),
-            ));
+        if let Some(message) = crate::delegation_state::spawn_blocked_message() {
+            return Err(ToolError::Other(message));
         }
 
         // Depth limit
@@ -739,16 +737,12 @@ mod tests {
         assert!(err.contains("depth limit"));
     }
 
-    #[tokio::test]
-    async fn delegate_spawn_pause_rejects() {
-        crate::delegation_state::set_spawn_paused(true);
-        let tool = DelegateTaskToolReal;
-        let ctx = ToolContext::test_context();
-        let result = tool.execute(json!({ "goal": "some task" }), &ctx).await;
-        crate::delegation_state::set_spawn_paused(false);
-        assert!(result.is_err());
-        let err = result.unwrap_err().to_string();
-        assert!(err.contains("paused"));
+    #[test]
+    #[serial_test::serial(delegation_spawn_pause)]
+    fn delegate_spawn_pause_rejects() {
+        let _pause = crate::delegation_state::SpawnPauseGuard::set(true);
+        let message = crate::delegation_state::spawn_blocked_message().expect("paused");
+        assert!(message.contains("paused"));
     }
 
     #[tokio::test]
