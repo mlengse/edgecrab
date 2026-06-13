@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+#![allow(dead_code)]
 //! E2E: `web_search` primary / fallback chain persistence and diagnostics.
 
 mod common;

@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+#![allow(dead_code)]
 //! Hermes-parity edge-case E2E tests for pluggable web search (mock + live where noted).
 //!
 //! Run:

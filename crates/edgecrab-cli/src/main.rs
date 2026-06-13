@@ -15,48 +15,48 @@
 mod acp_setup;
 mod activity_shelf;
 mod agents_overlay;
-mod approval_overlay;
-mod queued_messages;
-mod picker_chrome;
-mod stream_dispatch_harness;
-mod overlay_text_input;
-mod secret_capture_overlay;
-mod value_capture_overlay;
 mod app;
-mod clarify_panel;
+mod approval_overlay;
 mod auth_cmd;
 mod backup;
 mod banner;
 mod bundled_profiles;
 mod checkpoints_cmd;
+mod clarify_panel;
 mod cli_args;
 mod commands;
 mod cron_cmd;
+mod details_panel;
+mod display_state;
 mod doctor;
 mod dump_cmd;
 mod edit_diff;
 mod fuzzy_selector;
+mod gantt_strip;
 mod gateway_browser;
 mod gateway_catalog;
 mod gateway_cmd;
 mod gateway_presentation;
 mod gateway_setup;
+mod grok_auth_tui;
 mod honcho_cmd;
 mod image_models;
 mod live_progress;
 mod logging;
-mod overlay_layout;
 mod logs_cmd;
 mod markdown_render;
 mod mcp_catalog;
-mod model_catalog_ui;
-mod model_picker;
 mod mcp_oauth;
 mod mcp_support;
 mod memory_cmd;
+mod model_catalog_ui;
+mod model_picker;
+mod overlay_layout;
+mod overlay_text_input;
 mod pairing_cmd;
 #[cfg(target_os = "macos")]
 mod permissions;
+mod picker_chrome;
 mod plugin_toggle;
 mod plugins;
 mod plugins_cmd;
@@ -65,35 +65,35 @@ mod profile;
 mod proxy_cmd;
 mod proxy_hub;
 mod proxy_setup_tui;
-mod grok_auth_tui;
+mod queued_messages;
 mod runtime;
+mod secret_capture_overlay;
 mod setup;
-mod details_panel;
-mod display_state;
 mod shelf_details;
 mod shelf_visual;
+mod skin_engine;
 mod spawn_diff;
 mod spawn_history;
-mod spawn_tree_store;
 mod spawn_hud;
-mod gantt_strip;
-mod status_indicator;
-mod stream_bridge;
-mod subagent_tree;
-mod tui_spinner;
-mod transcript;
-mod transcript_heights;
-mod transcript_scroll;
-mod skin_engine;
+mod spawn_tree_store;
 mod status_bar;
 mod status_chrome;
 mod status_cmd;
+mod status_indicator;
 mod status_summaries;
+mod stream_bridge;
+mod stream_dispatch_harness;
+mod subagent_tree;
 mod theme;
 mod tool_display;
+mod transcript;
+mod transcript_heights;
+mod transcript_scroll;
+mod tui_spinner;
 mod turn_activity;
 mod uninstall_cmd;
 mod update;
+mod value_capture_overlay;
 mod vision_models;
 mod web_command;
 mod web_setup;
@@ -105,8 +105,8 @@ mod worktree;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use anyhow::{Context, anyhow};
+use async_trait::async_trait;
 use clap::{CommandFactory, Parser};
 use edgecrab_plugins::{discover_plugins, invoke_hermes_cli_command};
 use edgequake_llm::{
@@ -118,7 +118,7 @@ use tokio_util::sync::CancellationToken;
 use crate::logging::{LoggingMode, StderrMode, init_logging};
 use app::App;
 use cli_args::{
-    AcpCommand, AuthCommand, ClawCommand,     CliArgs, Command, ConfigCommand, CronCommand,
+    AcpCommand, AuthCommand, ClawCommand, CliArgs, Command, ConfigCommand, CronCommand,
     GatewayCommand, HonchoCommand, LogsCommand, McpCommand, MemoryCommand, OpenClawPresetArg,
     PairingCommand, PluginsCommand, ProfileCommand, SessionCommand, SkillConflictModeArg,
     SkillsCommand, ToolsCommand, WebhookCommand,
@@ -239,13 +239,16 @@ fn create_explicit_provider_raw(
 ) -> anyhow::Result<Arc<dyn edgequake_llm::LLMProvider>> {
     if provider_name == "openai-codex" {
         edgecrab_core::oauth::prepare_openai_codex_compatible_env();
-        return edgequake_llm::ProviderFactory::create_llm_provider("openai-compatible", model_name)
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "openai-codex (ChatGPT Pro) provider failed: {e}\n\
+        return edgequake_llm::ProviderFactory::create_llm_provider(
+            "openai-compatible",
+            model_name,
+        )
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "openai-codex (ChatGPT Pro) provider failed: {e}\n\
                      Fix: edgecrab auth add chatgpt-pro"
-                )
-            });
+            )
+        });
     }
 
     create_provider_for_model(provider_name, model_name).map_err(|e| {

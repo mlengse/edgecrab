@@ -1,6 +1,6 @@
 //! Busy status-bar indicator styles — Hermes `/indicator` + `FaceTicker` parity.
 
-use crate::status_chrome::{compact_spinner_frame, TerminalGlyphProfile};
+use crate::status_chrome::{TerminalGlyphProfile, compact_spinner_frame};
 use crate::theme::Theme;
 
 /// Hermes `IndicatorStyle` — persisted as `display.status_indicator`.
@@ -78,7 +78,8 @@ pub fn render_indicator_frame(
             show_verb: true,
         },
         StatusIndicatorStyle::Unicode => IndicatorFrame {
-            leading: compact_spinner_frame(spinner_frame, TerminalGlyphProfile::Unicode).to_string(),
+            leading: compact_spinner_frame(spinner_frame, TerminalGlyphProfile::Unicode)
+                .to_string(),
             face: String::new(),
             show_verb: false,
         },

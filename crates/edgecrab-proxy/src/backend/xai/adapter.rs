@@ -9,7 +9,7 @@ use tokio::sync::Mutex;
 
 use crate::backend::adapter::{UpstreamAdapter, UpstreamCredential};
 use crate::backend::auth_file::{default_auth_path, load_auth_doc, read_credential_pool_entries};
-use crate::backend::xai::refresh::{resolve_xai_credentials_async, DEFAULT_XAI_API};
+use crate::backend::xai::refresh::{DEFAULT_XAI_API, resolve_xai_credentials_async};
 use crate::error::ProxyError;
 
 /// OAuth-capable xAI forward upstream with pool rotation on 429.
@@ -55,7 +55,10 @@ impl XaiGrokAdapter {
             .unwrap_or(0)
     }
 
-    async fn credential_inner(&self, force_refresh: bool) -> Result<UpstreamCredential, ProxyError> {
+    async fn credential_inner(
+        &self,
+        force_refresh: bool,
+    ) -> Result<UpstreamCredential, ProxyError> {
         let _guard = self.lock.lock().await;
         let idx = self.pool_index.load(Ordering::SeqCst);
         let fallback = if self.fallback_base_url.is_empty() {
@@ -156,7 +159,10 @@ impl UpstreamAdapter for XaiGrokAdapter {
             return None;
         }
         tracing::info!("proxy: xAI upstream 401; refreshing OAuth token");
-        self.credential_inner(true).await.ok().filter(|c| c.bearer != failed.bearer)
+        self.credential_inner(true)
+            .await
+            .ok()
+            .filter(|c| c.bearer != failed.bearer)
     }
 
     fn auth_hint(&self) -> String {

@@ -59,7 +59,9 @@ pub fn invoke_jwt_status(
         return Some("missing_inference_invoke_scope".into());
     }
     let skew = min_ttl_secs.max(0);
-    let exp = claims.get("exp").and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))?;
+    let exp = claims
+        .get("exp")
+        .and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64)))?;
     if exp <= now_epoch() + skew {
         return Some("invoke_jwt_expiring".into());
     }
@@ -84,7 +86,9 @@ pub fn set_agent_key_from_invoke_jwt(state: &mut Value) {
     let Some(access) = access else {
         return;
     };
-    if let Some(exp) = decode_jwt_claims(&access).and_then(|c| c.get("exp").and_then(|v| v.as_i64())) {
+    if let Some(exp) =
+        decode_jwt_claims(&access).and_then(|c| c.get("exp").and_then(|v| v.as_i64()))
+    {
         let ttl = (exp - now_epoch()).max(0);
         state["expires_in"] = Value::from(ttl);
     }

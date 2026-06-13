@@ -22,12 +22,8 @@ use crate::backend::provider::handle_chat_completion;
 use crate::cors::{CorsState, cors_middleware};
 use crate::error::ProxyError;
 use crate::registry::{ensure_forward_upstream_ready, get_forward_adapter};
-use crate::resolve::{
-    ResolvedRoute, build_forward_adapters, create_provider, resolve_route,
-};
-use crate::wire::openai::{
-    ChatCompletionRequest, ModelsListResponse, ModelObject, unix_now,
-};
+use crate::resolve::{ResolvedRoute, build_forward_adapters, create_provider, resolve_route};
+use crate::wire::openai::{ChatCompletionRequest, ModelObject, ModelsListResponse, unix_now};
 
 #[derive(Clone)]
 pub struct ProxyState {
@@ -106,9 +102,7 @@ pub async fn run_server(opts: ProxyRunOptions) -> anyhow::Result<()> {
     let app = build_router(state);
     let addr: SocketAddr = format!("{}:{}", opts.bind, opts.port).parse()?;
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!(
-        "edgecrab proxy listening on http://{addr}/v1 (OpenAI-compatible inference bridge)"
-    );
+    info!("edgecrab proxy listening on http://{addr}/v1 (OpenAI-compatible inference bridge)");
     axum::serve(listener, app).await?;
     Ok(())
 }
@@ -401,10 +395,8 @@ mod tests {
     #[tokio::test]
     async fn mock_chat_completion_non_stream() {
         let mut cfg = ProxyConfig::default();
-        cfg.model_aliases.insert(
-            "mock-model".into(),
-            "mock/test-model".into(),
-        );
+        cfg.model_aliases
+            .insert("mock-model".into(), "mock/test-model".into());
         let state = ProxyState {
             token: "test-secret".into(),
             config: cfg,

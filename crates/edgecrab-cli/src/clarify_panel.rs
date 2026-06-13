@@ -6,7 +6,10 @@ pub fn format_abandoned_clarify(
     choices: Option<&[String]>,
     reason: &str,
 ) -> String {
-    let mut lines = vec![format!("❓ Clarify prompt ({reason}):"), format!("  Q: {question}")];
+    let mut lines = vec![
+        format!("❓ Clarify prompt ({reason}):"),
+        format!("  Q: {question}"),
+    ];
     if let Some(list) = choices {
         for (i, choice) in list.iter().enumerate() {
             lines.push(format!("  {}. {choice}", i + 1));

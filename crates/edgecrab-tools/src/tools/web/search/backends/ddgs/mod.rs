@@ -25,18 +25,17 @@ mod transport;
 
 pub use detect::{is_bot_challenge, is_engine_blocked};
 pub use fingerprint::{
-    ImpersonateOs, ImpersonateProfile, build_wreq_client, pick_random_profile,
-    resolve_profile, resolve_profile_from_env, resolve_profile_with,
+    ImpersonateOs, ImpersonateProfile, build_wreq_client, pick_random_profile, resolve_profile,
+    resolve_profile_from_env, resolve_profile_with,
 };
 pub use metasearch::{metasearch_budget, search_text as metasearch_text};
 pub use parse::{
-    bing_html_has_algo_rows, bing_page_reports_no_results, engine_reports_no_results, normalize_bing_url, normalize_ddg_url,
-    parse_bing_html, parse_ddg_html, parse_ddg_lite, parse_engine_html,
+    bing_html_has_algo_rows, bing_page_reports_no_results, engine_reports_no_results,
+    normalize_bing_url, normalize_ddg_url, parse_bing_html, parse_ddg_html, parse_ddg_lite,
+    parse_engine_html,
 };
-pub use query::{query_tokens};
-pub use selection::{
-    extend_pool, is_deliverable, select_raw, select_ranked, select_results,
-};
+pub use query::query_tokens;
+pub use selection::{extend_pool, is_deliverable, select_ranked, select_raw, select_results};
 pub use settings::{DdgsEngine, DdgsSelectionMode, DdgsSettings};
 pub use text::fold_for_search;
 

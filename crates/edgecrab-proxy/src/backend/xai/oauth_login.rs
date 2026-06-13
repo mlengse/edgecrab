@@ -6,22 +6,23 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use url::Url;
 
 use crate::backend::auth_file::{default_auth_path, write_provider_state};
 use crate::error::ProxyError;
 use crate::http_client::build_oauth_http_client;
-use crate::oauth::loopback::{validate_loopback_redirect_uri, LoopbackServer, OAuthCallback, LOOPBACK_HOST};
+use crate::oauth::loopback::{
+    LOOPBACK_HOST, LoopbackServer, OAuthCallback, validate_loopback_redirect_uri,
+};
 use edgecrab_core::oauth::pkce::{code_challenge, code_verifier};
 
 use super::refresh::{DEFAULT_XAI_API, XAI_OAUTH_CLIENT_ID, XAI_OAUTH_DISCOVERY_URL};
 
 pub use edgecrab_core::oauth::XAI_OAUTH_PROVIDER;
-pub const XAI_OAUTH_SCOPE: &str =
-    "openid profile email offline_access grok-cli:access api:access";
+pub const XAI_OAUTH_SCOPE: &str = "openid profile email offline_access grok-cli:access api:access";
 pub const XAI_OAUTH_REDIRECT_PORT: u16 = 56121;
 pub const XAI_OAUTH_REDIRECT_PATH: &str = "/callback";
 pub const XAI_OAUTH_REFERRER: &str = "edgecrab";
@@ -124,8 +125,8 @@ fn build_http_client(timeout: Duration) -> Result<Client, ProxyError> {
 }
 
 fn validate_xai_https_endpoint(url: &str, field: &str) -> Result<String, ProxyError> {
-    let parsed = Url::parse(url)
-        .map_err(|e| ProxyError::UpstreamAuth(format!("xai {field} parse: {e}")))?;
+    let parsed =
+        Url::parse(url).map_err(|e| ProxyError::UpstreamAuth(format!("xai {field} parse: {e}")))?;
     if parsed.scheme() != "https" {
         return Err(ProxyError::UpstreamAuth(format!(
             "xAI OIDC discovery returned non-HTTPS {field}"
@@ -166,7 +167,10 @@ pub async fn fetch_xai_discovery(client: &Client) -> Result<XaiDiscovery, ProxyE
         .filter(|s| !s.is_empty())
         .ok_or_else(|| ProxyError::UpstreamAuth("xai discovery missing token_endpoint".into()))?;
     Ok(XaiDiscovery {
-        authorization_endpoint: validate_xai_https_endpoint(authorization_endpoint, "authorization_endpoint")?,
+        authorization_endpoint: validate_xai_https_endpoint(
+            authorization_endpoint,
+            "authorization_endpoint",
+        )?,
         token_endpoint: validate_xai_https_endpoint(token_endpoint, "token_endpoint")?,
         raw: payload,
     })
@@ -303,7 +307,10 @@ fn tokens_from_exchange(payload: &Value) -> Result<Value, ProxyError> {
     }))
 }
 
-fn parse_manual_callback_url(input: &str, expected_redirect: &str) -> Result<OAuthCallback, ProxyError> {
+fn parse_manual_callback_url(
+    input: &str,
+    expected_redirect: &str,
+) -> Result<OAuthCallback, ProxyError> {
     let trimmed = input
         .trim()
         .trim_matches('"')
@@ -341,7 +348,9 @@ fn parse_manual_callback_url(input: &str, expected_redirect: &str) -> Result<OAu
         let base = Url::parse(expected_redirect)
             .map_err(|e| ProxyError::UpstreamAuth(format!("expected redirect: {e}")))?;
         if url.path() != base.path() {
-            return Err(ProxyError::UpstreamAuth("callback URL path mismatch".into()));
+            return Err(ProxyError::UpstreamAuth(
+                "callback URL path mismatch".into(),
+            ));
         }
         let mut code = None;
         let mut state = None;
@@ -373,9 +382,8 @@ fn parse_manual_callback_url(input: &str, expected_redirect: &str) -> Result<OAu
 
 /// Extract the OAuth `code` from a pasted callback URL, query string, or raw token.
 pub fn extract_xai_oauth_code_from_paste(input: &str) -> Result<String, ProxyError> {
-    let redirect_uri = format!(
-        "http://{LOOPBACK_HOST}:{XAI_OAUTH_REDIRECT_PORT}{XAI_OAUTH_REDIRECT_PATH}"
-    );
+    let redirect_uri =
+        format!("http://{LOOPBACK_HOST}:{XAI_OAUTH_REDIRECT_PORT}{XAI_OAUTH_REDIRECT_PATH}");
     let cb = parse_manual_callback_url(input, &redirect_uri)?;
     cb.code
         .filter(|s| !s.is_empty())
@@ -392,7 +400,9 @@ fn normalize_pasted_input(raw: &str) -> String {
 
 fn print_stdin_paste_help() {
     eprintln!("\nPaste your authorization code on ONE line, then press Enter.");
-    eprintln!("(Code must be on the same line as the prompt — Enter only submits what read_line() receives.)");
+    eprintln!(
+        "(Code must be on the same line as the prompt — Enter only submits what read_line() receives.)"
+    );
     eprintln!("No terminal paste? Use:");
     eprintln!("  edgecrab auth grok finish --oauth-code 'YOUR_CODE'");
 }
@@ -500,16 +510,13 @@ pub fn peek_xai_pending_session(path: Option<&Path>) -> Option<XaiOAuthPendingSe
 
 fn write_pending_session(path: &Path, session: &XaiOAuthPendingSession) -> Result<(), ProxyError> {
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| {
-            ProxyError::UpstreamAuth(format!("oauth-pending dir: {e}"))
-        })?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| ProxyError::UpstreamAuth(format!("oauth-pending dir: {e}")))?;
     }
-    let json = serde_json::to_string_pretty(session).map_err(|e| {
-        ProxyError::UpstreamAuth(format!("oauth-pending serialize: {e}"))
-    })?;
-    std::fs::write(path, json).map_err(|e| {
-        ProxyError::UpstreamAuth(format!("oauth-pending write: {e}"))
-    })?;
+    let json = serde_json::to_string_pretty(session)
+        .map_err(|e| ProxyError::UpstreamAuth(format!("oauth-pending serialize: {e}")))?;
+    std::fs::write(path, json)
+        .map_err(|e| ProxyError::UpstreamAuth(format!("oauth-pending write: {e}")))?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
@@ -525,9 +532,8 @@ fn load_pending_session(path: &Path) -> Result<XaiOAuthPendingSession, ProxyErro
             path.display()
         ))
     })?;
-    let session: XaiOAuthPendingSession = serde_json::from_str(&raw).map_err(|e| {
-        ProxyError::UpstreamAuth(format!("oauth-pending parse: {e}"))
-    })?;
+    let session: XaiOAuthPendingSession = serde_json::from_str(&raw)
+        .map_err(|e| ProxyError::UpstreamAuth(format!("oauth-pending parse: {e}")))?;
     if session.version != PENDING_SESSION_VERSION {
         return Err(ProxyError::UpstreamAuth(
             "pending Grok OAuth session version mismatch — run `edgecrab auth grok start` again"
@@ -559,9 +565,8 @@ async fn prepare_xai_oauth_session(
     let challenge = code_challenge(&verifier);
     let state = uuid::Uuid::new_v4().simple().to_string();
     let nonce = uuid::Uuid::new_v4().simple().to_string();
-    let redirect_uri = format!(
-        "http://{LOOPBACK_HOST}:{XAI_OAUTH_REDIRECT_PORT}{XAI_OAUTH_REDIRECT_PATH}"
-    );
+    let redirect_uri =
+        format!("http://{LOOPBACK_HOST}:{XAI_OAUTH_REDIRECT_PORT}{XAI_OAUTH_REDIRECT_PATH}");
     validate_loopback_redirect_uri(&redirect_uri)?;
     let authorize_url = build_authorize_url(
         &discovery.authorization_endpoint,
@@ -591,10 +596,7 @@ async fn exchange_pending_session(
     callback: OAuthCallback,
 ) -> Result<Value, ProxyError> {
     if let Some(err) = callback.error.as_deref() {
-        let detail = callback
-            .error_description
-            .as_deref()
-            .unwrap_or(err);
+        let detail = callback.error_description.as_deref().unwrap_or(err);
         return Err(ProxyError::UpstreamAuth(format!(
             "xAI authorization failed: {detail}"
         )));
@@ -605,7 +607,9 @@ async fn exchange_pending_session(
         callback_state = Some(pending.state.clone());
     }
     if callback_state.as_deref() != Some(pending.state.as_str()) {
-        return Err(ProxyError::UpstreamAuth("xAI authorization: state mismatch".into()));
+        return Err(ProxyError::UpstreamAuth(
+            "xAI authorization: state mismatch".into(),
+        ));
     }
 
     let code = callback
@@ -641,16 +645,14 @@ async fn exchange_pending_session(
 }
 
 /// Step 1: open browser / copy URL; persist PKCE so step 2 can run in a fresh command.
-pub async fn start_xai_oauth_login(opts: &XaiOAuthLoginOptions) -> Result<XaiOAuthStarted, ProxyError> {
+pub async fn start_xai_oauth_login(
+    opts: &XaiOAuthLoginOptions,
+) -> Result<XaiOAuthStarted, ProxyError> {
     let client = build_http_client(Duration::from_secs(20))?;
     let (discovery, pending) = prepare_xai_oauth_session(&client).await?;
     let path = default_xai_pending_path();
     write_pending_session(&path, &pending)?;
-    emit_authorize_prompt(
-        opts,
-        &pending.authorize_url,
-        &pending.redirect_uri,
-    );
+    emit_authorize_prompt(opts, &pending.authorize_url, &pending.redirect_uri);
     let _ = discovery;
     Ok(XaiOAuthStarted {
         authorize_url: pending.authorize_url,
@@ -736,13 +738,13 @@ pub async fn xai_oauth_login(opts: &XaiOAuthLoginOptions) -> Result<Value, Proxy
     let state = uuid::Uuid::new_v4().simple().to_string();
     let nonce = uuid::Uuid::new_v4().simple().to_string();
 
-    let redirect_uri = format!(
-        "http://{LOOPBACK_HOST}:{XAI_OAUTH_REDIRECT_PORT}{XAI_OAUTH_REDIRECT_PATH}"
-    );
+    let redirect_uri =
+        format!("http://{LOOPBACK_HOST}:{XAI_OAUTH_REDIRECT_PORT}{XAI_OAUTH_REDIRECT_PATH}");
     validate_loopback_redirect_uri(&redirect_uri)?;
 
     let (redirect_uri, callback) = {
-        let server = LoopbackServer::start(XAI_OAUTH_REDIRECT_PORT, XAI_OAUTH_REDIRECT_PATH).await?;
+        let server =
+            LoopbackServer::start(XAI_OAUTH_REDIRECT_PORT, XAI_OAUTH_REDIRECT_PATH).await?;
         let redirect_uri = server.redirect_uri.clone();
         validate_loopback_redirect_uri(&redirect_uri)?;
         let authorize_url = build_authorize_url(
@@ -818,8 +820,8 @@ pub async fn login_xai_oauth(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::routing::post;
     use axum::Router;
+    use axum::routing::post;
     use tokio::net::TcpListener;
 
     #[test]
@@ -845,22 +847,17 @@ mod tests {
 
     #[test]
     fn parse_manual_callback_accepts_code_only() {
-        let cb = parse_manual_callback_url(
-            "code-only-token",
-            "http://127.0.0.1:56121/callback",
-        )
-        .expect("parse");
+        let cb = parse_manual_callback_url("code-only-token", "http://127.0.0.1:56121/callback")
+            .expect("parse");
         assert_eq!(cb.code.as_deref(), Some("code-only-token"));
         assert!(cb.state.is_none());
     }
 
     #[test]
     fn parse_manual_callback_accepts_query_fragment() {
-        let cb = parse_manual_callback_url(
-            "?code=abc123&state=st-1",
-            "http://127.0.0.1:56121/callback",
-        )
-        .expect("parse");
+        let cb =
+            parse_manual_callback_url("?code=abc123&state=st-1", "http://127.0.0.1:56121/callback")
+                .expect("parse");
         assert_eq!(cb.code.as_deref(), Some("abc123"));
         assert_eq!(cb.state.as_deref(), Some("st-1"));
     }
@@ -873,20 +870,28 @@ mod tests {
 
         let app = Router::new().route(
             "/token",
-            post(|form: axum::Form<std::collections::HashMap<String, String>>| async move {
-                assert_eq!(form.get("grant_type").map(String::as_str), Some("authorization_code"));
-                assert!(form.contains_key("code_verifier"));
-                assert_eq!(form.get("code_challenge_method").map(String::as_str), Some("S256"));
-                (
-                    axum::http::StatusCode::OK,
-                    axum::Json(serde_json::json!({
-                        "access_token": "at-test",
-                        "refresh_token": "rt-test",
-                        "expires_in": 3600,
-                        "token_type": "Bearer"
-                    })),
-                )
-            }),
+            post(
+                |form: axum::Form<std::collections::HashMap<String, String>>| async move {
+                    assert_eq!(
+                        form.get("grant_type").map(String::as_str),
+                        Some("authorization_code")
+                    );
+                    assert!(form.contains_key("code_verifier"));
+                    assert_eq!(
+                        form.get("code_challenge_method").map(String::as_str),
+                        Some("S256")
+                    );
+                    (
+                        axum::http::StatusCode::OK,
+                        axum::Json(serde_json::json!({
+                            "access_token": "at-test",
+                            "refresh_token": "rt-test",
+                            "expires_in": 3600,
+                            "token_type": "Bearer"
+                        })),
+                    )
+                },
+            ),
         );
         tokio::spawn(async move {
             axum::serve(listener, app).await.expect("serve");
@@ -929,17 +934,19 @@ mod tests {
             )
             .route(
                 "/token",
-                post(|form: axum::Form<std::collections::HashMap<String, String>>| async move {
-                    assert!(form.contains_key("code_verifier"));
-                    (
-                        axum::http::StatusCode::OK,
-                        axum::Json(serde_json::json!({
-                            "access_token": "at-mock",
-                            "refresh_token": "rt-mock",
-                            "expires_in": 3600
-                        })),
-                    )
-                }),
+                post(
+                    |form: axum::Form<std::collections::HashMap<String, String>>| async move {
+                        assert!(form.contains_key("code_verifier"));
+                        (
+                            axum::http::StatusCode::OK,
+                            axum::Json(serde_json::json!({
+                                "access_token": "at-mock",
+                                "refresh_token": "rt-mock",
+                                "expires_in": 3600
+                            })),
+                        )
+                    },
+                ),
             );
         tokio::spawn(async move {
             axum::serve(auth_listener, auth_app).await.expect("auth");
@@ -962,7 +969,13 @@ mod tests {
             token_endpoint: format!("http://{auth_addr}/token"),
             raw: discovery,
         };
-        let _url = build_authorize_url(&disc.authorization_endpoint, &redirect, &challenge, &state, &nonce);
+        let _url = build_authorize_url(
+            &disc.authorization_endpoint,
+            &redirect,
+            &challenge,
+            &state,
+            &nonce,
+        );
 
         let callback_url = format!("{redirect}?code=mockcode&state={state}");
         let http = build_http_client(Duration::from_secs(5)).expect("http");

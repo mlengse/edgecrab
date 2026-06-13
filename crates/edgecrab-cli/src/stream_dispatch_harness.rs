@@ -102,9 +102,7 @@ impl TurnStreamHarness {
                 maybe_agents_nudge(&mut self.activity, &mut self.agents_nudged);
             }
             StreamEvent::SubAgentReasoning {
-                task_index,
-                text,
-                ..
+                task_index, text, ..
             } => {
                 apply_subagent_detail(&mut self.activity, task_index, text);
             }
@@ -133,8 +131,7 @@ impl TurnStreamHarness {
                 command_preview,
                 tail,
             } => {
-                self.activity
-                    .on_bg_tail(process_id, command_preview, tail);
+                self.activity.on_bg_tail(process_id, command_preview, tail);
             }
             _ => {}
         }
@@ -224,11 +221,12 @@ mod tests {
             now,
         );
         assert!(h.agents_nudged);
-        assert!(h
-            .activity
-            .activity_feed
-            .iter()
-            .any(|n| n.text.contains("/agents")));
+        assert!(
+            h.activity
+                .activity_feed
+                .iter()
+                .any(|n| n.text.contains("/agents"))
+        );
 
         h.apply(
             StreamEvent::SubAgentToolExec {
@@ -259,15 +257,13 @@ mod tests {
     #[test]
     fn reasoning_delta_respects_cot_budget() {
         let mut h = TurnStreamHarness::new();
-        h.apply(
-            StreamEvent::Reasoning("x".repeat(400)),
-            Instant::now(),
+        h.apply(StreamEvent::Reasoning("x".repeat(400)), Instant::now());
+        assert!(
+            h.reasoning_snippet()
+                .map(|s| s.chars().count())
+                .unwrap_or(0)
+                <= crate::stream_bridge::THINKING_COT_MAX
         );
-        assert!(h
-            .reasoning_snippet()
-            .map(|s| s.chars().count())
-            .unwrap_or(0)
-            <= crate::stream_bridge::THINKING_COT_MAX);
     }
 
     #[test]

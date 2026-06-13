@@ -844,7 +844,13 @@ mod tests {
     async fn local_backend_echo() {
         let b = LocalBackend::new("test-echo");
         let out = b
-            .execute("echo hello", "/tmp", Duration::from_secs(5), cancel(), ExecuteOptions::default())
+            .execute(
+                "echo hello",
+                "/tmp",
+                Duration::from_secs(5),
+                cancel(),
+                ExecuteOptions::default(),
+            )
             .await
             .expect("execute");
         assert!(out.stdout.contains("hello"));
@@ -855,7 +861,13 @@ mod tests {
     async fn local_backend_exit_code() {
         let b = LocalBackend::new("test-exit");
         let out = b
-            .execute("exit 42", "/tmp", Duration::from_secs(5), cancel(), ExecuteOptions::default())
+            .execute(
+                "exit 42",
+                "/tmp",
+                Duration::from_secs(5),
+                cancel(),
+                ExecuteOptions::default(),
+            )
             .await
             .expect("execute");
         assert_eq!(out.exit_code, 42);
@@ -865,7 +877,13 @@ mod tests {
     async fn local_backend_timeout() {
         let b = LocalBackend::new("test-timeout");
         let out = b
-            .execute("sleep 60", "/tmp", Duration::from_millis(200), cancel(), ExecuteOptions::default())
+            .execute(
+                "sleep 60",
+                "/tmp",
+                Duration::from_millis(200),
+                cancel(),
+                ExecuteOptions::default(),
+            )
             .await
             .expect("execute");
         assert_eq!(out.exit_code, 124, "expected timeout exit code");
@@ -881,7 +899,13 @@ mod tests {
             token_clone.cancel();
         });
         let out = b
-            .execute("sleep 60", "/tmp", Duration::from_secs(10), token, ExecuteOptions::default())
+            .execute(
+                "sleep 60",
+                "/tmp",
+                Duration::from_secs(10),
+                token,
+                ExecuteOptions::default(),
+            )
             .await
             .expect("execute");
         assert_eq!(out.exit_code, 130, "expected cancelled exit code");
@@ -892,11 +916,23 @@ mod tests {
         // Verify that variables set in one call persist to the next (persistent shell)
         let b = LocalBackend::new("test-persistent");
         let _out1 = b
-            .execute("export MY_VAR=42", "/tmp", Duration::from_secs(5), cancel(), ExecuteOptions::default())
+            .execute(
+                "export MY_VAR=42",
+                "/tmp",
+                Duration::from_secs(5),
+                cancel(),
+                ExecuteOptions::default(),
+            )
             .await
             .expect("set var");
         let out2 = b
-            .execute("echo $MY_VAR", "/tmp", Duration::from_secs(5), cancel(), ExecuteOptions::default())
+            .execute(
+                "echo $MY_VAR",
+                "/tmp",
+                Duration::from_secs(5),
+                cancel(),
+                ExecuteOptions::default(),
+            )
             .await
             .expect("read var");
         assert!(
@@ -961,7 +997,13 @@ mod tests {
     async fn local_backend_cleanup_idempotent() {
         let b = LocalBackend::new("test-cleanup");
         let _ = b
-            .execute("echo x", "/tmp", Duration::from_secs(5), cancel(), ExecuteOptions::default())
+            .execute(
+                "echo x",
+                "/tmp",
+                Duration::from_secs(5),
+                cancel(),
+                ExecuteOptions::default(),
+            )
             .await;
         b.cleanup().await.expect("first cleanup");
         b.cleanup().await.expect("second cleanup (idempotent)");
@@ -1062,7 +1104,13 @@ mod tests {
         let path_str = dir.path().to_str().expect("utf8").to_string();
         let b = LocalBackend::new("test-cwd");
         let out = b
-            .execute("pwd", &path_str, Duration::from_secs(5), cancel(), ExecuteOptions::default())
+            .execute(
+                "pwd",
+                &path_str,
+                Duration::from_secs(5),
+                cancel(),
+                ExecuteOptions::default(),
+            )
             .await
             .expect("execute");
         assert!(out.stdout.contains(dir.path().to_str().expect("utf8")));

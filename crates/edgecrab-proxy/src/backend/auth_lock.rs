@@ -31,9 +31,8 @@ where
 
         let lock = lock_path(auth_path);
         if let Some(parent) = lock.parent() {
-            std::fs::create_dir_all(parent).map_err(|e| {
-                ProxyError::UpstreamAuth(format!("create auth lock dir: {e}"))
-            })?;
+            std::fs::create_dir_all(parent)
+                .map_err(|e| ProxyError::UpstreamAuth(format!("create auth lock dir: {e}")))?;
         }
         let file = OpenOptions::new()
             .create(true)

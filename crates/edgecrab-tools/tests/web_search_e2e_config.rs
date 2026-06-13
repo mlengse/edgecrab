@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+#![allow(dead_code)]
 //! E2E: web_search config loaded from config.yaml on disk.
 
 mod common;

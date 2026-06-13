@@ -13,10 +13,9 @@ fn ctx_in(workspace: &std::path::Path, edgecrab_home: &std::path::Path) -> ToolC
         session_id: "file-write-tmp-e2e-session".into(),
         user_task: None,
         cancel: CancellationToken::new(),
-        config: {
-            let mut cfg = edgecrab_tools::AppConfigRef::default();
-            cfg.edgecrab_home = edgecrab_home.to_path_buf();
-            cfg
+        config: edgecrab_tools::AppConfigRef {
+            edgecrab_home: edgecrab_home.to_path_buf(),
+            ..Default::default()
         },
         state_db: None,
         platform: Platform::Cli,

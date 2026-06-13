@@ -1,4 +1,6 @@
 //! Shared helpers for web search integration tests.
+#![allow(dead_code)]
+#![allow(clippy::await_holding_lock)]
 
 use std::path::PathBuf;
 use std::process::Command;

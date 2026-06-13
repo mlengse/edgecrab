@@ -73,7 +73,8 @@ async fn e2e_hermes_auth_file_adapter_forwards_agent_key() {
     .expect("write auth");
 
     let mut cfg = ProxyConfig::default();
-    cfg.model_aliases.insert("nous-chat".into(), "forward:nous".into());
+    cfg.model_aliases
+        .insert("nous-chat".into(), "forward:nous".into());
     cfg.forward_upstreams.insert(
         "nous".into(),
         ForwardUpstreamConfig {

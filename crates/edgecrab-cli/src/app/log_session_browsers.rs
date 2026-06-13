@@ -3,7 +3,6 @@
 use super::*;
 
 impl App {
-
     pub(super) fn render_log_browser(&self, frame: &mut Frame, area: Rect) {
         frame.render_widget(Clear, area);
 

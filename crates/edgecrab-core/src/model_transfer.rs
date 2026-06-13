@@ -133,8 +133,8 @@ pub fn resolve_model_transfer_target(
     if display.is_empty() || !display.contains('/') {
         return Err(ModelTransferError::InvalidFormat);
     }
-    let resolved = ModelCatalog::resolve_spec_lenient(display)
-        .ok_or(ModelTransferError::InvalidFormat)?;
+    let resolved =
+        ModelCatalog::resolve_spec_lenient(display).ok_or(ModelTransferError::InvalidFormat)?;
     Ok(ModelTransferTarget {
         display: resolved.display,
         provider: resolved.runtime_provider,
@@ -846,7 +846,9 @@ mod tests {
 
     #[test]
     fn session_requires_model_transfer_false_for_system_only() {
-        assert!(!session_requires_model_transfer(&[Message::system("You are helpful.")]));
+        assert!(!session_requires_model_transfer(&[Message::system(
+            "You are helpful."
+        )]));
     }
 
     #[test]
@@ -857,20 +859,18 @@ mod tests {
     #[test]
     fn session_requires_model_transfer_ignores_prior_handoff_messages() {
         let messages = vec![Message::user(&format_model_transfer_user_message(
-            "a/m1",
-            "b/m2",
-            "stale",
-            false,
+            "a/m1", "b/m2", "stale", false,
         ))];
         assert!(!session_requires_model_transfer(&messages));
     }
 
     #[test]
     fn format_model_change_confirmation_fast_and_transfer() {
-        let fast = format_model_change_confirmation(&ModelChangeOutcome::Fast(ModelSwitchOutcome {
-            from_model: "a/m1".into(),
-            to_model: "b/m2".into(),
-        }));
+        let fast =
+            format_model_change_confirmation(&ModelChangeOutcome::Fast(ModelSwitchOutcome {
+                from_model: "a/m1".into(),
+                to_model: "b/m2".into(),
+            }));
         assert!(fast.contains("b/m2"));
         assert!(fast.contains("a/m1"));
 

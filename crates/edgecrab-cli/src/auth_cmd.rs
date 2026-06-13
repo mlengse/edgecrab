@@ -7,13 +7,13 @@ use std::sync::Arc;
 
 use anyhow::{Context, anyhow, bail};
 use chrono::Utc;
-use edgecrab_core::oauth::{
-    is_anthropic_oauth_alias, is_openai_codex_alias, login_anthropic_oauth,
-    login_codex_device_oauth, remove_anthropic_oauth_file, remove_codex_oauth,
-    read_anthropic_oauth_file, AnthropicOAuthLoginOptions, CodexDeviceLoginOptions,
-    CodexDevicePrompt, OPENAI_CODEX_PROVIDER,
-};
 use edgecrab_core::AppConfig;
+use edgecrab_core::oauth::{
+    AnthropicOAuthLoginOptions, CodexDeviceLoginOptions, CodexDevicePrompt, OPENAI_CODEX_PROVIDER,
+    is_anthropic_oauth_alias, is_openai_codex_alias, login_anthropic_oauth,
+    login_codex_device_oauth, read_anthropic_oauth_file, remove_anthropic_oauth_file,
+    remove_codex_oauth,
+};
 use edgecrab_tools::tools::mcp_client::{read_mcp_token_status, remove_mcp_token, write_mcp_token};
 use edgequake_llm::providers::vscode::{auth::GitHubAuth, token::TokenManager};
 use serde::{Deserialize, Serialize};
@@ -181,12 +181,7 @@ fn persist_last_oauth_url(url: &str) -> Option<PathBuf> {
     Some(path)
 }
 
-fn print_open_url_block(
-    stderr: &mut io::Stderr,
-    url: &str,
-    open_browser: bool,
-    short_hint: &str,
-) {
+fn print_open_url_block(stderr: &mut io::Stderr, url: &str, open_browser: bool, short_hint: &str) {
     let clickable = terminal_hyperlink("Open authorization page", url);
     let _ = writeln!(stderr, "{short_hint}\n");
     let _ = writeln!(stderr, "{clickable}");
@@ -218,7 +213,8 @@ fn friendly_grok_login_error(message: &str) -> String {
             .into();
     }
     if lower.contains("state mismatch") {
-        return "xAI sign-in failed: OAuth state mismatch. Run `edgecrab auth add grok` again.".into();
+        return "xAI sign-in failed: OAuth state mismatch. Run `edgecrab auth add grok` again."
+            .into();
     }
     if is_grok_pending_expired_error(message) {
         return "Grok sign-in session expired. In the TUI press Enter to open a fresh x.ai page, \
@@ -347,10 +343,17 @@ pub async fn run_capture(command: AuthCommand) -> anyhow::Result<String> {
             manual_paste,
             loopback,
             oauth_code,
-        } => add_target(
-            &target, token, no_browser, manual_paste, loopback, oauth_code,
-        )
-        .await,
+        } => {
+            add_target(
+                &target,
+                token,
+                no_browser,
+                manual_paste,
+                loopback,
+                oauth_code,
+            )
+            .await
+        }
         AuthCommand::Login {
             target,
             no_browser,
@@ -375,21 +378,16 @@ pub async fn run_capture(command: AuthCommand) -> anyhow::Result<String> {
 
 /// True when `auth add` should run a browser/device OAuth flow (no `--token`).
 pub fn is_grok_auth_target(raw_target: &str) -> bool {
-    matches!(
-        resolve_target(raw_target),
-        Ok(AuthTarget::XaiOAuth)
-    )
+    matches!(resolve_target(raw_target), Ok(AuthTarget::XaiOAuth))
 }
 
 pub fn target_uses_interactive_oauth(raw_target: &str) -> bool {
     matches!(
         resolve_target(raw_target),
-        Ok(
-            AuthTarget::NousPortal
-                | AuthTarget::XaiOAuth
-                | AuthTarget::AnthropicOAuth
-                | AuthTarget::OpenaiCodex
-        )
+        Ok(AuthTarget::NousPortal
+            | AuthTarget::XaiOAuth
+            | AuthTarget::AnthropicOAuth
+            | AuthTarget::OpenaiCodex)
     )
 }
 
@@ -535,9 +533,12 @@ async fn login_openai_codex_capture() -> anyhow::Result<String> {
         print_codex_device_prompt(&prompt);
         let _ = open_auth_url(&prompt.sign_in_url);
     });
-    let msg = login_codex_device_oauth(None, &CodexDeviceLoginOptions {
-        on_device_code: Some(on_device_code),
-    })
+    let msg = login_codex_device_oauth(
+        None,
+        &CodexDeviceLoginOptions {
+            on_device_code: Some(on_device_code),
+        },
+    )
     .await
     .map_err(anyhow::Error::msg)?;
     Ok(msg)
@@ -576,7 +577,9 @@ pub fn is_grok_pending_expired_error(message: &str) -> bool {
 }
 
 /// Begin Grok OAuth (TUI step 1).
-pub async fn grok_auth_start_for_ui(no_browser: bool) -> anyhow::Result<(String, std::path::PathBuf)> {
+pub async fn grok_auth_start_for_ui(
+    no_browser: bool,
+) -> anyhow::Result<(String, std::path::PathBuf)> {
     let no_browser = oauth_flag(no_browser, "EDGECRAB_AUTH_NO_BROWSER");
     let opts = xai_oauth_options(no_browser, true, false, None);
     let started = edgecrab_proxy::start_xai_oauth_login(&opts)
@@ -703,8 +706,8 @@ async fn login_xai_oauth_capture(
         None,
         &xai_oauth_options(no_browser, manual_paste, loopback, oauth_code),
     )
-        .await
-        .map_err(|e| anyhow::anyhow!("{}", friendly_grok_login_error(&e.to_string())))?;
+    .await
+    .map_err(|e| anyhow::anyhow!("{}", friendly_grok_login_error(&e.to_string())))?;
     Ok(msg)
 }
 
@@ -833,10 +836,7 @@ async fn list_targets() -> anyhow::Result<String> {
         )?;
     }
 
-    let claude_oauth = read_anthropic_oauth_file()
-        .ok()
-        .flatten()
-        .is_some();
+    let claude_oauth = read_anthropic_oauth_file().ok().flatten().is_some();
     writeln!(
         out,
         "claude-pro oauth-file={} ({})",
@@ -1095,7 +1095,11 @@ async fn reset_all() -> anyhow::Result<String> {
 
 fn clear_proxy_oauth_providers() -> anyhow::Result<()> {
     let path = edgecrab_proxy::default_auth_path();
-    for provider in ["nous", edgecrab_proxy::XAI_OAUTH_PROVIDER, OPENAI_CODEX_PROVIDER] {
+    for provider in [
+        "nous",
+        edgecrab_proxy::XAI_OAUTH_PROVIDER,
+        OPENAI_CODEX_PROVIDER,
+    ] {
         let _ = edgecrab_proxy::remove_provider_state(&path, provider);
     }
     Ok(())
@@ -1137,7 +1141,11 @@ fn show_nous_status() -> anyhow::Result<String> {
     let probe = edgecrab_proxy::probe_oauth_auth(&edgecrab_proxy::RECIPE_NOUS);
     let mut out = String::from("nous (Nous Portal OAuth)\n");
     writeln!(out, "auth-file:  {}", path.display())?;
-    writeln!(out, "status:     {}", edgecrab_proxy::auth_probe_message(&edgecrab_proxy::RECIPE_NOUS, probe))?;
+    writeln!(
+        out,
+        "status:     {}",
+        edgecrab_proxy::auth_probe_message(&edgecrab_proxy::RECIPE_NOUS, probe)
+    )?;
     writeln!(
         out,
         "login:      edgecrab auth add nous  |  edgecrab auth login nous"

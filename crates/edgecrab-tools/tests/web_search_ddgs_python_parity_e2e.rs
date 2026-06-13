@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+#![allow(dead_code)]
 //! DDGS Python `ddgs` 9.0 parity — fixture HTML + optional live comparison.
 
 mod common;
@@ -5,12 +7,12 @@ mod common;
 use std::process::Command;
 
 use common::registry_guard;
-use edgecrab_tools::tools::web::search::config::SearchOptions;
 use edgecrab_tools::tools::web::search::backends::ddgs::{
-    bing_page_reports_no_results, metasearch_text, parse_bing_html, parse_ddg_html,
-    pick_random_profile, resolve_profile, resolve_profile_with, ImpersonateOs,
-    select_raw, select_ranked, DdgsEngine, DdgsSelectionMode, DdgsSettings,
+    DdgsEngine, DdgsSelectionMode, DdgsSettings, ImpersonateOs,
+    metasearch_text, parse_bing_html, parse_ddg_html, pick_random_profile, resolve_profile,
+    resolve_profile_with, select_ranked, select_raw,
 };
+use edgecrab_tools::tools::web::search::config::SearchOptions;
 
 const BING_RUST_FIXTURE: &str = include_str!("fixtures/ddgs/bing_rust_programming.html");
 const BING_PERSON_FIXTURE: &str = include_str!("fixtures/ddgs/bing_person_mixed.html");
@@ -40,7 +42,10 @@ fn e2e_python_parity_bing_fixture_urls_and_order() {
     assert_eq!(urls.len(), 4);
     assert_eq!(urls[0], "https://www.rust-lang.org/");
     assert_eq!(urls[1], "https://doc.rust-lang.org/book/");
-    assert!(urls[2].contains("y.js?ad_domain"), "Bing keeps ad rows like Python");
+    assert!(
+        urls[2].contains("y.js?ad_domain"),
+        "Bing keeps ad rows like Python"
+    );
     assert_eq!(
         urls[3],
         "https://en.wikipedia.org/wiki/Rust_(programming_language)"
@@ -164,7 +169,10 @@ print("\n".join(urls))
         .map(str::to_string)
         .collect();
     let rust_urls = parse_fixture_bing(BING_RUST_FIXTURE, 5);
-    assert_eq!(rust_urls, py_urls, "Rust parse+select_raw must match Python Bing href cache order");
+    assert_eq!(
+        rust_urls, py_urls,
+        "Rust parse+select_raw must match Python Bing href cache order"
+    );
 }
 
 /// Full `_text_bing` row parity — title, href, body (Python `_normalize` + `_normalize_url`).
@@ -219,8 +227,7 @@ print(json.dumps(rows))
         eprintln!("python skip: {}", String::from_utf8_lossy(&py.stderr));
         return;
     }
-    let py_rows: Vec<serde_json::Value> =
-        serde_json::from_slice(&py.stdout).expect("python json");
+    let py_rows: Vec<serde_json::Value> = serde_json::from_slice(&py.stdout).expect("python json");
     let rust_rows = select_raw(
         parse_bing_html(BING_RUST_FIXTURE, 10, "ddgs").expect("parse"),
         10,
@@ -237,7 +244,11 @@ fn canonical_host_path(url: &str) -> String {
     url::Url::parse(url)
         .ok()
         .map(|u| {
-            let host = u.host_str().unwrap_or("").trim_start_matches("www.").trim_start_matches("m.");
+            let host = u
+                .host_str()
+                .unwrap_or("")
+                .trim_start_matches("www.")
+                .trim_start_matches("m.");
             let path = u.path().trim_end_matches('/');
             format!("{host}{path}")
         })
@@ -323,7 +334,10 @@ async fn e2e_live_rust_vs_python_ddgs_urls_overlap() {
         .expect("python ddgs");
 
     if !py.status.success() {
-        eprintln!("skip live: python failed: {}", String::from_utf8_lossy(&py.stderr));
+        eprintln!(
+            "skip live: python failed: {}",
+            String::from_utf8_lossy(&py.stderr)
+        );
         return;
     }
 
@@ -343,7 +357,9 @@ async fn e2e_live_rust_vs_python_ddgs_urls_overlap() {
 
     // Rust fixes Python 9.0 script false-positive; may return rows when Python returns [].
     if !rust_urls.is_empty() && py_urls.is_empty() {
-        eprintln!("rust succeeded where python ddgs 9.0 returned [] (known script quirk in Python)");
+        eprintln!(
+            "rust succeeded where python ddgs 9.0 returned [] (known script quirk in Python)"
+        );
         assert!(rust_urls.len() >= 3, "rust should return meaningful rows");
         return;
     }

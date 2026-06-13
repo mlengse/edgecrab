@@ -49,16 +49,8 @@ impl SpawnTurnSnapshot {
         metrics: TurnCommitMetrics,
     ) -> Self {
         let total_tools = delegates.iter().map(|d| d.tool_count).sum();
-        let total_duration_secs = delegates
-            .iter()
-            .map(|d| d.duration_secs)
-            .max()
-            .unwrap_or(0);
-        let max_fanout = delegates
-            .iter()
-            .map(|d| d.task_count)
-            .max()
-            .unwrap_or(0);
+        let total_duration_secs = delegates.iter().map(|d| d.duration_secs).max().unwrap_or(0);
+        let max_fanout = delegates.iter().map(|d| d.task_count).max().unwrap_or(0);
         Self {
             label,
             delegates,
@@ -86,12 +78,7 @@ impl SpawnHistory {
         Self::default()
     }
 
-    pub fn record_finish(
-        &mut self,
-        row: &ShelfSubagentRow,
-        duration_secs: u64,
-        status: &str,
-    ) {
+    pub fn record_finish(&mut self, row: &ShelfSubagentRow, duration_secs: u64, status: &str) {
         self.pending_turn.push(SpawnHistoryEntry {
             task_index: row.task_index,
             task_count: row.task_count,

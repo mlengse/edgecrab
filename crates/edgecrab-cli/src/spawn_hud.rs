@@ -74,7 +74,10 @@ pub fn metrics_from_turn(state: &TurnActivityState) -> Option<SpawnHudMetrics> {
             started_at: r.started_at,
         })
         .collect();
-    let widest_level = width_by_depth(&delegate_rows).into_iter().max().unwrap_or(0);
+    let widest_level = width_by_depth(&delegate_rows)
+        .into_iter()
+        .max()
+        .unwrap_or(0);
     Some(SpawnHudMetrics {
         depth,
         active,
@@ -205,9 +208,6 @@ mod tests {
         };
         let text = format_spawn_hud(&metrics, &caps);
         assert!(text.contains('⚠'));
-        assert_eq!(
-            spawn_hud_severity(&metrics, &caps),
-            SpawnHudSeverity::Error
-        );
+        assert_eq!(spawn_hud_severity(&metrics, &caps), SpawnHudSeverity::Error);
     }
 }

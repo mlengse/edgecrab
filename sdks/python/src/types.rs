@@ -109,18 +109,12 @@ impl From<edgecrab_sdk_core::StreamEvent> for PyStreamEvent {
                 event_type: "tool_result".into(),
                 data: format!("{name}: {}", result_preview.unwrap_or_default()),
             },
-            edgecrab_sdk_core::StreamEvent::ToolProgress {
-                name,
-                message,
-                ..
-            } => Self {
+            edgecrab_sdk_core::StreamEvent::ToolProgress { name, message, .. } => Self {
                 event_type: "tool_progress".into(),
                 data: format!("{name}: {message}"),
             },
             edgecrab_sdk_core::StreamEvent::ToolGenerating {
-                name,
-                partial_args,
-                ..
+                name, partial_args, ..
             } => Self {
                 event_type: "tool_generating".into(),
                 data: format!("{name}: {partial_args}"),

@@ -313,6 +313,9 @@ mod tests {
             count += 1;
         }
         // role + id/name + args delta + finish + [DONE]
-        assert!(count >= 4, "tool deltas should fan out to multiple SSE events, got {count}");
+        assert!(
+            count >= 4,
+            "tool deltas should fan out to multiple SSE events, got {count}"
+        );
     }
 }

@@ -10,7 +10,7 @@ use serde_json::Value;
 use crate::backend::adapter::{UpstreamAdapter, UpstreamCredential};
 use crate::backend::auth_file::{default_auth_path, read_provider_state};
 use crate::backend::nous::quarantine::state_requires_relogin;
-use crate::backend::nous::refresh::{resolve_nous_credentials_async, DEFAULT_NOUS_INFERENCE};
+use crate::backend::nous::refresh::{DEFAULT_NOUS_INFERENCE, resolve_nous_credentials_async};
 use crate::error::ProxyError;
 
 /// OAuth-capable Nous Portal forward upstream with refresh-on-401.
@@ -34,9 +34,7 @@ impl NousPortalAdapter {
         let provider = auth_provider
             .map(str::to_string)
             .unwrap_or_else(|| upstream_key.to_string());
-        let hint = auth_hint.unwrap_or_else(|| {
-            format!("run `edgecrab auth add {provider}`")
-        });
+        let hint = auth_hint.unwrap_or_else(|| format!("run `edgecrab auth add {provider}`"));
         Self {
             name: upstream_key.to_string(),
             auth_provider: provider,
@@ -47,7 +45,10 @@ impl NousPortalAdapter {
         }
     }
 
-    async fn credential_inner(&self, force_refresh: bool) -> Result<UpstreamCredential, ProxyError> {
+    async fn credential_inner(
+        &self,
+        force_refresh: bool,
+    ) -> Result<UpstreamCredential, ProxyError> {
         let _guard = self.lock.lock().await;
         let fallback = if self.fallback_base_url.is_empty() {
             DEFAULT_NOUS_INFERENCE

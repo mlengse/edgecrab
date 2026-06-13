@@ -1,4 +1,5 @@
 //! Unit tests for web search backend chain and registry.
+#![allow(clippy::await_holding_lock)]
 
 use std::sync::Arc;
 
@@ -531,7 +532,7 @@ fn each_builtin_has_setup_schema() {
         schemas.len()
     );
     for (name, schema) in &schemas {
-        assert_eq!(schema.name.is_empty(), false, "{name} schema.name");
+        assert!(!schema.name.is_empty(), "{name} schema.name");
         // free providers may have empty env_vars (ddgs); paid ones must document keys
         if matches!(
             name.as_str(),

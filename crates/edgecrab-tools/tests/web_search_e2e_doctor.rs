@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+#![allow(dead_code)]
 //! E2E: web provider diagnostics for doctor / setup picker parity.
 
 mod common;

@@ -560,11 +560,9 @@ impl Theme {
             .cloned()
             .unwrap_or_default(); // no wings by default — user opts in via skin.yaml
 
-        let shelf_accent_fg =
-            skin.color_or(&skin.shelf_accent_color, Color::Rgb(205, 175, 50));
+        let shelf_accent_fg = skin.color_or(&skin.shelf_accent_color, Color::Rgb(205, 175, 50));
         let shelf_dim_fg = skin.color_or(&skin.shelf_dim_color, Color::Rgb(120, 120, 130));
-        let shelf_border =
-            skin.color_or(&skin.shelf_border_color, Color::Rgb(55, 55, 68));
+        let shelf_border = skin.color_or(&skin.shelf_border_color, Color::Rgb(55, 55, 68));
         let shelf_hint_fg = skin.color_or(&skin.shelf_hint_color, Color::Rgb(255, 200, 80));
         let long_run_hints: Vec<String> = skin
             .long_run_hints

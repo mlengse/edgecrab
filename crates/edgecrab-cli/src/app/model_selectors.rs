@@ -3,7 +3,6 @@
 use super::*;
 
 impl App {
-
     pub(super) fn render_model_like_selector(
         &self,
         frame: &mut Frame,

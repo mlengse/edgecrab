@@ -4,10 +4,9 @@
 //! with wreq `EmulationProvider` (Apache-2.0 — no GPL `wreq-util`).
 
 use wreq::{
-    EmulationProvider, SslCurve,
+    Client, EmulationProvider, SslCurve,
     header::{ACCEPT, ACCEPT_ENCODING, ACCEPT_LANGUAGE, HeaderMap, HeaderValue, USER_AGENT},
     tls::{AlpnProtos, AlpsProtos, TlsConfig, TlsVersion},
-    Client,
 };
 
 /// primp `IMPERSONATE_OS` — browser OS dimension (independent of browser id).
@@ -69,29 +68,60 @@ impl ImpersonateProfile {
 
     pub fn user_agent(self) -> &'static str {
         match self {
-            Self::Chrome131Mac => "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            Self::Chrome131Win => "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            Self::Chrome131Linux => "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
-            Self::Chrome133Mac => "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-            Self::Chrome133Win => "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36",
-            Self::Chrome128Mac => "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
-            Self::Chrome124Win => "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-            Self::Edge131Win => "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0",
-            Self::Edge127Mac => "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36 Edg/127.0.0.0",
-            Self::Firefox135Mac => "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0",
-            Self::Firefox135Linux => "Mozilla/5.0 (X11; Linux x86_64; rv:135.0) Gecko/20100101 Firefox/135.0",
-            Self::Firefox133Mac => "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0",
-            Self::Firefox128Win => "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0",
-            Self::Safari18Mac => "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15",
-            Self::Safari17Mac => "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15",
+            Self::Chrome131Mac => {
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            }
+            Self::Chrome131Win => {
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            }
+            Self::Chrome131Linux => {
+                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+            }
+            Self::Chrome133Mac => {
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+            }
+            Self::Chrome133Win => {
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+            }
+            Self::Chrome128Mac => {
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+            }
+            Self::Chrome124Win => {
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+            }
+            Self::Edge131Win => {
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0"
+            }
+            Self::Edge127Mac => {
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36 Edg/127.0.0.0"
+            }
+            Self::Firefox135Mac => {
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0"
+            }
+            Self::Firefox135Linux => {
+                "Mozilla/5.0 (X11; Linux x86_64; rv:135.0) Gecko/20100101 Firefox/135.0"
+            }
+            Self::Firefox133Mac => {
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0"
+            }
+            Self::Firefox128Win => {
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
+            }
+            Self::Safari18Mac => {
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
+            }
+            Self::Safari17Mac => {
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
+            }
         }
     }
 
     fn tls_family(self) -> TlsFamily {
         match self {
-            Self::Firefox135Mac | Self::Firefox135Linux | Self::Firefox133Mac | Self::Firefox128Win => {
-                TlsFamily::Firefox
-            }
+            Self::Firefox135Mac
+            | Self::Firefox135Linux
+            | Self::Firefox133Mac
+            | Self::Firefox128Win => TlsFamily::Firefox,
             Self::Safari18Mac | Self::Safari17Mac => TlsFamily::Safari,
             _ => TlsFamily::Chromium,
         }
@@ -161,9 +191,7 @@ impl ImpersonateProfile {
                 "131"
             };
             return Some(match v {
-                "127" => {
-                    r#""Microsoft Edge";v="127", "Chromium";v="127", "Not_A Brand";v="24""#
-                }
+                "127" => r#""Microsoft Edge";v="127", "Chromium";v="127", "Not_A Brand";v="24""#,
                 _ => r#""Microsoft Edge";v="131", "Chromium";v="131", "Not_A Brand";v="24""#,
             });
         }
@@ -352,10 +380,7 @@ fn default_headers(profile: ImpersonateProfile) -> HeaderMap {
     let mut headers = HeaderMap::new();
     headers.insert(USER_AGENT, HeaderValue::from_static(profile.user_agent()));
     headers.insert(ACCEPT, HeaderValue::from_static(profile.accept_header()));
-    headers.insert(
-        ACCEPT_LANGUAGE,
-        HeaderValue::from_static("en-US,en;q=0.9"),
-    );
+    headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
     headers.insert(
         ACCEPT_ENCODING,
         HeaderValue::from_static("gzip, deflate, br"),
@@ -406,8 +431,7 @@ pub fn build_wreq_client(
         .redirect(wreq::redirect::Policy::none())
         .timeout(std::time::Duration::from_secs(timeout_secs.max(1)));
 
-    if let Some(proxy_url) = proxy_url
-        .or_else(|| edgecrab_security::proxy::resolve_proxy_url(None))
+    if let Some(proxy_url) = proxy_url.or_else(|| edgecrab_security::proxy::resolve_proxy_url(None))
         && let Ok(proxy) = wreq::Proxy::all(&proxy_url)
     {
         builder = builder.proxy(proxy);

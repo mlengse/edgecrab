@@ -1,8 +1,8 @@
 //! E2E: Nous Portal quarantines auth on terminal refresh failure (Hermes parity).
 
 use edgecrab_proxy::{
-    enable_e2e_direct_http, resolve_nous_credentials_async, state_requires_relogin,
-    DEFAULT_NOUS_INFERENCE,
+    DEFAULT_NOUS_INFERENCE, enable_e2e_direct_http, resolve_nous_credentials_async,
+    state_requires_relogin,
 };
 
 #[tokio::test]
@@ -51,14 +51,9 @@ async fn e2e_nous_portal_quarantines_on_invalid_grant() {
     )
     .expect("write auth");
 
-    let err = resolve_nous_credentials_async(
-        &auth_path,
-        "nous",
-        DEFAULT_NOUS_INFERENCE,
-        false,
-    )
-    .await
-    .expect_err("refresh should fail");
+    let err = resolve_nous_credentials_async(&auth_path, "nous", DEFAULT_NOUS_INFERENCE, false)
+        .await
+        .expect_err("refresh should fail");
 
     assert!(
         err.to_string().contains("invalid_grant") || err.to_string().contains("re-authenticate"),

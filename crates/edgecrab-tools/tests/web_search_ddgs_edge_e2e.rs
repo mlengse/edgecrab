@@ -1,12 +1,14 @@
+#![allow(clippy::await_holding_lock)]
+#![allow(dead_code)]
 //! DDGS edge cases — Bing false-positive, HTTP 202 bot-challenge, URL decode, engine parsers.
 
 mod common;
 
 use common::registry_guard;
 use edgecrab_tools::tools::web::search::backends::ddgs::{
-    bing_page_reports_no_results, rank_and_select, DdgsEngine, engine_reports_no_results,
-    is_bot_challenge, is_engine_blocked, normalize_bing_url, normalize_ddg_url, parse_bing_html,
-    parse_ddg_lite, parse_engine_html,
+    DdgsEngine, bing_page_reports_no_results, engine_reports_no_results, is_bot_challenge,
+    is_engine_blocked, normalize_bing_url, normalize_ddg_url, parse_bing_html, parse_ddg_lite,
+    parse_engine_html, rank_and_select,
 };
 
 const BING_RUST_FIXTURE: &str = include_str!("fixtures/ddgs/bing_rust_programming.html");

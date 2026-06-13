@@ -3,35 +3,35 @@
 use std::collections::HashMap;
 use std::time::Instant;
 
+use ratatui::Frame;
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::display_state::{
-    context_usage_ratio, format_voice_presence_badge, goal_flash_badge_style,
-    goal_status_chip_style, run_outcome_badge_style, DisplayState, VoicePresenceState,
+    DisplayState, VoicePresenceState, context_usage_ratio, format_voice_presence_badge,
+    goal_flash_badge_style, goal_status_chip_style, run_outcome_badge_style,
 };
 use crate::spawn_hud::{
-    format_spawn_hud, format_spawn_pause_chip, metrics_from_turn, spawn_hud_severity,
-    SpawnHudCaps, SpawnHudSeverity,
+    SpawnHudCaps, SpawnHudSeverity, format_spawn_hud, format_spawn_pause_chip, metrics_from_turn,
+    spawn_hud_severity,
 };
 use crate::status_chrome::{
-    compact_spinner_frame, format_elapsed_hint, format_thinking_status,
+    TerminalGlyphProfile, compact_spinner_frame, format_elapsed_hint, format_thinking_status,
     format_token_count, format_waiting_first_token_status, shelf_generating_status_span,
-    summarize_tools_for_status, wait_urgency_color, words_estimate, TerminalGlyphProfile,
+    summarize_tools_for_status, wait_urgency_color, words_estimate,
 };
 use crate::status_indicator::StatusIndicatorStyle;
 use crate::status_summaries::{
-    format_background_status_summary, format_subagent_status_summary, ActiveSubagentStatus,
-    BackgroundTaskStatus,
+    ActiveSubagentStatus, BackgroundTaskStatus, format_background_status_summary,
+    format_subagent_status_summary,
 };
 use crate::theme::Theme;
 use crate::tool_display::{
-    build_context_gauge, tool_category, tool_icon, tool_status_preview_width, DisplayWidths,
-    tool_action_verb,
+    DisplayWidths, build_context_gauge, tool_action_verb, tool_category, tool_icon,
+    tool_status_preview_width,
 };
 use crate::turn_activity::{ShelfPhase, TurnActivityState};
 
@@ -122,42 +122,42 @@ fn unicode_trunc(s: &str, max_cols: usize) -> String {
 }
 
 pub fn render_status_bar(frame: &mut Frame, area: Rect, params: &StatusBarRenderParams) {
-        if params.compact {
+    if params.compact {
         render_compact_status_bar_inner(frame, area, params);
-            return;
-        }
+        return;
+    }
 
-        let mut left_spans = Vec::new();
+    let mut left_spans = Vec::new();
 
-        // ── Brand badge ─────────────────────────────────────────────
-        // A small copper "EC" badge anchors the left side of the status bar.
-        left_spans.push(Span::styled(
-            " EC ",
-            Style::default()
-                .fg(Color::Rgb(205, 127, 50))
-                .add_modifier(Modifier::BOLD),
-        ));
-        left_spans.push(Span::styled(
-            "│",
-            Style::default().fg(Color::Rgb(50, 50, 65)),
-        ));
-        left_spans.push(Span::styled(
-            format!(" v{} ", crate::banner::VERSION),
-            Style::default().fg(Color::Rgb(120, 130, 150)),
-        ));
-        left_spans.push(Span::styled(
-            "│",
-            Style::default().fg(Color::Rgb(50, 50, 65)),
-        ));
+    // ── Brand badge ─────────────────────────────────────────────
+    // A small copper "EC" badge anchors the left side of the status bar.
+    left_spans.push(Span::styled(
+        " EC ",
+        Style::default()
+            .fg(Color::Rgb(205, 127, 50))
+            .add_modifier(Modifier::BOLD),
+    ));
+    left_spans.push(Span::styled(
+        "│",
+        Style::default().fg(Color::Rgb(50, 50, 65)),
+    ));
+    left_spans.push(Span::styled(
+        format!(" v{} ", crate::banner::VERSION),
+        Style::default().fg(Color::Rgb(120, 130, 150)),
+    ));
+    left_spans.push(Span::styled(
+        "│",
+        Style::default().fg(Color::Rgb(50, 50, 65)),
+    ));
 
-        // ── Spinner / state indicator ────────────────────────────────
-        if let Some(span) = shelf_generating_status_span(
-            params.turn_activity,
-            params.shelf_spinner_frame,
-            params.terminal_glyph_profile,
-        ) {
-            left_spans.push(span);
-        } else {
+    // ── Spinner / state indicator ────────────────────────────────
+    if let Some(span) = shelf_generating_status_span(
+        params.turn_activity,
+        params.shelf_spinner_frame,
+        params.terminal_glyph_profile,
+    ) {
+        left_spans.push(span);
+    } else {
         match params.display_state {
             DisplayState::AwaitingFirstToken { frame: f, started } => {
                 let elapsed_secs = started.elapsed().as_secs();
@@ -368,360 +368,361 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, params: &StatusBarRender
                 ));
             }
         }
-        }
+    }
 
-        if let Some(metrics) = metrics_from_turn(params.turn_activity) {
-            let hud = format_spawn_hud(&metrics, &params.spawn_hud_caps);
-            let hud_color = match spawn_hud_severity(&metrics, &params.spawn_hud_caps) {
-                SpawnHudSeverity::Error => Color::Rgb(239, 83, 80),
-                SpawnHudSeverity::Warn => Color::Rgb(255, 200, 80),
-                SpawnHudSeverity::Muted => Color::Rgb(120, 130, 150),
-            };
-            left_spans.push(Span::styled(hud, Style::default().fg(hud_color)));
-        }
+    if let Some(metrics) = metrics_from_turn(params.turn_activity) {
+        let hud = format_spawn_hud(&metrics, &params.spawn_hud_caps);
+        let hud_color = match spawn_hud_severity(&metrics, &params.spawn_hud_caps) {
+            SpawnHudSeverity::Error => Color::Rgb(239, 83, 80),
+            SpawnHudSeverity::Warn => Color::Rgb(255, 200, 80),
+            SpawnHudSeverity::Muted => Color::Rgb(120, 130, 150),
+        };
+        left_spans.push(Span::styled(hud, Style::default().fg(hud_color)));
+    }
 
-        if let Some(pause) = format_spawn_pause_chip() {
-            left_spans.push(Span::styled(
-                pause,
-                Style::default()
-                    .fg(Color::Rgb(255, 200, 80))
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
+    if let Some(pause) = format_spawn_pause_chip() {
+        left_spans.push(Span::styled(
+            pause,
+            Style::default()
+                .fg(Color::Rgb(255, 200, 80))
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
 
+    left_spans.push(Span::styled(
+        "│",
+        Style::default().fg(Color::Rgb(50, 50, 65)),
+    ));
+
+    if let Some(overlay) = params.document_overlay.as_ref() {
+        left_spans.push(Span::styled(
+            format!(
+                " {} {} ",
+                overlay.icon.as_str(),
+                unicode_trunc(overlay.title.as_str(), 28)
+            ),
+            Style::default()
+                .fg(overlay.accent)
+                .add_modifier(Modifier::BOLD),
+        ));
         left_spans.push(Span::styled(
             "│",
             Style::default().fg(Color::Rgb(50, 50, 65)),
         ));
+    }
 
-        if let Some(overlay) = params.document_overlay.as_ref() {
-            left_spans.push(Span::styled(
-                format!(" {} {} ", overlay.icon.as_str(), unicode_trunc(overlay.title.as_str(), 28)),
-                Style::default()
-                    .fg(overlay.accent)
-                    .add_modifier(Modifier::BOLD),
-            ));
-            left_spans.push(Span::styled(
-                "│",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-        }
-
-        if let Some(chip) = params.goal_status_chip {
-            left_spans.push(Span::styled(
-                format!(" {} ", chip.label),
-                goal_status_chip_style(chip.status),
-            ));
-            left_spans.push(Span::styled(
-                "│",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-        }
-
-        // Model name
+    if let Some(chip) = params.goal_status_chip {
         left_spans.push(Span::styled(
-            format!(" {} ", params.model_name),
-            params.theme.status_bar_model,
+            format!(" {} ", chip.label),
+            goal_status_chip_style(chip.status),
         ));
+        left_spans.push(Span::styled(
+            "│",
+            Style::default().fg(Color::Rgb(50, 50, 65)),
+        ));
+    }
 
-        // Token count with color threshold.
-        // When context window is known, show a watermark: `12.4k / 200k (7%)`.
-        // Color: green → yellow → red at 50% / 80% of context window.
-        let ctx_pct = params
-            .context_window
-            .and_then(|cw| context_usage_ratio(params.total_tokens, Some(cw)));
-        let token_style = if ctx_pct.is_some_and(|p| p > 0.80) || params.total_tokens > 100_000 {
-            Style::default().fg(Color::Red)
-        } else if ctx_pct.is_some_and(|p| p > 0.50) || params.total_tokens > 50_000 {
-            Style::default().fg(Color::Yellow)
-        } else {
-            params.theme.status_bar_tokens
-        };
-        let token_display = if let (Some(cw), Some(pct)) = (params.context_window, ctx_pct) {
-            format!(
-                " {}/{} ({:.0}%)",
-                format_token_count(params.total_tokens),
-                format_token_count(cw),
-                pct * 100.0
-            )
-        } else {
-            format!(" {}", format_token_count(params.total_tokens))
-        };
-        left_spans.push(Span::styled(token_display, token_style));
+    // Model name
+    left_spans.push(Span::styled(
+        format!(" {} ", params.model_name),
+        params.theme.status_bar_model,
+    ));
 
-        // Cost with color threshold
-        let cost_style = if params.session_cost >= 1.0 {
-            Style::default().fg(Color::Red)
-        } else if params.session_cost >= 0.10 {
-            Style::default().fg(Color::Yellow)
-        } else {
-            params.theme.status_bar_cost
+    // Token count with color threshold.
+    // When context window is known, show a watermark: `12.4k / 200k (7%)`.
+    // Color: green → yellow → red at 50% / 80% of context window.
+    let ctx_pct = params
+        .context_window
+        .and_then(|cw| context_usage_ratio(params.total_tokens, Some(cw)));
+    let token_style = if ctx_pct.is_some_and(|p| p > 0.80) || params.total_tokens > 100_000 {
+        Style::default().fg(Color::Red)
+    } else if ctx_pct.is_some_and(|p| p > 0.50) || params.total_tokens > 50_000 {
+        Style::default().fg(Color::Yellow)
+    } else {
+        params.theme.status_bar_tokens
+    };
+    let token_display = if let (Some(cw), Some(pct)) = (params.context_window, ctx_pct) {
+        format!(
+            " {}/{} ({:.0}%)",
+            format_token_count(params.total_tokens),
+            format_token_count(cw),
+            pct * 100.0
+        )
+    } else {
+        format!(" {}", format_token_count(params.total_tokens))
+    };
+    left_spans.push(Span::styled(token_display, token_style));
+
+    // Cost with color threshold
+    let cost_style = if params.session_cost >= 1.0 {
+        Style::default().fg(Color::Red)
+    } else if params.session_cost >= 0.10 {
+        Style::default().fg(Color::Yellow)
+    } else {
+        params.theme.status_bar_cost
+    };
+    left_spans.push(Span::styled(
+        format!(" ${:.4}", params.session_cost),
+        cost_style,
+    ));
+
+    // ── Context pressure gauge ───────────────────────────────────
+    if params.context_window.is_some() {
+        left_spans.push(Span::styled(
+            " │ ",
+            Style::default().fg(Color::Rgb(50, 50, 65)),
+        ));
+        let gauge_spans =
+            build_context_gauge(params.total_tokens, params.context_window.unwrap_or(0));
+        left_spans.extend(gauge_spans);
+    }
+
+    if let Some(presence) = params.voice_presence {
+        left_spans.push(Span::styled(
+            " │ ",
+            Style::default().fg(Color::Rgb(50, 50, 65)),
+        ));
+        let style = match presence {
+            VoicePresenceState::Recording { .. } => Style::default()
+                .fg(Color::Rgb(30, 20, 20))
+                .bg(Color::Rgb(240, 110, 90))
+                .add_modifier(Modifier::BOLD),
+            VoicePresenceState::Speaking => Style::default()
+                .fg(Color::Rgb(10, 24, 38))
+                .bg(Color::Rgb(120, 210, 255))
+                .add_modifier(Modifier::BOLD),
+            VoicePresenceState::Listening => Style::default()
+                .fg(Color::Rgb(18, 32, 26))
+                .bg(Color::Rgb(120, 225, 165))
+                .add_modifier(Modifier::BOLD),
         };
         left_spans.push(Span::styled(
-            format!(" ${:.4}", params.session_cost),
-            cost_style,
+            format_voice_presence_badge(presence, params.voice_presence_frame_idx),
+            style,
         ));
-
-        // ── Context pressure gauge ───────────────────────────────────
-        if params.context_window.is_some() {
+    }
+    if !params.active_subagents.is_empty() {
+        left_spans.push(Span::styled(
+            " │ ",
+            Style::default().fg(Color::Rgb(50, 50, 65)),
+        ));
+        left_spans.push(Span::styled(
+            format!(" DG {} ", params.active_subagents.len()),
+            Style::default()
+                .fg(Color::Rgb(10, 24, 38))
+                .bg(Color::Rgb(95, 170, 255))
+                .add_modifier(Modifier::BOLD),
+        ));
+        if let Some(summary) = format_subagent_status_summary(params.active_subagents) {
             left_spans.push(Span::styled(
-                " │ ",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-            let gauge_spans =
-                build_context_gauge(params.total_tokens, params.context_window.unwrap_or(0));
-            left_spans.extend(gauge_spans);
-        }
-
-        if let Some(presence) = params.voice_presence {
-            left_spans.push(Span::styled(
-                " │ ",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-            let style = match presence {
-                VoicePresenceState::Recording { .. } => Style::default()
-                    .fg(Color::Rgb(30, 20, 20))
-                    .bg(Color::Rgb(240, 110, 90))
-                    .add_modifier(Modifier::BOLD),
-                VoicePresenceState::Speaking => Style::default()
-                    .fg(Color::Rgb(10, 24, 38))
-                    .bg(Color::Rgb(120, 210, 255))
-                    .add_modifier(Modifier::BOLD),
-                VoicePresenceState::Listening => Style::default()
-                    .fg(Color::Rgb(18, 32, 26))
-                    .bg(Color::Rgb(120, 225, 165))
-                    .add_modifier(Modifier::BOLD),
-            };
-            left_spans.push(Span::styled(
-                format_voice_presence_badge(presence, params.voice_presence_frame_idx),
-                style,
-            ));
-        }
-        if !params.active_subagents.is_empty() {
-            left_spans.push(Span::styled(
-                " │ ",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-            left_spans.push(Span::styled(
-                format!(" DG {} ", params.active_subagents.len()),
+                format!(" {summary} "),
                 Style::default()
-                    .fg(Color::Rgb(10, 24, 38))
-                    .bg(Color::Rgb(95, 170, 255))
-                    .add_modifier(Modifier::BOLD),
+                    .fg(Color::Rgb(165, 205, 245))
+                    .add_modifier(Modifier::DIM),
             ));
-            if let Some(summary) = format_subagent_status_summary(params.active_subagents) {
-                left_spans.push(Span::styled(
-                    format!(" {summary} "),
-                    Style::default()
-                        .fg(Color::Rgb(165, 205, 245))
-                        .add_modifier(Modifier::DIM),
-                ));
-            }
         }
-        if !params.background_tasks_active.is_empty() {
+    }
+    if !params.background_tasks_active.is_empty() {
+        left_spans.push(Span::styled(
+            " │ ",
+            Style::default().fg(Color::Rgb(50, 50, 65)),
+        ));
+        left_spans.push(Span::styled(
+            format!(" BG {} ", params.background_tasks_active.len()),
+            Style::default()
+                .fg(Color::Rgb(20, 20, 28))
+                .bg(Color::Rgb(110, 180, 255))
+                .add_modifier(Modifier::BOLD),
+        ));
+        if let Some(summary) = format_background_status_summary(params.background_tasks_active) {
             left_spans.push(Span::styled(
-                " │ ",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
+                format!(" {summary} "),
+                Style::default()
+                    .fg(Color::Rgb(180, 220, 255))
+                    .add_modifier(Modifier::DIM),
             ));
-            left_spans.push(Span::styled(
-                format!(" BG {} ", params.background_tasks_active.len()),
+        }
+    }
+
+    // ── Steering indicator ────────────────────────────────────────────
+    // Show pending count in amber, or a brief "applied" flash in green
+    // (fades after 3 seconds).
+    if params.pending_steer_count > 0 {
+        left_spans.push(Span::styled(
+            " │ ",
+            Style::default().fg(Color::Rgb(50, 50, 65)),
+        ));
+        left_spans.push(Span::styled(
+            format!(" ⛵ {} pending ", params.pending_steer_count),
+            Style::default()
+                .fg(Color::Rgb(20, 20, 28))
+                .bg(Color::Rgb(255, 190, 50))
+                .add_modifier(Modifier::BOLD),
+        ));
+    } else if params
+        .steer_applied_at
+        .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(4))
+    {
+        left_spans.push(Span::styled(
+            " │ ",
+            Style::default().fg(Color::Rgb(50, 50, 65)),
+        ));
+        left_spans.push(Span::styled(
+            " ⛵ applied ",
+            Style::default()
+                .fg(Color::Rgb(18, 32, 26))
+                .bg(Color::Rgb(100, 215, 140))
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    // ── Shadow Judge indicator ────────────────────────────────────────
+    // Show a compact " SJ " badge when the completion oracle is active.
+    if params.shadow_judge_enabled {
+        left_spans.push(Span::styled(
+            " │ ",
+            Style::default().fg(Color::Rgb(50, 50, 65)),
+        ));
+        left_spans.push(Span::styled(
+            " SJ ",
+            Style::default()
+                .fg(Color::Rgb(18, 32, 26))
+                .bg(Color::Rgb(130, 200, 255))
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+    if params
+        .shadow_judge_intervention_at
+        .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(10))
+    {
+        let confidence = params
+            .shadow_judge_intervention_confidence
+            .map(|c| (c * 100.0).clamp(0.0, 100.0));
+        let reason = params
+            .shadow_judge_intervention_text
+            .map(|text| edgecrab_core::safe_truncate(text, 42).to_string())
+            .unwrap_or_else(|| "continuation requested".to_string());
+        left_spans.push(Span::styled(
+            " │ ",
+            Style::default().fg(Color::Rgb(50, 50, 65)),
+        ));
+        left_spans.push(Span::styled(
+            if let Some(conf) = confidence {
+                format!(" SJ veto {conf:.0}%: {reason} ")
+            } else {
+                format!(" SJ veto: {reason} ")
+            },
+            Style::default()
+                .fg(Color::Rgb(30, 22, 8))
+                .bg(Color::Rgb(255, 200, 90))
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
+    // Right side: keyboard hints + turn counter
+    let mut right_spans = Vec::new();
+    if params.turn_count > 0 {
+        right_spans.push(Span::styled(
+            format!(" turn {} ", params.turn_count),
+            Style::default().fg(Color::Rgb(80, 90, 110)),
+        ));
+        right_spans.push(Span::styled(
+            "│",
+            Style::default().fg(Color::Rgb(50, 50, 65)),
+        ));
+    }
+    if params.scroll_offset > 0 {
+        right_spans.push(Span::styled(
+            format!(" ↑SCROLLED  ^G=↓  ↕scroll  {} ", params.paging_key_hint),
+            Style::default()
+                .fg(Color::Rgb(255, 210, 50))
+                .add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        // ── Mode pill ─────────────────────────────────────────────────────
+        // Always visible so the user knows the active mode and the key to
+        // switch.  SCROLL (green) = mouse capture on, wheel scrolls output.
+        //           SELECT (amber) = mouse capture off, native drag=copy.
+        if params.mouse_capture_enabled {
+            right_spans.push(Span::styled(
+                " SCROLL ",
                 Style::default()
                     .fg(Color::Rgb(20, 20, 28))
-                    .bg(Color::Rgb(110, 180, 255))
+                    .bg(Color::Rgb(60, 185, 105))
                     .add_modifier(Modifier::BOLD),
             ));
-            if let Some(summary) = format_background_status_summary(params.background_tasks_active) {
-                left_spans.push(Span::styled(
-                    format!(" {summary} "),
-                    Style::default()
-                        .fg(Color::Rgb(180, 220, 255))
-                        .add_modifier(Modifier::DIM),
-                ));
-            }
-        }
-
-        // ── Steering indicator ────────────────────────────────────────────
-        // Show pending count in amber, or a brief "applied" flash in green
-        // (fades after 3 seconds).
-        if params.pending_steer_count > 0 {
-            left_spans.push(Span::styled(
-                " │ ",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-            left_spans.push(Span::styled(
-                format!(" ⛵ {} pending ", params.pending_steer_count),
+        } else {
+            right_spans.push(Span::styled(
+                " SELECT ",
                 Style::default()
                     .fg(Color::Rgb(20, 20, 28))
-                    .bg(Color::Rgb(255, 190, 50))
-                    .add_modifier(Modifier::BOLD),
-            ));
-        } else if params
-            .steer_applied_at
-            .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(4))
-        {
-            left_spans.push(Span::styled(
-                " │ ",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-            left_spans.push(Span::styled(
-                " ⛵ applied ",
-                Style::default()
-                    .fg(Color::Rgb(18, 32, 26))
-                    .bg(Color::Rgb(100, 215, 140))
+                    .bg(Color::Rgb(255, 200, 50))
                     .add_modifier(Modifier::BOLD),
             ));
         }
-
-        // ── Shadow Judge indicator ────────────────────────────────────────
-        // Show a compact " SJ " badge when the completion oracle is active.
-        if params.shadow_judge_enabled {
-            left_spans.push(Span::styled(
-                " │ ",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-            left_spans.push(Span::styled(
-                " SJ ",
-                Style::default()
-                    .fg(Color::Rgb(18, 32, 26))
-                    .bg(Color::Rgb(130, 200, 255))
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
-        if params
-            .shadow_judge_intervention_at
-            .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(10))
-        {
-            let confidence = params
-                .shadow_judge_intervention_confidence
-                .map(|c| (c * 100.0).clamp(0.0, 100.0));
-            let reason = params
-                .shadow_judge_intervention_text
-                .map(|text| edgecrab_core::safe_truncate(text, 42).to_string())
-                .unwrap_or_else(|| "continuation requested".to_string());
-            left_spans.push(Span::styled(
-                " │ ",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-            left_spans.push(Span::styled(
-                if let Some(conf) = confidence {
-                    format!(" SJ veto {conf:.0}%: {reason} ")
-                } else {
-                    format!(" SJ veto: {reason} ")
-                },
-                Style::default()
-                    .fg(Color::Rgb(30, 22, 8))
-                    .bg(Color::Rgb(255, 200, 90))
-                    .add_modifier(Modifier::BOLD),
-            ));
-        }
-
-        // Right side: keyboard hints + turn counter
-        let mut right_spans = Vec::new();
-        if params.turn_count > 0 {
+        // ── State-specific hints ──────────────────────────────────────────
+        if !params.mouse_capture_enabled {
             right_spans.push(Span::styled(
-                format!(" turn {} ", params.turn_count),
-                Style::default().fg(Color::Rgb(80, 90, 110)),
-            ));
-            right_spans.push(Span::styled(
-                "│",
-                Style::default().fg(Color::Rgb(50, 50, 65)),
-            ));
-        }
-        if params.scroll_offset > 0 {
-            right_spans.push(Span::styled(
-                format!(
-                    " ↑SCROLLED  ^G=↓  ↕scroll  {} ",
-                    params.paging_key_hint
-                ),
+                " drag=copy  F6=scroll  Tab=complete  ^C=cancel ",
                 Style::default()
                     .fg(Color::Rgb(255, 210, 50))
                     .add_modifier(Modifier::BOLD),
             ));
+        } else if params.clarify_pending {
+            // Agent is awaiting a reply — emphasise the prompt so users know
+            // their next Enter submits an answer, not a new conversation turn.
+            right_spans.push(Span::styled(
+                " ↵=send reply  ^C=cancel  ↕scroll ",
+                Style::default()
+                    .fg(Color::Rgb(255, 220, 80))
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else if params.is_processing {
+            right_spans.push(Span::styled(
+                " ^C=cancel  ^S=steer  ↕scroll ",
+                Style::default().fg(Color::Rgb(70, 75, 95)),
+            ));
+        } else if matches!(params.editor_mode, StatusBarEditorMode::ComposeInsert) {
+            right_spans.push(Span::styled(
+                " COMPOSE ",
+                Style::default()
+                    .fg(Color::Rgb(20, 20, 28))
+                    .bg(Color::Rgb(90, 200, 150))
+                    .add_modifier(Modifier::BOLD),
+            ));
+            right_spans.push(Span::styled(
+                " INSERT  ↵=newline  ^S=send  Esc=normal ",
+                Style::default().fg(Color::Rgb(90, 210, 170)),
+            ));
+        } else if matches!(params.editor_mode, StatusBarEditorMode::ComposeNormal) {
+            right_spans.push(Span::styled(
+                " COMPOSE ",
+                Style::default()
+                    .fg(Color::Rgb(20, 20, 28))
+                    .bg(Color::Rgb(255, 191, 0))
+                    .add_modifier(Modifier::BOLD),
+            ));
+            right_spans.push(Span::styled(
+                params.compose_normal_hint,
+                Style::default().fg(Color::Rgb(255, 210, 80)),
+            ));
+        } else if !params.active_skills.is_empty() {
+            // Show active skill names so the user knows which skills are loaded.
+            // Typing /skill_name again deactivates; /skills opens the browser.
+            let names = params.active_skills.join(" + ");
+            right_spans.push(Span::styled(
+                format!(" 📚 {names}  F6=select  /skill off  ^C=cancel "),
+                Style::default()
+                    .fg(Color::Rgb(100, 210, 120))
+                    .add_modifier(Modifier::BOLD),
+            ));
         } else {
-            // ── Mode pill ─────────────────────────────────────────────────────
-            // Always visible so the user knows the active mode and the key to
-            // switch.  SCROLL (green) = mouse capture on, wheel scrolls output.
-            //           SELECT (amber) = mouse capture off, native drag=copy.
-            if params.mouse_capture_enabled {
-                right_spans.push(Span::styled(
-                    " SCROLL ",
-                    Style::default()
-                        .fg(Color::Rgb(20, 20, 28))
-                        .bg(Color::Rgb(60, 185, 105))
-                        .add_modifier(Modifier::BOLD),
-                ));
+            let voice_hint = if params.voice_push_to_talk_key.is_empty() {
+                String::new()
             } else {
-                right_spans.push(Span::styled(
-                    " SELECT ",
-                    Style::default()
-                        .fg(Color::Rgb(20, 20, 28))
-                        .bg(Color::Rgb(255, 200, 50))
-                        .add_modifier(Modifier::BOLD),
-                ));
-            }
-            // ── State-specific hints ──────────────────────────────────────────
-            if !params.mouse_capture_enabled {
-                right_spans.push(Span::styled(
-                    " drag=copy  F6=scroll  Tab=complete  ^C=cancel ",
-                    Style::default()
-                        .fg(Color::Rgb(255, 210, 50))
-                        .add_modifier(Modifier::BOLD),
-                ));
-            } else if params.clarify_pending {
-                // Agent is awaiting a reply — emphasise the prompt so users know
-                // their next Enter submits an answer, not a new conversation turn.
-                right_spans.push(Span::styled(
-                    " ↵=send reply  ^C=cancel  ↕scroll ",
-                    Style::default()
-                        .fg(Color::Rgb(255, 220, 80))
-                        .add_modifier(Modifier::BOLD),
-                ));
-            } else if params.is_processing {
-                right_spans.push(Span::styled(
-                    " ^C=cancel  ^S=steer  ↕scroll ",
-                    Style::default().fg(Color::Rgb(70, 75, 95)),
-                ));
-            } else if matches!(params.editor_mode, StatusBarEditorMode::ComposeInsert) {
-                right_spans.push(Span::styled(
-                    " COMPOSE ",
-                    Style::default()
-                        .fg(Color::Rgb(20, 20, 28))
-                        .bg(Color::Rgb(90, 200, 150))
-                        .add_modifier(Modifier::BOLD),
-                ));
-                right_spans.push(Span::styled(
-                    " INSERT  ↵=newline  ^S=send  Esc=normal ",
-                    Style::default().fg(Color::Rgb(90, 210, 170)),
-                ));
-            } else if matches!(params.editor_mode, StatusBarEditorMode::ComposeNormal) {
-                right_spans.push(Span::styled(
-                    " COMPOSE ",
-                    Style::default()
-                        .fg(Color::Rgb(20, 20, 28))
-                        .bg(Color::Rgb(255, 191, 0))
-                        .add_modifier(Modifier::BOLD),
-                ));
-                right_spans.push(Span::styled(
-                    params.compose_normal_hint,
-                    Style::default().fg(Color::Rgb(255, 210, 80)),
-                ));
-            } else if !params.active_skills.is_empty() {
-                // Show active skill names so the user knows which skills are loaded.
-                // Typing /skill_name again deactivates; /skills opens the browser.
-                let names = params.active_skills.join(" + ");
-                right_spans.push(Span::styled(
-                    format!(" 📚 {names}  F6=select  /skill off  ^C=cancel "),
-                    Style::default()
-                        .fg(Color::Rgb(100, 210, 120))
-                        .add_modifier(Modifier::BOLD),
-                ));
-            } else {
-                let voice_hint = if params.voice_push_to_talk_key.is_empty() {
-                    String::new()
-                } else {
-                    format!(" {}=voice ", params.voice_push_to_talk_key.to_uppercase())
-                };
-                right_spans.push(Span::styled(
+                format!(" {}=voice ", params.voice_push_to_talk_key.to_uppercase())
+            };
+            right_spans.push(Span::styled(
                     format!(
                         " F6=select  F1=help  {}  F2=model  F3=skills  F7=vision{} Tab=complete  ^C=cancel ",
                         params.inline_compose_hint,
@@ -729,58 +730,59 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, params: &StatusBarRender
                     ),
                     Style::default().fg(Color::Rgb(70, 75, 95)),
                 ));
-            }
         }
-
-        // Build two-sided status bar
-        let right_line = Line::from(right_spans);
-        let right_text = right_line
-            .spans
-            .iter()
-            .map(|s| s.content.as_ref())
-            .collect::<String>();
-        // WHY .width() not .len(): multi-byte Unicode chars (↑↓↕ = 3 bytes, 📚 = 4 bytes)
-        // inflate .len() past the terminal column count, causing right_area.right() to
-        // exceed the ratatui buffer bounds → panic. UnicodeWidthStr gives display cols.
-        let right_width = (right_text.width() as u16).min(area.width);
-
-        let left_area = Rect {
-            width: area.width.saturating_sub(right_width),
-            ..area
-        };
-        let right_area = Rect {
-            x: area.x + area.width.saturating_sub(right_width),
-            width: right_width,
-            ..area
-        };
-
-        let status = Paragraph::new(Line::from(left_spans))
-            .style(Style::default().bg(Color::Rgb(30, 30, 38)));
-        frame.render_widget(status, left_area);
-
-        let right_status = Paragraph::new(right_line)
-            .style(Style::default().bg(Color::Rgb(30, 30, 38)))
-            .alignment(Alignment::Right);
-        frame.render_widget(right_status, right_area);
     }
 
+    // Build two-sided status bar
+    let right_line = Line::from(right_spans);
+    let right_text = right_line
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect::<String>();
+    // WHY .width() not .len(): multi-byte Unicode chars (↑↓↕ = 3 bytes, 📚 = 4 bytes)
+    // inflate .len() past the terminal column count, causing right_area.right() to
+    // exceed the ratatui buffer bounds → panic. UnicodeWidthStr gives display cols.
+    let right_width = (right_text.width() as u16).min(area.width);
+
+    let left_area = Rect {
+        width: area.width.saturating_sub(right_width),
+        ..area
+    };
+    let right_area = Rect {
+        x: area.x + area.width.saturating_sub(right_width),
+        width: right_width,
+        ..area
+    };
+
+    let status =
+        Paragraph::new(Line::from(left_spans)).style(Style::default().bg(Color::Rgb(30, 30, 38)));
+    frame.render_widget(status, left_area);
+
+    let right_status = Paragraph::new(right_line)
+        .style(Style::default().bg(Color::Rgb(30, 30, 38)))
+        .alignment(Alignment::Right);
+    frame.render_widget(right_status, right_area);
+}
+
 fn render_compact_status_bar_inner(frame: &mut Frame, area: Rect, params: &StatusBarRenderParams) {
-        let glyphs = params.terminal_glyph_profile;
-        let divider = " | ";
-        let state = if params.turn_activity.enabled
-            && matches!(params.turn_activity.phase, ShelfPhase::GeneratingTool)
-        {
-            params.turn_activity
-                .tool_summary()
-                .map(|s| {
-                    format!(
-                        "{} prep {}",
-                        compact_spinner_frame(params.shelf_spinner_frame, glyphs),
-                        s.primary_name.replace('_', " ")
-                    )
-                })
-                .unwrap_or_else(|| "prep tool".into())
-        } else {
+    let glyphs = params.terminal_glyph_profile;
+    let divider = " | ";
+    let state = if params.turn_activity.enabled
+        && matches!(params.turn_activity.phase, ShelfPhase::GeneratingTool)
+    {
+        params
+            .turn_activity
+            .tool_summary()
+            .map(|s| {
+                format!(
+                    "{} prep {}",
+                    compact_spinner_frame(params.shelf_spinner_frame, glyphs),
+                    s.primary_name.replace('_', " ")
+                )
+            })
+            .unwrap_or_else(|| "prep tool".into())
+    } else {
         match params.display_state {
             DisplayState::Idle => params
                 .goal_flash_status
@@ -834,104 +836,104 @@ fn render_compact_status_bar_inner(frame: &mut Frame, area: Rect, params: &Statu
             DisplayState::SecretCapture { .. } => "secret input".into(),
             DisplayState::ValueCapture { .. } => "editing".into(),
         }
-        };
-        let token_display = if let (Some(cw), Some(pct)) = (
-            params.context_window,
-            context_usage_ratio(params.total_tokens, params.context_window),
-        ) {
-            format!(
-                "{}/{} {:.0}%",
-                format_token_count(params.total_tokens),
-                format_token_count(cw),
-                pct * 100.0
-            )
+    };
+    let token_display = if let (Some(cw), Some(pct)) = (
+        params.context_window,
+        context_usage_ratio(params.total_tokens, params.context_window),
+    ) {
+        format!(
+            "{}/{} {:.0}%",
+            format_token_count(params.total_tokens),
+            format_token_count(cw),
+            pct * 100.0
+        )
+    } else {
+        format_token_count(params.total_tokens)
+    };
+    let mode = if params.mouse_capture_enabled {
+        "scroll"
+    } else {
+        "select"
+    };
+    let transport = if params.remote_terminal_session {
+        "ssh"
+    } else {
+        "local"
+    };
+    let profile = match params.terminal_ui_profile {
+        StatusBarUiProfile::Standard => "std",
+        StatusBarUiProfile::ReducedMotion => "calm",
+        StatusBarUiProfile::BasicCompat => "compat",
+    };
+    let right = format!(
+        "t{}{}{}{}",
+        params.turn_count,
+        divider,
+        mode,
+        if params.remote_terminal_session {
+            " ssh"
         } else {
-            format_token_count(params.total_tokens)
-        };
-        let mode = if params.mouse_capture_enabled {
-            "scroll"
+            ""
+        }
+    );
+    let goal_part = params
+        .goal_status_chip
+        .map(|chip| format!("{divider}{}", chip.label))
+        .unwrap_or_default();
+    let left = format!(
+        "{}{}{}{}{}{}{}${:.4}{}{}{}{}{}{}",
+        state,
+        goal_part,
+        divider,
+        edgecrab_core::safe_truncate(params.model_name, 18),
+        divider,
+        token_display,
+        divider,
+        params.session_cost,
+        divider,
+        transport,
+        divider,
+        profile,
+        if params.shadow_judge_enabled {
+            " | SJ"
         } else {
-            "select"
-        };
-        let transport = if params.remote_terminal_session {
-            "ssh"
+            ""
+        },
+        if params
+            .shadow_judge_intervention_at
+            .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(10))
+        {
+            " | SJ veto"
         } else {
-            "local"
-        };
-        let profile = match params.terminal_ui_profile {
-            StatusBarUiProfile::Standard => "std",
-            StatusBarUiProfile::ReducedMotion => "calm",
-            StatusBarUiProfile::BasicCompat => "compat",
-        };
-        let right = format!(
-            "t{}{}{}{}",
-            params.turn_count,
-            divider,
-            mode,
-            if params.remote_terminal_session {
-                " ssh"
-            } else {
-                ""
-            }
-        );
-        let goal_part = params
-            .goal_status_chip
-            .map(|chip| format!("{divider}{}", chip.label))
-            .unwrap_or_default();
-        let left = format!(
-            "{}{}{}{}{}{}{}${:.4}{}{}{}{}{}{}",
-            state,
-            goal_part,
-            divider,
-            edgecrab_core::safe_truncate(params.model_name, 18),
-            divider,
-            token_display,
-            divider,
-            params.session_cost,
-            divider,
-            transport,
-            divider,
-            profile,
-            if params.shadow_judge_enabled {
-                " | SJ"
-            } else {
-                ""
-            },
-            if params
-                .shadow_judge_intervention_at
-                .is_some_and(|t| t.elapsed() < std::time::Duration::from_secs(10))
-            {
-                " | SJ veto"
-            } else {
-                ""
-            },
-        );
-        let right_width = right.width().min(area.width as usize) as u16;
-        let left_area = Rect {
-            width: area.width.saturating_sub(right_width),
-            ..area
-        };
-        let right_area = Rect {
-            x: area.right().saturating_sub(right_width),
-            width: right_width,
-            ..area
-        };
-        let bg = Style::default().bg(Color::Rgb(30, 30, 38));
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                edgecrab_core::safe_truncate(&left, left_area.width as usize),
-                bg.fg(Color::Rgb(200, 205, 215)),
-            ))
-            .style(bg),
-            left_area,
-        );
-        frame.render_widget(
-            Paragraph::new(Span::styled(
-                edgecrab_core::safe_truncate(&right, right_area.width as usize),
-                bg.fg(Color::Rgb(120, 130, 150)),
-            ))
-            .style(bg)
-            .alignment(Alignment::Right),
-            right_area,
-        );
-    }
+            ""
+        },
+    );
+    let right_width = right.width().min(area.width as usize) as u16;
+    let left_area = Rect {
+        width: area.width.saturating_sub(right_width),
+        ..area
+    };
+    let right_area = Rect {
+        x: area.right().saturating_sub(right_width),
+        width: right_width,
+        ..area
+    };
+    let bg = Style::default().bg(Color::Rgb(30, 30, 38));
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            edgecrab_core::safe_truncate(&left, left_area.width as usize),
+            bg.fg(Color::Rgb(200, 205, 215)),
+        ))
+        .style(bg),
+        left_area,
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            edgecrab_core::safe_truncate(&right, right_area.width as usize),
+            bg.fg(Color::Rgb(120, 130, 150)),
+        ))
+        .style(bg)
+        .alignment(Alignment::Right),
+        right_area,
+    );
+}

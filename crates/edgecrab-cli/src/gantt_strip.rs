@@ -69,8 +69,8 @@ pub fn render_gantt_lines(
     let bar = |start: u64, end: u64| -> String {
         let s = ((start.saturating_sub(global_start) as f64 / total as f64) * bar_width as f64)
             .floor() as usize;
-        let e = ((end.saturating_sub(global_start) as f64 / total as f64) * bar_width as f64)
-            .ceil() as usize;
+        let e = ((end.saturating_sub(global_start) as f64 / total as f64) * bar_width as f64).ceil()
+            as usize;
         let e = e.min(bar_width);
         let fill = e.saturating_sub(s).max(1);
         let bar = format!("{}{}", " ".repeat(s), "█".repeat(fill));

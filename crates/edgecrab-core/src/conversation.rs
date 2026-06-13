@@ -330,8 +330,7 @@ fn forward_process_watch_event(
             });
         }
         _ => {
-            let notice =
-                edgecrab_tools::process_table::format_watch_activity_notice(&event);
+            let notice = edgecrab_tools::process_table::format_watch_activity_notice(&event);
             let _ = ev_tx.send(crate::StreamEvent::ActivityNotice(notice));
         }
     }
@@ -616,9 +615,8 @@ struct DispatchContext {
     /// Post-write LSP gate for file mutation tools.
     lsp_gate: Option<Arc<dyn edgecrab_tools::LspGate>>,
     /// Shared progress channel for all tools in this dispatch batch (parallel-safe).
-    tool_progress_tx: Option<
-        tokio::sync::mpsc::UnboundedSender<edgecrab_tools::ToolProgressUpdate>,
-    >,
+    tool_progress_tx:
+        Option<tokio::sync::mpsc::UnboundedSender<edgecrab_tools::ToolProgressUpdate>>,
     /// Forward background process watch hits to the UI stream.
     watch_notification_tx:
         Option<tokio::sync::mpsc::UnboundedSender<edgecrab_tools::process_table::WatchEvent>>,
@@ -4020,8 +4018,9 @@ async fn api_call_with_retry(
                             | edgequake_llm::LlmError::InvalidRequest(_)
                             | edgequake_llm::LlmError::ModelNotFound(_)
                             | edgequake_llm::LlmError::TokenLimitExceeded { .. }
-                    ) || crate::multimodal_tool_content::is_tool_message_order_error(&e.to_string())
-                    {
+                    ) || crate::multimodal_tool_content::is_tool_message_order_error(
+                        &e.to_string(),
+                    ) {
                         break 'attempt_loop;
                     }
                     // FP19: For rate-limit errors, parse the provider-stated

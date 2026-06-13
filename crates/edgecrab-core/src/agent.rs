@@ -115,9 +115,8 @@ pub struct Agent {
     pub(crate) steer_tx: crate::steering::SteeringSender,
     pub(crate) steer_rx: std::sync::Mutex<Option<crate::steering::SteeringReceiver>>,
     /// Stream sink active only while `execute_loop` is running (SteerPending events).
-    pub(crate) steer_event_tx: std::sync::Mutex<
-        Option<tokio::sync::mpsc::UnboundedSender<crate::StreamEvent>>,
-    >,
+    pub(crate) steer_event_tx:
+        std::sync::Mutex<Option<tokio::sync::mpsc::UnboundedSender<crate::StreamEvent>>>,
     /// Count of steering events queued but not yet injected at a tool boundary.
     pub(crate) steer_pending: std::sync::atomic::AtomicUsize,
 }
@@ -2314,9 +2313,7 @@ impl std::fmt::Debug for StreamEvent {
                 write!(f, "ActivityNotice({preview:?}…)")
             }
             Self::BackgroundProcessTail {
-                process_id,
-                tail,
-                ..
+                process_id, tail, ..
             } => {
                 let preview = &tail[..tail.len().min(40)];
                 write!(f, "BackgroundProcessTail({process_id}, {preview:?}…)")

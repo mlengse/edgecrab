@@ -214,8 +214,7 @@ impl ModelCatalog {
         let model_name =
             edgecrab_tools::vision_models::normalize_model_name(provider_raw, model_tail);
         let catalog_provider = Self::catalog_provider_id(provider_raw);
-        let runtime_provider =
-            edgecrab_tools::vision_models::normalize_provider_name(provider_raw);
+        let runtime_provider = edgecrab_tools::vision_models::normalize_provider_name(provider_raw);
         if catalog_provider.is_empty() || model_name.is_empty() {
             return None;
         }

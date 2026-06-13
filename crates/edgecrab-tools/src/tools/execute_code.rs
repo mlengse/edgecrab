@@ -1240,8 +1240,8 @@ async fn capture_stderr(
     mut stderr: tokio::process::ChildStderr,
     progress: Option<std::sync::Arc<crate::tool_progress_tail::ToolProgressTail>>,
 ) -> Result<String, std::io::Error> {
-    use tokio::io::AsyncReadExt;
     use std::sync::Arc;
+    use tokio::io::AsyncReadExt;
 
     let mut capture = HeadOnlyCapture::new(MAX_STDERR_BYTES);
     let mut buf = [0u8; 4096];
@@ -1591,7 +1591,8 @@ async fn execute_remote(
         )
     );
 
-    let (reporter, options) = crate::tool_progress_tail::ToolProgressTail::reporter_and_options(ctx);
+    let (reporter, options) =
+        crate::tool_progress_tail::ToolProgressTail::reporter_and_options(ctx);
 
     let output = backend
         .execute(
@@ -1875,14 +1876,13 @@ impl ToolHandler for ExecuteCodeToolReal {
                 .envs(&child_env);
             configure_process_group(&mut compile_cmd);
 
-            let compile =
-                run_command_capture(
-                    compile_cmd,
-                    timeout_secs,
-                    ctx.cancel.clone(),
-                    progress_reporter.clone(),
-                )
-                .await?;
+            let compile = run_command_capture(
+                compile_cmd,
+                timeout_secs,
+                ctx.cancel.clone(),
+                progress_reporter.clone(),
+            )
+            .await?;
             match compile.outcome {
                 ProcessOutcome::Completed(0) => {}
                 ProcessOutcome::Completed(_) => {

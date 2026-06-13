@@ -96,7 +96,11 @@ fn unix_now() -> f64 {
         .unwrap_or(0.0)
 }
 
-fn snapshot_to_file(snapshot: &SpawnTurnSnapshot, session_id: &str, finished_at: f64) -> SpawnTreeFile {
+fn snapshot_to_file(
+    snapshot: &SpawnTurnSnapshot,
+    session_id: &str,
+    finished_at: f64,
+) -> SpawnTreeFile {
     let duration = snapshot.total_duration_secs as f64;
     let started_at = if duration > 0.0 {
         Some((finished_at - duration).max(0.0))

@@ -6,7 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::ListItem;
 
-use edgecrab_proxy::{ALL_RECIPES, BuiltinRecipe, probe_oauth_auth, AuthProbe};
+use edgecrab_proxy::{ALL_RECIPES, AuthProbe, BuiltinRecipe, probe_oauth_auth};
 
 use crate::proxy_cmd::ProxySession;
 use crate::proxy_hub::{self, PROXY_ACCENT};
@@ -75,7 +75,11 @@ impl ProxySetupTui {
         format!(
             "Listen {} · token {} · {} alias(es) · {} upstream(s)",
             proxy_hub::listen_url(cfg),
-            if session.token_present() { "ok" } else { "missing" },
+            if session.token_present() {
+                "ok"
+            } else {
+                "missing"
+            },
             cfg.model_aliases.len(),
             cfg.forward_upstreams.len()
         )
@@ -173,10 +177,7 @@ impl ProxySetupTui {
             }),
             Line::from(""),
             Line::from("After enable, start in a terminal:"),
-            Line::from(format!(
-                "  edgecrab proxy start --provider {}",
-                recipe.key
-            )),
+            Line::from(format!("  edgecrab proxy start --provider {}", recipe.key)),
             Line::from(format!(
                 "  Clients: OPENAI_API_BASE={}",
                 session
@@ -197,7 +198,9 @@ impl ProxySetupTui {
     }
 
     pub fn confirm_lines(&self) -> Vec<Line<'static>> {
-        let recipe = self.pending_recipe.unwrap_or_else(|| self.selected_recipe());
+        let recipe = self
+            .pending_recipe
+            .unwrap_or_else(|| self.selected_recipe());
         let auth = proxy_hub::format_recipe_auth_line(recipe);
         let mut lines = vec![
             Line::from(Span::styled(
@@ -297,7 +300,9 @@ impl ProxySetupTui {
                 ProxySetupAction::Redraw
             }
             KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y') => {
-                let recipe = self.pending_recipe.unwrap_or_else(|| self.selected_recipe());
+                let recipe = self
+                    .pending_recipe
+                    .unwrap_or_else(|| self.selected_recipe());
                 match ProxySession::load() {
                     Ok(mut session) => match proxy_hub::enable_preset(&mut session, recipe) {
                         Ok(msg) => {

@@ -13,9 +13,9 @@ use axum::response::IntoResponse;
 use axum::routing::{get, post};
 use edgecrab_core::{ForwardAdapterKind, ProxyConfig};
 
-use crate::http_client::enable_e2e_direct_http;
 use crate::backend::forwarder::build_forwarder_client;
-use crate::guide::{apply_recipe, RECIPE_XAI};
+use crate::guide::{RECIPE_XAI, apply_recipe};
+use crate::http_client::enable_e2e_direct_http;
 use crate::resolve::build_forward_adapters;
 use crate::server::{ProxyState, build_router};
 use reqwest::Client;
@@ -122,7 +122,9 @@ pub async fn spawn_xai_mock_stack() -> (String, String, UpstreamCapture) {
         .route("/v1/chat/completions", post(upstream_chat))
         .route("/v1/models", get(upstream_models))
         .with_state(capture.clone());
-    let upstream_listener = TcpListener::bind("127.0.0.1:0").await.expect("bind upstream");
+    let upstream_listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind upstream");
     let upstream_addr = upstream_listener.local_addr().expect("addr");
     let upstream_base = format!("http://{upstream_addr}/v1");
     tokio::spawn(async move {

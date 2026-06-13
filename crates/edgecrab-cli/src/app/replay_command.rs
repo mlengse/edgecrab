@@ -1,6 +1,5 @@
 //! `/replay` slash command — in-memory nav + disk list/load (Hermes `ops.ts` parity).
 
-
 use crate::transcript::OutputRole;
 
 use super::App;
@@ -14,20 +13,14 @@ impl App {
         if lower.starts_with("load ") {
             let path = raw[5..].trim();
             if path.is_empty() {
-                self.push_output(
-                    "usage: /replay load <path>",
-                    OutputRole::System,
-                );
+                self.push_output("usage: /replay load <path>", OutputRole::System);
                 return;
             }
             match crate::spawn_tree_store::load_snapshot(path) {
                 Ok(snapshot) => {
                     self.spawn_history.push_disk_snapshot(snapshot);
                     self.open_agents_replay(1);
-                    self.push_output(
-                        format!("Loaded spawn tree from {path}"),
-                        OutputRole::System,
-                    );
+                    self.push_output(format!("Loaded spawn tree from {path}"), OutputRole::System);
                 }
                 Err(err) => {
                     self.push_output(format!("replay load: {err}"), OutputRole::Error);
@@ -51,21 +44,16 @@ impl App {
 
             let mut lines = vec!["Archived spawn trees:".to_string()];
             for entry in &disk {
-                let ts = chrono::DateTime::<chrono::Utc>::from_timestamp(
-                    entry.finished_at as i64,
-                    0,
-                )
-                .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
-                .unwrap_or_else(|| "?".to_string());
+                let ts =
+                    chrono::DateTime::<chrono::Utc>::from_timestamp(entry.finished_at as i64, 0)
+                        .map(|dt| dt.format("%Y-%m-%d %H:%M UTC").to_string())
+                        .unwrap_or_else(|| "?".to_string());
                 let label = if entry.label.is_empty() {
                     format!("{} subagents", entry.count)
                 } else {
                     entry.label.clone()
                 };
-                lines.push(format!(
-                    "  {ts} · {}× · {label}",
-                    entry.count
-                ));
+                lines.push(format!("  {ts} · {}× · {label}", entry.count));
                 lines.push(format!("    {}", entry.path.display()));
             }
             if turn_count > 0 {

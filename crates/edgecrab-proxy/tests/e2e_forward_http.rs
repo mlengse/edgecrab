@@ -50,7 +50,8 @@ async fn spawn_forward_proxy(
 ) -> (String, tokio::task::JoinHandle<()>) {
     edgecrab_proxy::enable_e2e_direct_http();
     let mut cfg = ProxyConfig::default();
-    cfg.model_aliases.insert("fwd-model".into(), "forward:mock-up".into());
+    cfg.model_aliases
+        .insert("fwd-model".into(), "forward:mock-up".into());
     cfg.forward_upstreams.insert(
         "mock-up".into(),
         ForwardUpstreamConfig {
@@ -175,8 +176,10 @@ async fn e2e_default_forward_upstream_lists_models_via_upstream() {
     });
     tokio::time::sleep(Duration::from_millis(50)).await;
 
-    let mut cfg = ProxyConfig::default();
-    cfg.default_forward_upstream = Some("mock-up".into());
+    let mut cfg = ProxyConfig {
+        default_forward_upstream: Some("mock-up".into()),
+        ..Default::default()
+    };
     cfg.forward_upstreams.insert(
         "mock-up".into(),
         ForwardUpstreamConfig {
@@ -284,7 +287,12 @@ async fn e2e_forward_preserves_query_string() {
         .await
         .expect("request");
     assert_eq!(resp.status(), 200);
-    let uri = capture.request_uri.lock().expect("lock").clone().expect("uri");
+    let uri = capture
+        .request_uri
+        .lock()
+        .expect("lock")
+        .clone()
+        .expect("uri");
     assert!(uri.contains("stream=true"), "query not forwarded: {uri}");
     assert!(uri.contains("foo=bar"), "query not forwarded: {uri}");
 }

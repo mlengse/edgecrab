@@ -125,11 +125,7 @@ impl DdgsSettings {
     /// Python `region=` — omitted from HTTP when unset.
     pub fn region(&self) -> Option<&str> {
         let r = self.region.trim();
-        if r.is_empty() {
-            None
-        } else {
-            Some(r)
-        }
+        if r.is_empty() { None } else { Some(r) }
     }
 
     /// Engine try-order for this configuration (Python `ddgs.text(..., backend=...)` parity).

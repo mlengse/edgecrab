@@ -4,11 +4,11 @@ use std::net::SocketAddr;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Router;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, Method, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::any;
-use axum::Router;
 use serde::Deserialize;
 use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
@@ -106,7 +106,9 @@ async fn handle_oauth_callback(
     } else {
         (
             StatusCode::OK,
-            Html("<html><body><h1>Authorization received.</h1>You can close this tab.</body></html>"),
+            Html(
+                "<html><body><h1>Authorization received.</h1>You can close this tab.</body></html>",
+            ),
         )
             .into_response()
     }
@@ -182,10 +184,7 @@ impl LoopbackServer {
         })
     }
 
-    pub async fn wait_for_callback(
-        &self,
-        timeout: Duration,
-    ) -> Result<OAuthCallback, ProxyError> {
+    pub async fn wait_for_callback(&self, timeout: Duration) -> Result<OAuthCallback, ProxyError> {
         let deadline = tokio::time::Instant::now() + timeout;
         loop {
             {

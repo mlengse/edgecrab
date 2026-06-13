@@ -6,8 +6,8 @@ mod print;
 mod setup;
 
 use anyhow::{Context, Result, bail};
-use edgecrab_proxy::{ProxyRunOptions, client_snippet, resolve_recipe, run_server};
 use edgecrab_proxy::write_proxy_token;
+use edgecrab_proxy::{ProxyRunOptions, client_snippet, resolve_recipe, run_server};
 
 use crate::cli_args::{ProxyCommand, ProxyTokenCommand};
 
@@ -179,8 +179,8 @@ fn run_token(command: ProxyTokenCommand) -> Result<()> {
     let path = &session.token_path;
     match command {
         ProxyTokenCommand::Set { token } => {
-            let value = write_proxy_token(path, token.as_deref())
-                .map_err(|e| anyhow::anyhow!("{e}"))?;
+            let value =
+                write_proxy_token(path, token.as_deref()).map_err(|e| anyhow::anyhow!("{e}"))?;
             println!("Proxy token written to {}", path.display());
             println!("Use: Authorization: Bearer {value}");
         }
@@ -192,8 +192,8 @@ fn run_token(command: ProxyTokenCommand) -> Result<()> {
                 );
             }
             if show {
-                let value = edgecrab_proxy::load_proxy_token(path)
-                    .map_err(|e| anyhow::anyhow!("{e}"))?;
+                let value =
+                    edgecrab_proxy::load_proxy_token(path).map_err(|e| anyhow::anyhow!("{e}"))?;
                 println!("{value}");
             } else {
                 println!(

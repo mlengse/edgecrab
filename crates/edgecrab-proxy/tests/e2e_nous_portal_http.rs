@@ -50,7 +50,10 @@ async fn portal_refresh(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("");
     if refresh != "rt-test" {
-        return (StatusCode::BAD_REQUEST, axum::Json(serde_json::json!({"error": "bad_rt"})));
+        return (
+            StatusCode::BAD_REQUEST,
+            axum::Json(serde_json::json!({"error": "bad_rt"})),
+        );
     }
     let exp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

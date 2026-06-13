@@ -155,10 +155,9 @@ pub fn format_watch_activity_notice(event: &WatchEvent) -> String {
             "🔔 process {} watch disabled (rate limit)",
             event.process_id
         ),
-        WatchEventType::TailPreview => format!(
-            "📟 {} …\n{}",
-            event.process_id, event.matched_output
-        ),
+        WatchEventType::TailPreview => {
+            format!("📟 {} …\n{}", event.process_id, event.matched_output)
+        }
         WatchEventType::Exited => format!(
             "✅ process {} {}",
             event.process_id,
@@ -531,11 +530,7 @@ impl ProcessTable {
     }
 
     /// Attach a watch/tail notification sink (typically from the agent loop).
-    pub async fn set_watch_sink(
-        &self,
-        process_id: &str,
-        sink: mpsc::UnboundedSender<WatchEvent>,
-    ) {
+    pub async fn set_watch_sink(&self, process_id: &str, sink: mpsc::UnboundedSender<WatchEvent>) {
         if let Some(entry) = self.get_record(process_id) {
             let mut rec = entry.lock().await;
             rec.watch_sink = Some(sink.clone());
@@ -1261,7 +1256,13 @@ mod tests {
     fn watch_single_match() {
         let (tx, mut rx) = mpsc::unbounded_channel();
         let mut state = WatchState::new(vec!["error".to_string()]);
-        check_watch_patterns("compilation error: failed", "proc-1", "cargo build", &mut state, &tx);
+        check_watch_patterns(
+            "compilation error: failed",
+            "proc-1",
+            "cargo build",
+            &mut state,
+            &tx,
+        );
         let event = rx.try_recv().expect("should receive event");
         assert_eq!(event.process_id, "proc-1");
         assert_eq!(event.pattern, "error");
@@ -1295,7 +1296,13 @@ mod tests {
 
         // Fire WATCH_MAX_PER_WINDOW + 2 hits in rapid succession
         for i in 0..(WATCH_MAX_PER_WINDOW + 2) {
-            check_watch_patterns(&format!("error line {i}"), "proc-1", "cargo build", &mut state, &tx);
+            check_watch_patterns(
+                &format!("error line {i}"),
+                "proc-1",
+                "cargo build",
+                &mut state,
+                &tx,
+            );
         }
 
         // Drain events — should have at most WATCH_MAX_PER_WINDOW
@@ -1314,7 +1321,13 @@ mod tests {
 
         // Fill the rate window
         for i in 0..(WATCH_MAX_PER_WINDOW + 3) {
-            check_watch_patterns(&format!("error line {i}"), "proc-1", "cargo build", &mut state, &tx);
+            check_watch_patterns(
+                &format!("error line {i}"),
+                "proc-1",
+                "cargo build",
+                &mut state,
+                &tx,
+            );
         }
         // Drain all events from first window
         while rx.try_recv().is_ok() {}
@@ -1386,7 +1399,13 @@ mod tests {
 
         // Fill the first window
         for i in 0..WATCH_MAX_PER_WINDOW {
-            check_watch_patterns(&format!("error line {i}"), "proc-1", "cargo build", &mut state, &tx);
+            check_watch_patterns(
+                &format!("error line {i}"),
+                "proc-1",
+                "cargo build",
+                &mut state,
+                &tx,
+            );
         }
         while rx.try_recv().is_ok() {}
 

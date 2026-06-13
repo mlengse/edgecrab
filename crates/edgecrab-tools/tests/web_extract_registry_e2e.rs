@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+#![allow(dead_code)]
 //! E2E: Hermes-style registry dispatch for `web_extract` paid backends.
 
 mod common;

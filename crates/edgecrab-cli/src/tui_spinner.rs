@@ -60,13 +60,18 @@ pub fn shelf_spinner_glyph(state: &TurnActivityState, frame: usize, animate: boo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::time::Instant;
 
     #[test]
     fn tool_phase_uses_bar_spinner() {
         let mut state = TurnActivityState::new(true);
         state.set_phase(ShelfPhase::ToolExec);
-        state.on_tool_exec("t1".into(), "terminal".into(), "{}".into(), "build".into(), 1);
+        state.on_tool_exec(
+            "t1".into(),
+            "terminal".into(),
+            "{}".into(),
+            "build".into(),
+            1,
+        );
         assert_eq!(spinner_kind_for_state(&state), SpinnerKind::Tool);
         assert_eq!(spinner_glyph(SpinnerKind::Tool, 0, true), "▁");
     }
@@ -80,6 +85,9 @@ mod tests {
 
     #[test]
     fn static_when_animation_off() {
-        assert_eq!(spinner_glyph(SpinnerKind::Thinking, 3, false), STATIC_SPINNER);
+        assert_eq!(
+            spinner_glyph(SpinnerKind::Thinking, 3, false),
+            STATIC_SPINNER
+        );
     }
 }

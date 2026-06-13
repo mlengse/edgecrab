@@ -123,20 +123,6 @@ pub fn approve_computer_use_action_for_session(session_key: impl Into<String>, a
     }
 }
 
-#[cfg(test)]
-mod computer_use_approval_tests {
-    use super::*;
-
-    #[test]
-    fn session_approval_caches_per_action() {
-        let session = "test-session-computer-use";
-        assert!(!computer_use_action_approved(session, "key"));
-        approve_computer_use_action_for_session(session, "key");
-        assert!(computer_use_action_approved(session, "key"));
-        assert!(!computer_use_action_approved(session, "click"));
-    }
-}
-
 pub(crate) fn command_approval_reasons(ctx: &ToolContext, command: &str) -> Option<Vec<String>> {
     if yolo_enabled_for_session(&session_key(ctx)) {
         return None;
@@ -216,5 +202,19 @@ pub(crate) async fn request_command_approval(
         ApprovalResponse::Deny => Err(ToolError::PermissionDenied(
             "Command denied by user approval policy.".into(),
         )),
+    }
+}
+
+#[cfg(test)]
+mod computer_use_approval_tests {
+    use super::*;
+
+    #[test]
+    fn session_approval_caches_per_action() {
+        let session = "test-session-computer-use";
+        assert!(!computer_use_action_approved(session, "key"));
+        approve_computer_use_action_for_session(session, "key");
+        assert!(computer_use_action_approved(session, "key"));
+        assert!(!computer_use_action_approved(session, "click"));
     }
 }

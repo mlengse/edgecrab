@@ -55,8 +55,19 @@ use tokio::sync::mpsc;
 use tui_textarea::{CursorMove, Scrolling, TextArea, WrapMode};
 use unicode_width::UnicodeWidthStr;
 
+use crate::activity_shelf::{ShelfRenderParams, estimate_shelf_lines, render_activity_shelf};
+use crate::agents_overlay::{
+    AgentsOverlay, AgentsOverlayAction, AgentsRenderParams, DelegateRow, build_delegate_rows,
+    build_delegate_rows_from_snapshot, handle_agents_overlay_key, render_agents_overlay,
+    sort_delegate_rows_by,
+};
+use crate::clarify_panel::format_abandoned_clarify;
 use crate::cli_args::CliArgs;
 use crate::commands::{CommandRegistry, CommandResult, ToolManagerMode, gateway_commands_page};
+use crate::details_panel::{self, DetailsPanel, DetailsPanelAction};
+use crate::display_state::{
+    DisplayState, ValueCaptureAction, VoicePresenceState, voice_presence_frame_count,
+};
 use crate::edit_diff::{LocalEditSnapshot, capture_local_edit_snapshot, render_edit_diff_lines};
 use crate::fuzzy_selector::{FuzzyItem, FuzzySelector};
 use crate::gateway_browser::{
@@ -64,64 +75,52 @@ use crate::gateway_browser::{
 };
 use crate::gateway_catalog::collect_platform_diagnostics;
 use crate::image_models as cli_image_models;
+use crate::live_progress::ShelfCoalescer;
 use crate::logging::{
     LogFileInfo, LogLevelSetting, default_tail_lines, effective_log_level, format_log_size,
     format_relative_time, list_log_files, persist_log_level, read_last_lines,
     reload_runtime_log_level, tail_preview,
 };
 use crate::mcp_support;
+use crate::model_catalog_ui::{
+    ModelEntry, build_model_selector_entries, build_models_inventory_report,
+    discovery_availability_detail, discovery_source_label, model_selector_status_hint,
+};
+use crate::model_picker::{
+    ModelPickerKeyAction, ModelPickerStage, ModelSwitchIntent, browse_disconnect_provider,
+    disconnect_help_suffix, execute_disconnect, handle_disconnect_keys, handle_picker_keys,
+    render_disconnect_confirm, render_expensive_confirm,
+};
+use crate::overlay_layout::{picker_help_line, picker_three_layout, picker_two_cols, popup_rect};
 use crate::plugin_toggle::{
     PluginCheckState, PluginScope, PluginToggleEntry, plugin_toggle_status_line,
 };
+use crate::process_tail_panel::ProcessTailPanel;
 use crate::profile::{ProfileManager, ProfileSummary};
 use crate::runtime::{
     build_agent, build_tool_registry_with_mcp_discovery, load_runtime, open_state_db,
 };
-use crate::activity_shelf::{estimate_shelf_lines, render_activity_shelf, ShelfRenderParams};
-use crate::agents_overlay::{
-    build_delegate_rows, build_delegate_rows_from_snapshot, handle_agents_overlay_key,
-    render_agents_overlay, sort_delegate_rows_by, AgentsOverlay, AgentsOverlayAction,
-    AgentsRenderParams, DelegateRow,
-};
-use crate::clarify_panel::format_abandoned_clarify;
-use crate::model_catalog_ui::{
-    build_model_selector_entries, build_models_inventory_report, discovery_availability_detail,
-    discovery_source_label, model_selector_status_hint, ModelEntry,
-};
-use crate::model_picker::{
-    browse_disconnect_provider, disconnect_help_suffix, execute_disconnect,
-    handle_disconnect_keys, handle_picker_keys, render_disconnect_confirm,
-    render_expensive_confirm, ModelPickerKeyAction, ModelPickerStage, ModelSwitchIntent,
-};
-use crate::overlay_layout::{
-    picker_help_line, picker_three_layout, picker_two_cols, popup_rect,
-};
+use crate::shelf_details::ShelfDetailsState;
 use crate::spawn_history::{SpawnHistory, TurnCommitMetrics};
-use crate::status_chrome::{compact_spinner_frame, TerminalGlyphProfile};
-use crate::display_state::{
-    DisplayState, ValueCaptureAction, VoicePresenceState, voice_presence_frame_count,
+use crate::status_bar::{
+    StatusBarDocumentChip, StatusBarEditorMode, StatusBarRenderParams, StatusBarUiProfile,
+    render_status_bar as render_status_bar_widget,
+};
+use crate::status_chrome::{TerminalGlyphProfile, compact_spinner_frame};
+use crate::status_summaries::{ActiveSubagentStatus, BackgroundTaskStatus};
+use crate::stream_bridge;
+use crate::theme::{SkinConfig, Theme, palette as P};
+use crate::tool_display::{
+    DisplayWidths, build_subagent_done_line_width, build_subagent_running_line_width,
+    build_tool_done_line_width, build_tool_running_line_width,
+    build_tool_running_line_width_elapsed, build_tool_verbose_lines_width, extract_tool_preview,
+    tool_signature, tool_status_preview,
 };
 use crate::transcript::{
     OutputLine, OutputRole, TranscriptRenderParams, TranscriptScrollMetrics,
     render_transcript_compact, render_transcript_rich,
 };
-use crate::status_bar::{
-    render_status_bar as render_status_bar_widget, StatusBarDocumentChip,
-    StatusBarEditorMode, StatusBarRenderParams, StatusBarUiProfile,
-};
-use crate::status_summaries::{ActiveSubagentStatus, BackgroundTaskStatus};
-use crate::live_progress::ShelfCoalescer;
-use crate::process_tail_panel::ProcessTailPanel;
-use crate::stream_bridge;
-use crate::details_panel::{self, DetailsPanel, DetailsPanelAction};
-use crate::shelf_details::ShelfDetailsState;
 use crate::turn_activity::{ShelfPhase, TurnActivityState};
-use crate::theme::{SkinConfig, Theme, palette as P};
-use crate::tool_display::{
-    DisplayWidths, build_subagent_done_line_width,
-    build_subagent_running_line_width, build_tool_done_line_width, build_tool_running_line_width,
-    build_tool_running_line_width_elapsed, build_tool_verbose_lines_width,     extract_tool_preview, tool_signature, tool_status_preview,
-};
 use crate::vision_models::{
     available_vision_model_options_with_dynamic, canonical_provider, current_model_supports_vision,
     parse_selection_spec,
@@ -140,25 +139,25 @@ use edgecrab_tools::{AppConfigRef, ToolContext};
 use edgequake_llm::ProviderFactory;
 use tokio_util::sync::CancellationToken;
 
-mod response_dispatch;
 mod approval_overlay;
-mod value_capture_overlay;
-mod secret_capture_overlay;
-mod mode_selectors;
-mod model_selectors;
-mod browser_selectors;
-mod log_session_browsers;
 mod browser_chrome;
-mod setup_overlays;
+mod browser_selectors;
+mod diagnose_overlay;
+mod event_loop;
 mod frame_render;
 mod input_panel;
-mod diagnose_overlay;
+mod key_dispatch;
+mod log_session_browsers;
+mod mode_selectors;
+mod model_selectors;
+mod queue_edit;
+mod replay_command;
+mod response_dispatch;
+mod secret_capture_overlay;
+mod setup_overlays;
 mod steering_overlay;
 mod stream_forward;
-mod event_loop;
-mod queue_edit;
-mod key_dispatch;
-mod replay_command;
+mod value_capture_overlay;
 
 const KEYBOARD_PROTOCOL_WARMUP: Duration = Duration::from_millis(25);
 const LOG_FOLLOW_REFRESH_INTERVAL: Duration = Duration::from_millis(900);
@@ -653,7 +652,6 @@ impl DetailPaneState {
         self.scroll = self.scroll.saturating_add(step.max(1));
     }
 }
-
 
 fn format_run_outcome_notice(outcome: &edgecrab_types::RunOutcome) -> String {
     let headline = format!("{} {}", outcome.state.emoji(), outcome.state.headline());
@@ -1822,11 +1820,17 @@ fn load_shelf_details_from_config() -> ShelfDetailsState {
 
 fn load_status_indicator_from_config() -> crate::status_indicator::StatusIndicatorStyle {
     edgecrab_core::AppConfig::load()
-        .map(|cfg| crate::status_indicator::StatusIndicatorStyle::from_config(&cfg.display.status_indicator))
+        .map(|cfg| {
+            crate::status_indicator::StatusIndicatorStyle::from_config(
+                &cfg.display.status_indicator,
+            )
+        })
         .unwrap_or_default()
 }
 
-fn persist_status_indicator(style: crate::status_indicator::StatusIndicatorStyle) -> anyhow::Result<()> {
+fn persist_status_indicator(
+    style: crate::status_indicator::StatusIndicatorStyle,
+) -> anyhow::Result<()> {
     let mut config = edgecrab_core::AppConfig::load().unwrap_or_default();
     config.display.status_indicator = style.as_str().into();
     config.save()?;
@@ -4264,7 +4268,9 @@ enum AgentResponse {
     /// Ephemeral shelf activity feed (compression, approval, bg process) — not duplicated in transcript.
     ActivityFeed(String),
     /// Agent-reported count of steering events waiting for injection.
-    SteerPending { count: usize },
+    SteerPending {
+        count: usize,
+    },
     /// Throttled tail from a background process (after `run_process` returns).
     BackgroundProcessTail {
         process_id: String,
@@ -4559,11 +4565,7 @@ impl App {
             return;
         };
         let choices = self.clarify_pending_choices.take();
-        let text = format_abandoned_clarify(
-            &question,
-            choices.as_deref(),
-            reason,
-        );
+        let text = format_abandoned_clarify(&question, choices.as_deref(), reason);
         self.push_output(text, OutputRole::System);
         self.clarify_pending_tx = None;
         if matches!(self.display_state, DisplayState::WaitingForClarify) {
@@ -4580,7 +4582,10 @@ impl App {
         if self.agents_overlay.is_active() {
             return;
         }
-        stream_bridge::maybe_agents_nudge(&mut self.turn_activity, &mut self.agents_nudged_this_turn);
+        stream_bridge::maybe_agents_nudge(
+            &mut self.turn_activity,
+            &mut self.agents_nudged_this_turn,
+        );
     }
 
     fn sync_turn_activity_charms(&mut self) {
@@ -4660,8 +4665,12 @@ impl App {
         });
         match result {
             Some((body, status, exit_code)) => {
-                self.process_tail_panel
-                    .set_content(process_id.to_string(), body, &status, exit_code);
+                self.process_tail_panel.set_content(
+                    process_id.to_string(),
+                    body,
+                    &status,
+                    exit_code,
+                );
                 self.needs_redraw = true;
                 format!("Opened tail for `{process_id}` (Esc to close)")
             }
@@ -4729,7 +4738,10 @@ impl App {
             )))
         } else {
             self.steer_tx.as_ref().map(|tx| {
-                tx.send(edgecrab_core::SteeringEvent::new(kind.clone(), text.clone()))
+                tx.send(edgecrab_core::SteeringEvent::new(
+                    kind.clone(),
+                    text.clone(),
+                ))
             })
         };
         match send_result {
@@ -4828,11 +4840,13 @@ impl App {
                 self.output[idx].text.push_str(&text);
                 self.output[idx].invalidate_render_cache();
             } else {
-                self.output.push(OutputLine::new_text(text, OutputRole::Assistant));
+                self.output
+                    .push(OutputLine::new_text(text, OutputRole::Assistant));
                 self.streaming_line = Some(self.output.len() - 1);
             }
         } else {
-            self.output.push(OutputLine::new_text(text, OutputRole::Assistant));
+            self.output
+                .push(OutputLine::new_text(text, OutputRole::Assistant));
             self.streaming_line = Some(self.output.len() - 1);
         }
 
@@ -5471,10 +5485,7 @@ impl App {
         if self.tool_progress_mode == ToolProgressMode::Off {
             let preview = extract_tool_preview(&active.name, &active.args_json);
             let line_idx = self.output.len();
-            self.push_output(
-                format!("⏳ {}  {preview}", active.name),
-                OutputRole::System,
-            );
+            self.push_output(format!("⏳ {}  {preview}", active.name), OutputRole::System);
             let pending = PendingToolLine {
                 tool_name: active.name,
                 args_json: active.args_json,
@@ -5510,12 +5521,11 @@ impl App {
     }
 
     fn upsert_bg_process_line(&mut self, process_id: &str, command_preview: &str, tail: &str) {
-        let text =
-            edgecrab_tools::tool_progress_tail::format_background_process_monitor(
-                process_id,
-                command_preview,
-                tail,
-            );
+        let text = edgecrab_tools::tool_progress_tail::format_background_process_monitor(
+            process_id,
+            command_preview,
+            tail,
+        );
 
         if let Some(line_idx) = self
             .bg_process_lines
@@ -5530,7 +5540,8 @@ impl App {
             let line_idx = self.output.len();
             self.output
                 .push(OutputLine::new_text(text, OutputRole::System));
-            self.bg_process_lines.insert(process_id.to_string(), BgProcessLine { line_idx });
+            self.bg_process_lines
+                .insert(process_id.to_string(), BgProcessLine { line_idx });
         }
         if self.at_bottom {
             self.scroll_offset = 0;
@@ -5554,17 +5565,13 @@ impl App {
                     .to_string();
                 self.output[line_idx].text =
                     edgecrab_tools::tool_progress_tail::format_background_process_finished(
-                        &headline,
-                        process_id,
-                        exit_code,
+                        &headline, process_id, exit_code,
                     );
                 self.output[line_idx].invalidate_render_cache();
             }
         } else {
             let text = edgecrab_tools::tool_progress_tail::format_background_process_finished(
-                "",
-                process_id,
-                exit_code,
+                "", process_id, exit_code,
             );
             self.output
                 .push(OutputLine::new_text(text, OutputRole::System));
@@ -8928,9 +8935,9 @@ impl App {
             self.push_output("Still processing previous request...", OutputRole::System);
             return;
         }
-        if let Some(reason) = edgecrab_core::copilot_model_policy::copilot_model_id_reject_reason(
-            &self.model_name,
-        ) {
+        if let Some(reason) =
+            edgecrab_core::copilot_model_policy::copilot_model_id_reject_reason(&self.model_name)
+        {
             self.push_output(format!("⚠ Invalid model\n{reason}"), OutputRole::Error);
             return;
         }
@@ -9001,7 +9008,14 @@ impl App {
                 tracing::info!(?result, "TUI→agent: chat_streaming returned");
                 result
             });
-            stream_forward::forward_agent_stream_to_tui(agent_clone, chunk_rx, agent_task, tx, hook_registry).await;
+            stream_forward::forward_agent_stream_to_tui(
+                agent_clone,
+                chunk_rx,
+                agent_task,
+                tx,
+                hook_registry,
+            )
+            .await;
         });
         self.active_request_abort = Some(request_task.abort_handle());
     }
@@ -9434,7 +9448,11 @@ impl App {
                     if crate::auth_cmd::is_grok_auth_target(target) {
                         self.open_grok_auth_overlay(crate::grok_auth_tui::GrokAuthScreen::Start);
                     } else {
-                        self.run_login_target_with_terminal_handoff(target, no_browser, manual_paste);
+                        self.run_login_target_with_terminal_handoff(
+                            target,
+                            no_browser,
+                            manual_paste,
+                        );
                     }
                 } else {
                     match self
@@ -9593,8 +9611,6 @@ impl App {
             }
         }
     }
-
-
 
     fn configured_home_channel_platforms(
         &self,
@@ -9791,8 +9807,6 @@ impl App {
             }
         }
     }
-
-
 
     fn save_gateway_primary_field(&mut self, field: &str, value: &str) -> bool {
         let clear = value.is_empty() || value.eq_ignore_ascii_case("clear");
@@ -12463,7 +12477,8 @@ impl App {
     fn handle_indicator_command(&mut self, args: String) {
         use crate::status_indicator::StatusIndicatorStyle;
         let trimmed = args.trim();
-        if trimmed.is_empty() || matches!(trimmed.to_ascii_lowercase().as_str(), "status" | "show") {
+        if trimmed.is_empty() || matches!(trimmed.to_ascii_lowercase().as_str(), "status" | "show")
+        {
             self.push_output(
                 format!("indicator: {}", self.status_indicator.as_str()),
                 OutputRole::System,
@@ -12559,12 +12574,10 @@ impl App {
                 Err(e) => self.push_output(format!("Proxy: {e}"), OutputRole::Error),
             },
             "enable" => {
-                let preset = trimmed
-                    .split_whitespace()
-                    .nth(1)
-                    .unwrap_or("grok");
+                let preset = trimmed.split_whitespace().nth(1).unwrap_or("grok");
                 match crate::proxy_cmd::ProxySession::load() {
-                    Ok(mut session) => match crate::proxy_hub::enable_by_name(&mut session, preset) {
+                    Ok(mut session) => match crate::proxy_hub::enable_by_name(&mut session, preset)
+                    {
                         Ok(msg) => self.push_output(msg, OutputRole::System),
                         Err(e) => self.push_output(format!("Proxy: {e}"), OutputRole::Error),
                     },
@@ -17181,8 +17194,14 @@ impl App {
                 "Requesting a fresh login code...",
             )?;
             handle.block_on(async {
-                crate::auth_cmd::login_target_capture(&target, no_browser, manual_paste, false, None)
-                    .await
+                crate::auth_cmd::login_target_capture(
+                    &target,
+                    no_browser,
+                    manual_paste,
+                    false,
+                    None,
+                )
+                .await
             })
         });
 
@@ -18838,7 +18857,6 @@ impl App {
             );
         }
     }
-
 }
 
 /// Build a compact recap string showing the last few exchanges in a resumed session.
@@ -19257,8 +19275,9 @@ fn png_crc32(data: &[u8]) -> u32 {
 
 #[cfg(test)]
 mod tests {
+    #![allow(dead_code)]
+
     use super::*;
-    use crate::display_state::{format_voice_presence_badge, VoicePresenceState};
     use crate::status_chrome::{
         format_elapsed_hint, format_token_count, format_waiting_first_token_status,
         summarize_tools_for_status, words_estimate,
@@ -20323,8 +20342,7 @@ description = "Demo plugin tool"
         state.on_tool_exec(
             "call_2".into(),
             "manage_todo_list".into(),
-            r#"{"items":[{"id":1,"title":"Audit","status":"in-progress"}],"merge":true}"#
-                .into(),
+            r#"{"items":[{"id":1,"title":"Audit","status":"in-progress"}],"merge":true}"#.into(),
             "Audit".into(),
             2,
         );
@@ -20343,11 +20361,7 @@ description = "Demo plugin tool"
             "got: {}",
             summary.detail
         );
-        assert!(
-            summary.detail.contains("+1"),
-            "got: {}",
-            summary.detail
-        );
+        assert!(summary.detail.contains("+1"), "got: {}", summary.detail);
     }
 
     #[test]
@@ -20363,7 +20377,7 @@ description = "Demo plugin tool"
         assert!(text.contains("thinking"));
     }
 
-        fn mcp_selector_builder_merges_configured_and_official_entries() {
+    fn mcp_selector_builder_merges_configured_and_official_entries() {
         let configured = vec![edgecrab_tools::tools::mcp_client::ConfiguredMcpServer {
             name: "local-git".into(),
             enabled: true,
@@ -21356,7 +21370,7 @@ kind = "skill"
         assert!(status.starts_with("| "));
     }
 
-        fn persist_voice_preferences_round_trip() {
+    fn persist_voice_preferences_round_trip() {
         let _guard = crate::gateway_catalog::lock_test_env();
         let dir = tempfile::tempdir().expect("tempdir");
         unsafe {
@@ -22675,7 +22689,10 @@ kind = "skill"
         assert_eq!(app.output.len(), 1);
         let text = app.output[0].text.clone();
         assert!(text.contains("cargo build"), "preview missing: {text}");
-        assert!(text.contains("Compiling edgecrab-core"), "tail missing: {text}");
+        assert!(
+            text.contains("Compiling edgecrab-core"),
+            "tail missing: {text}"
+        );
     }
 
     #[tokio::test]

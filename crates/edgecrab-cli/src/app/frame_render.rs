@@ -3,7 +3,6 @@
 use super::*;
 
 impl App {
-
     /// Render the full application frame.
     pub fn render(&mut self, frame: &mut Frame) {
         // Cache terminal width for event handlers that build tool display spans
@@ -240,7 +239,7 @@ impl App {
     }
 
     /// Render the scrollable output area with markdown formatting and a scrollbar.
-pub(super) fn render_output(&mut self, frame: &mut Frame, area: Rect) {
+    pub(super) fn render_output(&mut self, frame: &mut Frame, area: Rect) {
         let paging_key_hint = self.paging_key_hint_label();
         let mut metrics = TranscriptScrollMetrics {
             scroll_offset: self.scroll_offset,
@@ -270,7 +269,7 @@ pub(super) fn render_output(&mut self, frame: &mut Frame, area: Rect) {
     }
 
     /// Render the status bar with spinner and color-coded metrics.
-pub(super) fn render_status_bar(&self, frame: &mut Frame, area: Rect) {
+    pub(super) fn render_status_bar(&self, frame: &mut Frame, area: Rect) {
         let editor_mode = match self.editor_mode {
             InputEditorMode::ComposeInsert => StatusBarEditorMode::ComposeInsert,
             InputEditorMode::ComposeNormal => StatusBarEditorMode::ComposeNormal,
@@ -281,11 +280,14 @@ pub(super) fn render_status_bar(&self, frame: &mut Frame, area: Rect) {
             TerminalUiProfile::ReducedMotion => StatusBarUiProfile::ReducedMotion,
             TerminalUiProfile::BasicCompat => StatusBarUiProfile::BasicCompat,
         };
-        let document_overlay = self.document_overlay.as_ref().map(|overlay| StatusBarDocumentChip {
-            icon: overlay.icon.clone(),
-            title: overlay.title.clone(),
-            accent: overlay.accent,
-        });
+        let document_overlay =
+            self.document_overlay
+                .as_ref()
+                .map(|overlay| StatusBarDocumentChip {
+                    icon: overlay.icon.clone(),
+                    title: overlay.title.clone(),
+                    accent: overlay.accent,
+                });
         let paging_key_hint = self.paging_key_hint_label();
         let compose_normal_hint = self.compose_normal_hint();
         let inline_compose_hint = self.inline_compose_hint();
@@ -340,16 +342,16 @@ pub(super) fn render_status_bar(&self, frame: &mut Frame, area: Rect) {
         render_status_bar_widget(frame, area, &params);
     }
 
-
-
-
-
     // ─────────────────────────────────────────────────────────────────────────
     // ── Process tail overlay (`/tail`) ─────────────────────────────────────────
     // ─────────────────────────────────────────────────────────────────────────
 
-pub(super) fn render_process_tail_panel(&self, frame: &mut Frame, area: Rect) {
-        let accent = self.theme.status_bar_model.fg.unwrap_or(Color::Rgb(205, 175, 50));
+    pub(super) fn render_process_tail_panel(&self, frame: &mut Frame, area: Rect) {
+        let accent = self
+            .theme
+            .status_bar_model
+            .fg
+            .unwrap_or(Color::Rgb(205, 175, 50));
         let dim = self.theme.output_system.fg.unwrap_or(Color::DarkGray);
         crate::process_tail_panel::render_process_tail_panel(
             frame,

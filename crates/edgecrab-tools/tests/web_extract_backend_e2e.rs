@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+#![allow(dead_code)]
 //! E2E: Exa / Parallel extract backend fail-fast and auto-chain ordering.
 
 mod common;

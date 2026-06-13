@@ -87,10 +87,8 @@ impl SubAgentRunner for CoreSubAgentRunner {
                 .build()
                 .map_err(|e| format!("Failed to build child agent: {e}"))?,
         );
-        let _subagent_reg = crate::subagent_registry::SubagentRegistration::new(
-            agent_id.clone(),
-            child.clone(),
-        );
+        let _subagent_reg =
+            crate::subagent_registry::SubagentRegistration::new(agent_id.clone(), child.clone());
 
         // Override enabled toolsets on the child's config
         {

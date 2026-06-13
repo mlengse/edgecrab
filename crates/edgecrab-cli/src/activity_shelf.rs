@@ -1,10 +1,10 @@
 //! Activity shelf renderer — live turn state between transcript and status bar.
 
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph};
-use ratatui::Frame;
 
 use edgecrab_core::safe_truncate;
 
@@ -16,8 +16,8 @@ use crate::shelf_visual::{
 use crate::theme::Theme;
 use crate::tool_display::{tool_icon, tool_status_preview};
 use crate::turn_activity::{
-    ActivityNotice, ActivityTone, ShelfPhase, TurnActivityState, SHELF_BG_TAIL_CHARS,
-    SHELF_MAX_TOOL_ROWS, SHELF_MAX_TOOL_ROWS_FULL,
+    ActivityNotice, ActivityTone, SHELF_BG_TAIL_CHARS, SHELF_MAX_TOOL_ROWS,
+    SHELF_MAX_TOOL_ROWS_FULL, ShelfPhase, TurnActivityState,
 };
 
 const MAX_SHELF_LINES: u16 = 8;
@@ -113,13 +113,7 @@ pub fn render_activity_shelf(frame: &mut Frame, area: Rect, params: &ShelfRender
     } else {
         append_thinking_lines(&mut lines, state, details, spin, &palette);
         append_activity_lines(&mut lines, state, details, &palette);
-        append_tool_lines(
-            &mut lines,
-            state,
-            details,
-            verbose_tools,
-            &palette,
-        );
+        append_tool_lines(&mut lines, state, details, verbose_tools, &palette);
         append_subagent_lines(&mut lines, state, details, &palette);
         append_tokens_footer(&mut lines, state, &palette);
     }
@@ -204,11 +198,7 @@ fn tool_line_count(
     verbose_tools: bool,
 ) -> u16 {
     let active = state.sorted_active_tools().count();
-    let bg = state
-        .bg_processes
-        .values()
-        .filter(|b| !b.finished)
-        .count();
+    let bg = state.bg_processes.values().filter(|b| !b.finished).count();
     if active == 0 && bg == 0 {
         return 0;
     }
@@ -220,11 +210,7 @@ fn tool_line_count(
             let shown = active.min(cap);
             let overflow = active.saturating_sub(cap);
             let tool_rows = shown as u16;
-            let verbose_extra = if verbose_tools {
-                tool_rows
-            } else {
-                0
-            };
+            let verbose_extra = if verbose_tools { tool_rows } else { 0 };
             let drafting = u16::from(state.generating_tool.is_some());
             let overflow_line = u16::from(overflow > 0);
             1 + drafting + tool_rows + verbose_extra + overflow_line + if bg > 0 { 1 } else { 0 }
@@ -292,11 +278,7 @@ fn append_quiet_mode_backstop(
     }
 }
 
-fn append_tokens_footer(
-    lines: &mut Vec<Line>,
-    state: &TurnActivityState,
-    palette: &ShelfPalette,
-) {
+fn append_tokens_footer(lines: &mut Vec<Line>, state: &TurnActivityState, palette: &ShelfPalette) {
     let Some(total) = format_tokens_total(state.thinking_token_est, state.tool_token_acc) else {
         return;
     };
@@ -322,13 +304,12 @@ fn append_thinking_lines(
         SectionRender::Skip => {}
         SectionRender::Summary => {
             let mut spans = vec![
-                Span::styled(
-                    section_chevron(false),
-                    Style::default().fg(palette.dim),
-                ),
+                Span::styled(section_chevron(false), Style::default().fg(palette.dim)),
                 Span::styled(
                     safe_truncate(&content, 56).to_string(),
-                    Style::default().fg(palette.dim).add_modifier(Modifier::ITALIC),
+                    Style::default()
+                        .fg(palette.dim)
+                        .add_modifier(Modifier::ITALIC),
                 ),
             ];
             if let Some(label) = format_tokens_label(state.thinking_token_est) {
@@ -342,7 +323,12 @@ fn append_thinking_lines(
         SectionRender::Full => {
             let mut spans = vec![
                 Span::styled(format!("{spin} "), Style::default().fg(palette.accent)),
-                Span::styled(content, Style::default().fg(palette.dim).add_modifier(Modifier::ITALIC)),
+                Span::styled(
+                    content,
+                    Style::default()
+                        .fg(palette.dim)
+                        .add_modifier(Modifier::ITALIC),
+                ),
             ];
             if let Some(label) = format_tokens_label(state.thinking_token_est) {
                 spans.push(Span::styled(
@@ -408,9 +394,12 @@ fn visible_notices<'a>(
     details: &ShelfDetailsState,
 ) -> Box<dyn Iterator<Item = &'a ActivityNotice> + 'a> {
     match details.section_render(ShelfSection::Activity) {
-        SectionRender::Skip => Box::new(state.activity_feed.iter().filter(|n| {
-            matches!(n.tone, ActivityTone::Warn | ActivityTone::Error)
-        })),
+        SectionRender::Skip => Box::new(
+            state
+                .activity_feed
+                .iter()
+                .filter(|n| matches!(n.tone, ActivityTone::Warn | ActivityTone::Error)),
+        ),
         SectionRender::Summary => Box::new(state.activity_feed.iter().take(1)),
         SectionRender::Full => Box::new(state.activity_feed.iter()),
     }
@@ -424,11 +413,7 @@ fn append_tool_lines(
     palette: &ShelfPalette,
 ) {
     let active: Vec<_> = state.sorted_active_tools().collect();
-    let bg_count = state
-        .bg_processes
-        .values()
-        .filter(|b| !b.finished)
-        .count();
+    let bg_count = state.bg_processes.values().filter(|b| !b.finished).count();
     if active.is_empty() && bg_count == 0 {
         return;
     }
@@ -447,10 +432,7 @@ fn append_tool_lines(
                 String::new()
             };
             let mut spans = vec![
-                Span::styled(
-                    section_chevron(false),
-                    Style::default().fg(palette.dim),
-                ),
+                Span::styled(section_chevron(false), Style::default().fg(palette.dim)),
                 Span::styled(
                     format!("{} tool(s) · {primary}{suffix}", active.len().max(bg_count)),
                     Style::default().fg(palette.accent),
@@ -469,10 +451,7 @@ fn append_tool_lines(
                 .map(|label| format!("  {label}"))
                 .unwrap_or_default();
             lines.push(Line::from(vec![
-                Span::styled(
-                    section_chevron(true),
-                    Style::default().fg(palette.accent),
-                ),
+                Span::styled(section_chevron(true), Style::default().fg(palette.accent)),
                 Span::styled(
                     format!("tools{label_suffix}"),
                     Style::default()
@@ -521,12 +500,7 @@ fn append_tool_lines(
                     ),
                 ]));
             }
-            for bg in state
-                .bg_processes
-                .values()
-                .filter(|b| !b.finished)
-                .take(1)
-            {
+            for bg in state.bg_processes.values().filter(|b| !b.finished).take(1) {
                 let tail = shelf_bg_tail_preview(&bg.tail);
                 let tail_part = if tail.is_empty() {
                     String::new()
@@ -577,8 +551,14 @@ fn push_tool_row(
     };
     lines.push(Line::from(vec![
         Span::styled(prefix, Style::default().fg(palette.border)),
-        Span::styled(format!("{icon} {}  ", tool.name), Style::default().fg(palette.accent)),
-        Span::styled(format!("{preview} · {detail}"), Style::default().fg(palette.dim)),
+        Span::styled(
+            format!("{icon} {}  ", tool.name),
+            Style::default().fg(palette.accent),
+        ),
+        Span::styled(
+            format!("{preview} · {detail}"),
+            Style::default().fg(palette.dim),
+        ),
         Span::styled(elapsed_suffix, elapsed_style),
     ]));
 }
@@ -633,10 +613,7 @@ fn append_subagent_lines(
                 String::new()
             };
             lines.push(Line::from(vec![
-                Span::styled(
-                    section_chevron(false),
-                    Style::default().fg(palette.dim),
-                ),
+                Span::styled(section_chevron(false), Style::default().fg(palette.dim)),
                 Span::styled(
                     format!(
                         "{} delegate(s) active{tool_suffix}{spark}  (/agents)",
@@ -659,26 +636,25 @@ fn append_subagent_lines(
                 format!(" · {spark}")
             };
             lines.push(Line::from(vec![
-                Span::styled(
-                    section_chevron(true),
-                    Style::default().fg(palette.accent),
-                ),
+                Span::styled(section_chevron(true), Style::default().fg(palette.accent)),
                 Span::styled(
                     format!("agents{header_suffix}  (/agents)"),
-                    Style::default().fg(palette.dim).add_modifier(Modifier::BOLD),
+                    Style::default()
+                        .fg(palette.dim)
+                        .add_modifier(Modifier::BOLD),
                 ),
             ]));
             let last = subs.len().min(3);
             for (i, sub) in subs.into_iter().take(3).enumerate() {
-                let stem = if i + 1 == last { "     └─ " } else { "     ├─ " };
+                let stem = if i + 1 == last {
+                    "     └─ "
+                } else {
+                    "     ├─ "
+                };
                 let elapsed_secs = sub.started_at.elapsed().as_secs();
                 let heat = elapsed_heat(elapsed_secs);
-                let elapsed_style = Style::default().fg(heat_color(
-                    heat,
-                    palette.dim,
-                    palette.warn,
-                    palette.hot,
-                ));
+                let elapsed_style =
+                    Style::default().fg(heat_color(heat, palette.dim, palette.warn, palette.hot));
                 let elapsed_suffix = if elapsed_secs > 0 {
                     format!(" · {}", fmt_duration(elapsed_secs))
                 } else {
@@ -707,9 +683,7 @@ fn append_subagent_lines(
                         Span::styled("           ", Style::default()),
                         Span::styled(
                             tail,
-                            Style::default()
-                                .fg(palette.dim)
-                                .add_modifier(Modifier::DIM),
+                            Style::default().fg(palette.dim).add_modifier(Modifier::DIM),
                         ),
                     ]));
                 }
@@ -759,7 +733,10 @@ mod tests {
             1,
         );
         let lines = estimate_shelf_lines(&state, &details, false, false, true);
-        assert!(lines >= 1, "expected at least one shelf line during tool exec");
+        assert!(
+            lines >= 1,
+            "expected at least one shelf line during tool exec"
+        );
     }
 
     #[test]
@@ -772,7 +749,12 @@ mod tests {
             "cargo build".into(),
             1,
         );
-        state.on_tool_progress("t1", "Compiling edgecrab".into(), 2, std::time::Instant::now());
+        state.on_tool_progress(
+            "t1",
+            "Compiling edgecrab".into(),
+            2,
+            std::time::Instant::now(),
+        );
         let s = compact_summary(&state).unwrap();
         assert!(s.contains("terminal"));
         assert!(s.contains("Compiling"));
@@ -792,7 +774,13 @@ mod tests {
         let mut state = TurnActivityState::new(true);
         let mut details = ShelfDetailsState::default();
         details.handle_command("tools collapsed");
-        state.on_tool_exec("t1".into(), "terminal".into(), "{}".into(), "build".into(), 1);
+        state.on_tool_exec(
+            "t1".into(),
+            "terminal".into(),
+            "{}".into(),
+            "build".into(),
+            1,
+        );
         assert_eq!(tool_line_count(&state, &details, false), 1);
     }
 
@@ -811,10 +799,7 @@ mod tests {
             );
         }
         let n = tool_line_count(&state, &details, false);
-        assert!(
-            n >= 6,
-            "expected header + 5 tool rows, got {n}"
-        );
+        assert!(n >= 6, "expected header + 5 tool rows, got {n}");
     }
 
     #[test]

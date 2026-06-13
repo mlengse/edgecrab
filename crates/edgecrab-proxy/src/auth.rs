@@ -86,7 +86,11 @@ pub fn validate_bind_address(host: &str, token_path: &Path) -> anyhow::Result<()
 }
 
 /// Public bind requires explicit opt-in plus a non-empty token file.
-pub fn validate_public_bind(allow_public: bool, host: &str, token_path: &Path) -> anyhow::Result<()> {
+pub fn validate_public_bind(
+    allow_public: bool,
+    host: &str,
+    token_path: &Path,
+) -> anyhow::Result<()> {
     let is_local = host == "127.0.0.1" || host == "::1" || host.eq_ignore_ascii_case("localhost");
     if is_local {
         return Ok(());
@@ -98,7 +102,10 @@ pub fn validate_public_bind(allow_public: bool, host: &str, token_path: &Path) -
         );
     }
     if !token_path.exists() {
-        bail!("`--allow-public` requires a proxy token at {}", token_path.display());
+        bail!(
+            "`--allow-public` requires a proxy token at {}",
+            token_path.display()
+        );
     }
     Ok(())
 }
@@ -106,8 +113,8 @@ pub fn validate_public_bind(allow_public: bool, host: &str, token_path: &Path) -
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
     use axum::http::HeaderValue;
+    use std::path::PathBuf;
 
     #[test]
     fn bearer_rejects_malformed_and_wrong_key() {

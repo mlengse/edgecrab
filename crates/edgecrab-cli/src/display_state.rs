@@ -79,10 +79,7 @@ pub enum ValueCaptureAction {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VoicePresenceState {
-    Recording {
-        elapsed_secs: u64,
-        continuous: bool,
-    },
+    Recording { elapsed_secs: u64, continuous: bool },
     Speaking,
     Listening,
 }

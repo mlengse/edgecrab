@@ -13,7 +13,8 @@ use tokio::net::TcpListener;
 async fn spawn_test_proxy(token: &str) -> (String, tokio::task::JoinHandle<()>) {
     edgecrab_proxy::enable_e2e_direct_http();
     let mut cfg = ProxyConfig::default();
-    cfg.model_aliases.insert("mock-model".into(), "mock/test".into());
+    cfg.model_aliases
+        .insert("mock-model".into(), "mock/test".into());
     let forward_adapters = build_forward_adapters(&cfg.forward_upstreams);
     let state = ProxyState {
         token: token.into(),
@@ -211,7 +212,8 @@ async fn e2e_provider_embeddings_returns_501() {
 #[tokio::test]
 async fn e2e_cors_preflight_when_origins_configured() {
     let mut cfg = ProxyConfig::default();
-    cfg.model_aliases.insert("mock-model".into(), "mock/test".into());
+    cfg.model_aliases
+        .insert("mock-model".into(), "mock/test".into());
     cfg.cors_allow_origins = vec!["http://localhost:3000".into()];
     let forward_adapters = build_forward_adapters(&cfg.forward_upstreams);
     let state = ProxyState {

@@ -64,12 +64,8 @@ impl DdgsSession {
     pub fn new(timeout_secs: u64) -> Result<Self, SearchError> {
         let profile = fingerprint::resolve_profile_from_env();
         let profile_id = profile.id();
-        let client = fingerprint::build_ddgs_client(
-            timeout_secs,
-            resolve_ddgs_proxy(),
-            profile,
-        )
-        .map_err(|e| SearchError::hard("ddgs", e))?;
+        let client = fingerprint::build_ddgs_client(timeout_secs, resolve_ddgs_proxy(), profile)
+            .map_err(|e| SearchError::hard("ddgs", e))?;
         tracing::debug!(profile = profile_id, "ddgs session fingerprint");
         Ok(Self {
             client,

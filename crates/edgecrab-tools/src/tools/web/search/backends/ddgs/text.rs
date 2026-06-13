@@ -124,10 +124,7 @@ mod tests {
 
     #[test]
     fn normalize_field_strips_tags_like_python() {
-        assert_eq!(
-            normalize_field("<strong>Rust</strong> lang"),
-            "Rust lang"
-        );
+        assert_eq!(normalize_field("<strong>Rust</strong> lang"), "Rust lang");
     }
 
     #[test]

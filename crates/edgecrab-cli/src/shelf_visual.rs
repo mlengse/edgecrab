@@ -136,11 +136,7 @@ pub fn format_tokens_total(thinking: u32, tools: u32) -> Option<String> {
 
 /// Section chevron — Hermes `▸` collapsed / `▾` expanded.
 pub fn section_chevron(expanded: bool) -> &'static str {
-    if expanded {
-        "▾ "
-    } else {
-        "▸ "
-    }
+    if expanded { "▾ " } else { "▸ " }
 }
 
 /// Status glyph for completed delegates in `/agents` history.
@@ -184,13 +180,7 @@ mod tests {
 
     #[test]
     fn format_recent_tools_takes_tail() {
-        let tools = vec![
-            "a".into(),
-            "b".into(),
-            "c".into(),
-            "d".into(),
-            "e".into(),
-        ];
+        let tools = vec!["a".into(), "b".into(), "c".into(), "d".into(), "e".into()];
         assert_eq!(format_recent_tools(&tools, 3), "c · d · e");
     }
 
@@ -212,9 +202,6 @@ mod tests {
     #[test]
     fn format_tokens_total_requires_both() {
         assert!(format_tokens_total(100, 0).is_none());
-        assert_eq!(
-            format_tokens_total(1_000, 2_000).unwrap(),
-            "Σ ~3k total"
-        );
+        assert_eq!(format_tokens_total(1_000, 2_000).unwrap(), "Σ ~3k total");
     }
 }

@@ -14,8 +14,7 @@ use async_trait::async_trait;
 use edgecrab_tools::build_copilot_provider;
 use edgequake_llm::providers::gemini::GeminiModelsResponse;
 use edgequake_llm::{
-    CopilotModelsResponse, GeminiProvider, LMStudioProvider, OllamaProvider,
-    OpenRouterProvider,
+    CopilotModelsResponse, GeminiProvider, LMStudioProvider, OllamaProvider, OpenRouterProvider,
 };
 use futures::future::join_all;
 use serde::{Deserialize, Serialize};

@@ -297,8 +297,14 @@ impl ExecutionBackend for DaytonaBackend {
         timeout: Duration,
         cancel: CancellationToken,
     ) -> Result<ExecOutput, ToolError> {
-        self.execute(command, cwd, timeout, cancel, crate::tools::backends::ExecuteOptions::default())
-            .await
+        self.execute(
+            command,
+            cwd,
+            timeout,
+            cancel,
+            crate::tools::backends::ExecuteOptions::default(),
+        )
+        .await
     }
 
     async fn cleanup(&self) -> Result<(), ToolError> {

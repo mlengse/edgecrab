@@ -42,9 +42,9 @@ pub const ALL_RECIPES: &[BuiltinRecipe] = &[RECIPE_NOUS, RECIPE_XAI];
 
 pub fn resolve_recipe(name: &str) -> Option<&'static BuiltinRecipe> {
     let n = name.trim().to_ascii_lowercase();
-    ALL_RECIPES.iter().find(|r| {
-        r.key == n || r.default_alias == n || (n == "grok" && r.key == "xai")
-    })
+    ALL_RECIPES
+        .iter()
+        .find(|r| r.key == n || r.default_alias == n || (n == "grok" && r.key == "xai"))
 }
 
 /// Apply recipe to config (idempotent merge).
@@ -152,7 +152,11 @@ pub struct ClientSnippet {
     pub token: String,
 }
 
-pub fn client_snippet(cfg: &ProxyConfig, recipe: Option<&BuiltinRecipe>, token: &str) -> ClientSnippet {
+pub fn client_snippet(
+    cfg: &ProxyConfig,
+    recipe: Option<&BuiltinRecipe>,
+    token: &str,
+) -> ClientSnippet {
     let host = &cfg.bind;
     let port = cfg.port;
     let base_url = format!("http://{host}:{port}/v1");
@@ -190,11 +194,11 @@ mod tests {
         let mut cfg = ProxyConfig::default();
         apply_recipe(&mut cfg, &RECIPE_XAI);
         assert!(cfg.forward_upstreams.contains_key("xai"));
-        assert_eq!(cfg.model_aliases.get("grok"), Some(&"forward:xai".to_string()));
         assert_eq!(
-            cfg.default_forward_upstream.as_deref(),
-            Some("xai")
+            cfg.model_aliases.get("grok"),
+            Some(&"forward:xai".to_string())
         );
+        assert_eq!(cfg.default_forward_upstream.as_deref(), Some("xai"));
     }
 
     #[test]

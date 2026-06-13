@@ -3,7 +3,6 @@
 use super::*;
 
 impl App {
-
     pub(super) fn render_mcp_selector(&self, frame: &mut Frame, area: Rect) {
         frame.render_widget(Clear, area);
 
@@ -2326,7 +2325,10 @@ impl App {
         frame.render_widget(help, chunks[2]);
     }
 
-    pub(super) fn build_config_detail_lines(&self, entry: Option<&ConfigEntry>) -> Vec<Line<'static>> {
+    pub(super) fn build_config_detail_lines(
+        &self,
+        entry: Option<&ConfigEntry>,
+    ) -> Vec<Line<'static>> {
         let mut detail_lines = Vec::new();
         if let Some(entry) = entry {
             detail_lines.push(Line::from(Span::styled(

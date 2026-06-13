@@ -290,7 +290,11 @@ impl App {
         }
     }
 
-    pub(super) fn page_simple_selector_list(&mut self, surface: DetailSurface, intent: PagingIntent) {
+    pub(super) fn page_simple_selector_list(
+        &mut self,
+        surface: DetailSurface,
+        intent: PagingIntent,
+    ) {
         match surface {
             DetailSurface::ModelSelector => match intent {
                 PagingIntent::Up => self.model_selector.page_up(),
@@ -352,7 +356,11 @@ impl App {
         self.needs_redraw = true;
     }
 
-    pub(super) fn apply_simple_selector_paging(&mut self, surface: DetailSurface, intent: PagingIntent) {
+    pub(super) fn apply_simple_selector_paging(
+        &mut self,
+        surface: DetailSurface,
+        intent: PagingIntent,
+    ) {
         if self.detail_fullscreen_active(surface) {
             match intent {
                 PagingIntent::Up => self.page_up_detail_fullscreen(surface),

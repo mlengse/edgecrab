@@ -214,7 +214,11 @@ impl TurnActivityState {
             return;
         }
         let notice = ActivityNotice { text, tone };
-        if self.activity_feed.last().is_some_and(|last| last.text == notice.text) {
+        if self
+            .activity_feed
+            .last()
+            .is_some_and(|last| last.text == notice.text)
+        {
             return;
         }
         if self.activity_feed.len() >= SHELF_ACTIVITY_FEED_MAX {
@@ -298,25 +302,21 @@ impl TurnActivityState {
             return;
         }
         let threshold = Duration::from_secs(SHELF_ONBOARDING_SECS);
-        let long_running = self.tools.values().any(|row| {
-            !row.finished && row.started_at.elapsed() >= threshold
-        });
+        let long_running = self
+            .tools
+            .values()
+            .any(|row| !row.finished && row.started_at.elapsed() >= threshold);
         if long_running {
             self.push_activity(
-                "Tip: live activity stays in the shelf — /agents for delegates, /tail for bg logs".into(),
+                "Tip: live activity stays in the shelf — /agents for delegates, /tail for bg logs"
+                    .into(),
                 ActivityTone::Info,
             );
             *onboarding_done = true;
         }
     }
 
-    pub fn on_tool_progress(
-        &mut self,
-        tool_call_id: &str,
-        detail: String,
-        seq: u64,
-        now: Instant,
-    ) {
+    pub fn on_tool_progress(&mut self, tool_call_id: &str, detail: String, seq: u64, now: Instant) {
         let started = self.tools.get(tool_call_id).map(|row| row.started_at);
         if let Some(row) = self.tools.get_mut(tool_call_id) {
             row.detail = Some(detail);
@@ -372,9 +372,7 @@ impl TurnActivityState {
                 .saturating_add(crate::shelf_visual::estimate_tokens_rough(text));
             if matches!(
                 self.phase,
-                ShelfPhase::Idle
-                    | ShelfPhase::AwaitingFirstToken
-                    | ShelfPhase::AnalyzingOutput
+                ShelfPhase::Idle | ShelfPhase::AwaitingFirstToken | ShelfPhase::AnalyzingOutput
             ) {
                 self.set_phase(ShelfPhase::Thinking);
             }
@@ -459,9 +457,7 @@ impl TurnActivityState {
         let elapsed = self.phase_started.elapsed().as_secs();
         match self.phase {
             ShelfPhase::Idle => None,
-            ShelfPhase::AwaitingFirstToken => {
-                Some(format!("awaiting response ({elapsed}s)"))
-            }
+            ShelfPhase::AwaitingFirstToken => Some(format!("awaiting response ({elapsed}s)")),
             ShelfPhase::Thinking => self
                 .reasoning_snippet
                 .clone()
@@ -544,10 +540,7 @@ impl TurnActivityState {
             String::new()
         };
         if active.len() > 1 {
-            Some(format!(
-                "{name} · {detail} +{}",
-                active.len() - 1
-            ))
+            Some(format!("{name} · {detail} +{}", active.len() - 1))
         } else {
             Some(format!("{name} · {detail}{elapsed_suffix}"))
         }
@@ -622,10 +615,7 @@ impl TurnActivityState {
                 .as_deref()
                 .filter(|d| !d.trim().is_empty())
                 .unwrap_or(row.preview.as_str());
-            let line = format!(
-                "{charm} — {} · {detail}",
-                row.name.replace('_', " ")
-            );
+            let line = format!("{charm} — {} · {detail}", row.name.replace('_', " "));
             self.push_activity(line, ActivityTone::Warn);
             self.long_run_hints_per_tool
                 .insert(tool_call_id.to_string(), per_tool + 1);
@@ -798,7 +788,11 @@ mod tests {
     #[test]
     fn live_caption_preparing_tool() {
         let mut state = TurnActivityState::new(true);
-        state.on_generating("t1".into(), "file_write".into(), r#"{"path":"demo/"}"#.into());
+        state.on_generating(
+            "t1".into(),
+            "file_write".into(),
+            r#"{"path":"demo/"}"#.into(),
+        );
         let caption = state.live_caption().unwrap();
         assert!(caption.contains("preparing"));
         assert!(caption.contains("file write"));

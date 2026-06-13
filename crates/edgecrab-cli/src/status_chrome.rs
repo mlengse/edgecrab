@@ -4,7 +4,7 @@ use ratatui::style::Color;
 use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
 
-use crate::status_indicator::{render_indicator_frame, StatusIndicatorStyle};
+use crate::status_indicator::{StatusIndicatorStyle, render_indicator_frame};
 use crate::theme::Theme;
 use crate::tool_display::{tool_action_verb, tool_icon};
 use crate::turn_activity::{ShelfPhase, TurnActivityState};
@@ -190,9 +190,7 @@ pub struct ActiveToolSummary {
 }
 
 /// Status-bar tool line — single source via [`TurnActivityState::tool_summary`].
-pub fn summarize_tools_for_status(
-    turn_activity: &TurnActivityState,
-) -> Option<ActiveToolSummary> {
+pub fn summarize_tools_for_status(turn_activity: &TurnActivityState) -> Option<ActiveToolSummary> {
     turn_activity.tool_summary().map(|s| {
         let detail = if s.preparing {
             let preview = edgecrab_core::safe_truncate(s.detail.trim(), 52);
@@ -260,7 +258,15 @@ mod tests {
     #[test]
     fn thinking_status_includes_spinner() {
         let theme = Theme::default();
-        let msg = format_thinking_status(&theme, StatusIndicatorStyle::Kaomoji, TerminalGlyphProfile::Unicode, 0, 0, 0, 3);
+        let msg = format_thinking_status(
+            &theme,
+            StatusIndicatorStyle::Kaomoji,
+            TerminalGlyphProfile::Unicode,
+            0,
+            0,
+            0,
+            3,
+        );
         assert!(msg.contains("thinking"));
     }
 

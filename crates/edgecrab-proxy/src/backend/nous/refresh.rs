@@ -12,10 +12,10 @@ use crate::backend::auth_file::{load_auth_doc, write_auth_doc, write_provider_st
 use crate::error::ProxyError;
 
 use super::inference_url::validate_nous_inference_url_from_network;
-use super::jwt::{self, set_agent_key_from_invoke_jwt, INVOKE_JWT_MIN_TTL_SECS};
+use super::jwt::{self, INVOKE_JWT_MIN_TTL_SECS, set_agent_key_from_invoke_jwt};
 use super::quarantine::{
-    is_terminal_nous_refresh_failure, parse_refresh_failure_body, quarantine_nous_pool_in_doc,
-    quarantine_provider_state, state_requires_relogin, NousRefreshFailure,
+    NousRefreshFailure, is_terminal_nous_refresh_failure, parse_refresh_failure_body,
+    quarantine_nous_pool_in_doc, quarantine_provider_state, state_requires_relogin,
 };
 
 pub use super::inference_url::DEFAULT_NOUS_INFERENCE;
@@ -103,10 +103,7 @@ pub async fn refresh_access_token(
     let resp = client
         .post(&url)
         .header("x-nous-refresh-token", refresh_token)
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("client_id", client_id),
-        ])
+        .form(&[("grant_type", "refresh_token"), ("client_id", client_id)])
         .send()
         .await
         .map_err(|e| NousRefreshFailure {
@@ -124,7 +121,11 @@ pub async fn refresh_access_token(
             code: "invalid_json".into(),
             message: format!("nous refresh JSON: {e}"),
         })?;
-        if payload.get("access_token").and_then(|v| v.as_str()).is_some() {
+        if payload
+            .get("access_token")
+            .and_then(|v| v.as_str())
+            .is_some()
+        {
             return Ok(payload);
         }
         return Err(NousRefreshFailure {
@@ -239,9 +240,7 @@ async fn resolve_inner(
         .and_then(|v| v.as_str())
         .filter(|s| !s.is_empty())
         .ok_or_else(|| {
-            ProxyError::UpstreamAuth(
-                "Nous refresh did not yield a usable inference JWT".into(),
-            )
+            ProxyError::UpstreamAuth("Nous refresh did not yield a usable inference JWT".into())
         })?;
     Ok((bearer.to_string(), inference))
 }
@@ -253,11 +252,5 @@ pub async fn resolve_nous_credentials_async(
     fallback_inference_url: &str,
     force_refresh: bool,
 ) -> Result<(String, String), ProxyError> {
-    resolve_inner(
-        auth_path,
-        provider,
-        fallback_inference_url,
-        force_refresh,
-    )
-    .await
+    resolve_inner(auth_path, provider, fallback_inference_url, force_refresh).await
 }

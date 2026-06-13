@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+#![allow(dead_code)]
 //! E2E: Hermes-style setup schema rows for all registered web providers.
 
 mod common;

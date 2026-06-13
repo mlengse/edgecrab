@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+#![allow(dead_code)]
 //! E2E: website blocklist policy gates `web_extract`.
 
 mod common;

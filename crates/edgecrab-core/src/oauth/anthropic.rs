@@ -10,7 +10,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use uuid::Uuid;
 
 use crate::config::edgecrab_home;
@@ -56,10 +56,10 @@ pub fn read_anthropic_oauth_file() -> Result<Option<AnthropicOAuthFile>, String>
     if !path.exists() {
         return Ok(None);
     }
-    let raw = std::fs::read_to_string(&path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
-    let data: Value = serde_json::from_str(&raw)
-        .map_err(|e| format!("parse {}: {e}", path.display()))?;
+    let raw =
+        std::fs::read_to_string(&path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let data: Value =
+        serde_json::from_str(&raw).map_err(|e| format!("parse {}: {e}", path.display()))?;
     let access = data
         .get("accessToken")
         .or_else(|| data.get("access_token"))
@@ -89,8 +89,7 @@ pub fn read_anthropic_oauth_file() -> Result<Option<AnthropicOAuthFile>, String>
 pub fn write_anthropic_oauth_file(creds: &AnthropicOAuthFile) -> Result<(), String> {
     let path = oauth_file_path();
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("create {}: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
     let payload = json!({
         "accessToken": creds.access_token,

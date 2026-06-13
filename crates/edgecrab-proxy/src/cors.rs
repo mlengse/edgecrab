@@ -20,7 +20,10 @@ impl From<&ProxyConfig> for CorsState {
 }
 
 fn origin_allowed(state: &CorsState, origin: &str) -> bool {
-    state.allowed_origins.iter().any(|o| o == "*" || o == origin)
+    state
+        .allowed_origins
+        .iter()
+        .any(|o| o == "*" || o == origin)
 }
 
 fn cors_header_value(state: &CorsState, origin: &str) -> HeaderValue {
@@ -56,7 +59,10 @@ pub async fn cors_middleware(
         return (
             StatusCode::NO_CONTENT,
             [
-                (header::ACCESS_CONTROL_ALLOW_ORIGIN, cors_header_value(&state, &origin)),
+                (
+                    header::ACCESS_CONTROL_ALLOW_ORIGIN,
+                    cors_header_value(&state, &origin),
+                ),
                 (
                     header::ACCESS_CONTROL_ALLOW_METHODS,
                     HeaderValue::from_static("GET, POST, OPTIONS"),

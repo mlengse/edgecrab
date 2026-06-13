@@ -65,7 +65,8 @@ impl App {
                                 self.output[idx].invalidate_render_cache();
                             }
                         } else {
-                            self.output.push(OutputLine::new_text(text.clone(), OutputRole::Assistant));
+                            self.output
+                                .push(OutputLine::new_text(text.clone(), OutputRole::Assistant));
                             self.streaming_line = Some(self.output.len() - 1);
                             // Only auto-scroll to bottom if the user is already there
                             if self.at_bottom {
@@ -274,10 +275,7 @@ impl App {
                     {
                         let preview = extract_tool_preview(&name, &args_json);
                         let line_idx = self.output.len();
-                        self.push_output(
-                            format!("⏳ {name}  {preview}"),
-                            OutputRole::System,
-                        );
+                        self.push_output(format!("⏳ {name}  {preview}"), OutputRole::System);
                         self.pending_tool_lines.insert(
                             tool_call_id,
                             PendingToolLine {
@@ -369,10 +367,7 @@ impl App {
                             let elapsed = self.turn_activity.tool_elapsed_secs(&tool_call_id);
                             self.output[line_idx].text =
                                 edgecrab_tools::tool_progress_tail::format_minimal_tool_indicator(
-                                    &tool_name,
-                                    &preview,
-                                    elapsed,
-                                    &detail,
+                                    &tool_name, &preview, elapsed, &detail,
                                 );
                             self.output[line_idx].invalidate_render_cache();
                         }
@@ -442,8 +437,7 @@ impl App {
                     {
                         self.remove_output_line(line_idx);
                     }
-                    let show_done =
-                        self.should_show_tool_done_in_transcript(hidden, minimal_done);
+                    let show_done = self.should_show_tool_done_in_transcript(hidden, minimal_done);
                     if show_done {
                         let widths =
                             DisplayWidths::from_terminal_width(self.last_terminal_width as usize);
@@ -465,10 +459,12 @@ impl App {
                         if let Some(PendingToolLine { line_idx, .. }) = pending.as_ref() {
                             if *line_idx < self.output.len() {
                                 self.output[*line_idx].prebuilt_spans = Some(spans);
-                                if matches!(name.as_str(), "terminal" | "execute_code" | "browser_snapshot")
-                                    && let Some(body) = result_preview
-                                        .clone()
-                                        .filter(|text| !text.trim().is_empty())
+                                if matches!(
+                                    name.as_str(),
+                                    "terminal" | "execute_code" | "browser_snapshot"
+                                ) && let Some(body) = result_preview
+                                    .clone()
+                                    .filter(|text| !text.trim().is_empty())
                                 {
                                     let body =
                                         crate::transcript_heights::truncate_verbose_trail(&body);
@@ -657,7 +653,11 @@ impl App {
                             self.output[line_idx].invalidate_render_cache();
                         }
                     }
-                    stream_bridge::apply_subagent_detail(&mut self.turn_activity, task_index, detail);
+                    stream_bridge::apply_subagent_detail(
+                        &mut self.turn_activity,
+                        task_index,
+                        detail,
+                    );
                     self.note_shelf_activity();
                     self.needs_redraw = true;
                 }
@@ -705,7 +705,12 @@ impl App {
                     if self.at_bottom {
                         self.scroll_offset = 0;
                     }
-                    stream_bridge::apply_subagent_tool(&mut self.turn_activity, task_index, &name, detail);
+                    stream_bridge::apply_subagent_tool(
+                        &mut self.turn_activity,
+                        task_index,
+                        &name,
+                        detail,
+                    );
                     self.note_shelf_activity();
                     self.needs_redraw = true;
                 }
@@ -749,11 +754,8 @@ impl App {
                         self.scroll_offset = 0;
                     }
                     if let Some(row) = self.turn_activity.subagents.get(&task_index) {
-                        self.spawn_history.record_finish(
-                            row,
-                            duration_ms / 1000,
-                            &status,
-                        );
+                        self.spawn_history
+                            .record_finish(row, duration_ms / 1000, &status);
                     }
                     stream_bridge::apply_subagent_finish(&mut self.turn_activity, task_index);
                     self.note_shelf_activity();
@@ -905,8 +907,7 @@ impl App {
                             show_full: false,
                             scroll_offset: 0,
                         };
-                        self.turn_activity
-                            .set_phase(ShelfPhase::WaitingForApproval);
+                        self.turn_activity.set_phase(ShelfPhase::WaitingForApproval);
                         self.note_shelf_activity();
                         self.approval_pending_tx = Some(response_tx);
                         self.needs_redraw = true;

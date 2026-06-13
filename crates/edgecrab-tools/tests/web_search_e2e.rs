@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+#![allow(dead_code)]
 //! Live E2E tests for pluggable web search backends.
 //!
 //! Run with:

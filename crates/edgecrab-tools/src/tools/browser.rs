@@ -36,8 +36,8 @@ use edgequake_llm::traits::{ChatMessage, ImageData};
 
 use crate::registry::{ToolContext, ToolHandler};
 use crate::tool_progress_tail::{
-    emit_tool_progress, format_browser_milestone, format_browser_wait_milestone,
-    HEARTBEAT_INTERVAL_SECS,
+    HEARTBEAT_INTERVAL_SECS, emit_tool_progress, format_browser_milestone,
+    format_browser_wait_milestone,
 };
 
 /// Emit a browser milestone to the agent progress channel (when wired).
@@ -2444,7 +2444,11 @@ impl ToolHandler for BrowserSnapshotTool {
         browser_progress(
             ctx,
             "snapshot",
-            if args.full { "full page" } else { "interactive" },
+            if args.full {
+                "full page"
+            } else {
+                "interactive"
+            },
         );
 
         // Wait for page to reach interactive state before snapshotting.
@@ -3650,8 +3654,8 @@ impl ToolHandler for BrowserWaitForTool {
 
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(timeout_secs);
         let mut found = false;
-        let mut last_heartbeat = std::time::Instant::now()
-            - std::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
+        let mut last_heartbeat =
+            std::time::Instant::now() - std::time::Duration::from_secs(HEARTBEAT_INTERVAL_SECS);
 
         while tokio::time::Instant::now() < deadline {
             let result = cdp_evaluate(&session.ws_url, &check_js)
@@ -3786,7 +3790,11 @@ impl ToolHandler for BrowserSelectTool {
         browser_progress(
             ctx,
             "select",
-            &format!("{} → {}", args.r#ref, crate::safe_truncate(&args.option, 40)),
+            &format!(
+                "{} → {}",
+                args.r#ref,
+                crate::safe_truncate(&args.option, 40)
+            ),
         );
 
         let option_escaped = escape_js_string(&args.option);

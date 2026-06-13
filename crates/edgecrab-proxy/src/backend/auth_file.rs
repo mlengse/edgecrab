@@ -45,9 +45,8 @@ pub fn read_provider_state(path: &Path, provider: &str) -> Result<Value, ProxyEr
 /// Persist the full auth document (under file lock).
 pub fn write_auth_doc(path: &Path, doc: &Value) -> Result<(), ProxyError> {
     with_auth_store_lock(path, || {
-        let bytes = serde_json::to_vec_pretty(doc).map_err(|e| {
-            ProxyError::UpstreamAuth(format!("serialize auth store: {e}"))
-        })?;
+        let bytes = serde_json::to_vec_pretty(doc)
+            .map_err(|e| ProxyError::UpstreamAuth(format!("serialize auth store: {e}")))?;
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent).map_err(|e| {
                 ProxyError::UpstreamAuth(format!("create auth dir {}: {e}", parent.display()))
@@ -74,7 +73,10 @@ pub fn remove_provider_state(path: &Path, provider: &str) -> Result<(), ProxyErr
         if let Some(providers) = doc.get_mut("providers").and_then(|v| v.as_object_mut()) {
             providers.remove(provider);
         }
-        if let Some(pool) = doc.get_mut("credential_pool").and_then(|v| v.as_object_mut()) {
+        if let Some(pool) = doc
+            .get_mut("credential_pool")
+            .and_then(|v| v.as_object_mut())
+        {
             pool.remove(provider);
         }
         write_auth_doc(path, &doc)
@@ -116,12 +118,7 @@ pub fn read_credential_pool_entries(doc: &Value, provider: &str) -> Vec<Value> {
     doc.get("credential_pool")
         .and_then(|p| p.get(provider))
         .and_then(|v| v.as_array())
-        .map(|arr| {
-            arr.iter()
-                .filter(|e| e.is_object())
-                .cloned()
-                .collect()
-        })
+        .map(|arr| arr.iter().filter(|e| e.is_object()).cloned().collect())
         .unwrap_or_default()
 }
 
@@ -170,10 +167,12 @@ mod tests {
         });
         let pool = read_credential_pool_entries(&doc, "xai-oauth");
         assert_eq!(pool.len(), 1);
-        let (b, _) = bearer_and_base_from_entry(&pool[0], "https://fallback/v1").unwrap();
+        let (b, _) =
+            bearer_and_base_from_entry(&pool[0], "https://fallback/v1").expect("pool entry bearer");
         assert_eq!(b, "pool-tok");
-        let state = provider_state_from_doc(&doc, "xai-oauth").unwrap();
-        let (b2, _) = bearer_and_base_from_entry(&state, "https://fallback/v1").unwrap();
+        let state = provider_state_from_doc(&doc, "xai-oauth").expect("provider state");
+        let (b2, _) =
+            bearer_and_base_from_entry(&state, "https://fallback/v1").expect("state bearer");
         assert_eq!(b2, "singleton-tok");
     }
 }

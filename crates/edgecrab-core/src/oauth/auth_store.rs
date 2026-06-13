@@ -11,16 +11,14 @@ pub fn default_auth_path() -> PathBuf {
 }
 
 pub fn load_auth_doc(path: &Path) -> Result<Value, String> {
-    let raw = std::fs::read_to_string(path)
-        .map_err(|e| format!("read {}: {e}", path.display()))?;
+    let raw = std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
     serde_json::from_str(&raw).map_err(|e| format!("parse {}: {e}", path.display()))
 }
 
 pub fn write_auth_doc(path: &Path, doc: &Value) -> Result<(), String> {
     let bytes = serde_json::to_vec_pretty(doc).map_err(|e| format!("serialize auth: {e}"))?;
     if let Some(parent) = path.parent() {
-        std::fs::create_dir_all(parent)
-            .map_err(|e| format!("create {}: {e}", parent.display()))?;
+        std::fs::create_dir_all(parent).map_err(|e| format!("create {}: {e}", parent.display()))?;
     }
     std::fs::write(path, bytes).map_err(|e| format!("write {}: {e}", path.display()))?;
     #[cfg(unix)]
@@ -36,10 +34,7 @@ pub fn read_provider_state(path: &Path, provider: &str) -> Result<Option<Value>,
         return Ok(None);
     }
     let doc = load_auth_doc(path)?;
-    Ok(doc
-        .get("providers")
-        .and_then(|p| p.get(provider))
-        .cloned())
+    Ok(doc.get("providers").and_then(|p| p.get(provider)).cloned())
 }
 
 pub fn write_provider_state(path: &Path, provider: &str, state: &Value) -> Result<(), String> {
@@ -48,7 +43,9 @@ pub fn write_provider_state(path: &Path, provider: &str, state: &Value) -> Resul
     } else {
         Value::Object(Map::new())
     };
-    let root = doc.as_object_mut().ok_or_else(|| "auth root must be object".to_string())?;
+    let root = doc
+        .as_object_mut()
+        .ok_or_else(|| "auth root must be object".to_string())?;
     let providers = root
         .entry("providers")
         .or_insert_with(|| Value::Object(Map::new()));
@@ -68,7 +65,10 @@ pub fn remove_provider_state(path: &Path, provider: &str) -> Result<(), String> 
     if let Some(providers) = doc.get_mut("providers").and_then(|v| v.as_object_mut()) {
         providers.remove(provider);
     }
-    if let Some(pool) = doc.get_mut("credential_pool").and_then(|v| v.as_object_mut()) {
+    if let Some(pool) = doc
+        .get_mut("credential_pool")
+        .and_then(|v| v.as_object_mut())
+    {
         pool.remove(provider);
     }
     write_auth_doc(path, &doc)
@@ -119,8 +119,10 @@ mod tests {
         let access = read_provider_access_token(&path, "openai-codex").expect("read");
         assert_eq!(access.as_deref(), Some("access-test"));
         remove_provider_state(&path, "openai-codex").expect("remove");
-        assert!(read_provider_access_token(&path, "openai-codex")
-            .expect("read")
-            .is_none());
+        assert!(
+            read_provider_access_token(&path, "openai-codex")
+                .expect("read")
+                .is_none()
+        );
     }
 }

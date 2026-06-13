@@ -71,7 +71,10 @@ pub fn format_upstream_status_table(cfg: &ProxyConfig) -> Vec<String> {
     let mut lines = Vec::new();
     for key in list_forward_upstream_keys(cfg) {
         if let Some(adapter) = adapters.get(&key) {
-            lines.push(format!("  [{key:12}] {}", describe_adapter(adapter.as_ref())));
+            lines.push(format!(
+                "  [{key:12}] {}",
+                describe_adapter(adapter.as_ref())
+            ));
         }
     }
     lines
@@ -95,7 +98,7 @@ mod tests {
         let adapters = build_forward_adapters(&cfg.forward_upstreams);
         let err = ensure_forward_upstream_ready(&adapters, "empty")
             .await
-            .unwrap_err();
+            .expect_err("empty upstream should fail auth");
         assert!(matches!(err, ProxyError::UpstreamAuth(_)));
     }
 

@@ -213,19 +213,17 @@ mod tests {
     #[test]
     fn subagent_tracks_tool_churn() {
         let mut state = TurnActivityState::new(true);
-        apply_subagent_start(&mut state, 0, 2, "audit auth".into(), 1, "sa-0".into(), None);
-        apply_subagent_tool(
+        apply_subagent_start(
             &mut state,
             0,
-            "file_read",
-            "file_read  auth.rs".into(),
+            2,
+            "audit auth".into(),
+            1,
+            "sa-0".into(),
+            None,
         );
-        apply_subagent_tool(
-            &mut state,
-            0,
-            "terminal",
-            "terminal  cargo test".into(),
-        );
+        apply_subagent_tool(&mut state, 0, "file_read", "file_read  auth.rs".into());
+        apply_subagent_tool(&mut state, 0, "terminal", "terminal  cargo test".into());
         assert_eq!(state.subagent_tool_total(), 2);
         let row = state.subagents.get(&0).unwrap();
         assert_eq!(row.tool_count, 2);

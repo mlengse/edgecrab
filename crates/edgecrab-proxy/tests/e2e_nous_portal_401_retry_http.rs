@@ -41,7 +41,10 @@ async fn upstream_chat(
         *h
     };
     if n == 1 {
-        return (StatusCode::UNAUTHORIZED, axum::Json(serde_json::json!({"error": "bad jwt"})));
+        return (
+            StatusCode::UNAUTHORIZED,
+            axum::Json(serde_json::json!({"error": "bad jwt"})),
+        );
     }
     (
         StatusCode::OK,
@@ -127,7 +130,8 @@ async fn e2e_nous_portal_retries_on_upstream_401() {
     .expect("write");
 
     let mut cfg = ProxyConfig::default();
-    cfg.model_aliases.insert("nous-chat".into(), "forward:nous".into());
+    cfg.model_aliases
+        .insert("nous-chat".into(), "forward:nous".into());
     cfg.forward_upstreams.insert(
         "nous".into(),
         ForwardUpstreamConfig {
@@ -167,7 +171,11 @@ async fn e2e_nous_portal_retries_on_upstream_401() {
         .await
         .expect("request");
     assert_eq!(resp.status(), 200);
-    assert_eq!(*capture.hits.lock().expect("lock"), 2, "upstream 401 then retry");
+    assert_eq!(
+        *capture.hits.lock().expect("lock"),
+        2,
+        "upstream 401 then retry"
+    );
     assert!(
         *capture.refresh_hits.lock().expect("lock") >= 1,
         "force-refresh after upstream 401"

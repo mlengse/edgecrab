@@ -1123,9 +1123,7 @@ pub enum ProxyCommand {
         yes: bool,
     },
     /// Add a built-in upstream preset to config.yaml (grok, xai, nous)
-    Enable {
-        provider: String,
-    },
+    Enable { provider: String },
     /// Preflight: token, upstream auth, config
     Doctor,
     /// Print OPENAI_API_BASE / Aider snippet for clients

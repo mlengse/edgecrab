@@ -3,11 +3,11 @@
 use std::time::{Duration, Instant};
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph};
-use ratatui::Frame;
 
 use crate::gantt_strip::{build_gantt_spans, render_gantt_lines};
 use crate::overlay_layout::popup_rect;
@@ -136,9 +136,11 @@ pub fn sort_delegate_rows_by(rows: &mut [DelegateRow], mode: AgentsSortMode) {
     match mode {
         AgentsSortMode::SpawnOrder => rows.sort_by_key(|r| r.task_index),
         AgentsSortMode::DepthFirst => crate::subagent_tree::sort_depth_first(rows),
-        AgentsSortMode::ToolCountDesc => {
-            rows.sort_by(|a, b| b.tool_count.cmp(&a.tool_count).then(a.task_index.cmp(&b.task_index)))
-        }
+        AgentsSortMode::ToolCountDesc => rows.sort_by(|a, b| {
+            b.tool_count
+                .cmp(&a.tool_count)
+                .then(a.task_index.cmp(&b.task_index))
+        }),
         AgentsSortMode::DurationDesc => rows.sort_by(|a, b| {
             b.elapsed_secs
                 .cmp(&a.elapsed_secs)
@@ -281,7 +283,11 @@ pub fn render_agents_overlay(frame: &mut Frame, area: Rect, params: &AgentsRende
 
     frame.render_widget(Clear, area);
 
-    let accent = params.theme.shelf_accent.fg.unwrap_or(Color::Rgb(205, 175, 50));
+    let accent = params
+        .theme
+        .shelf_accent
+        .fg
+        .unwrap_or(Color::Rgb(205, 175, 50));
     let dim = params.theme.shelf_dim.fg.unwrap_or(Color::DarkGray);
     let warn = params.theme.shelf_hint.fg.unwrap_or(Color::Yellow);
     let hot = params.theme.output_error.fg.unwrap_or(Color::Red);
@@ -358,7 +364,10 @@ pub fn render_agents_overlay(frame: &mut Frame, area: Rect, params: &AgentsRende
 
     let header = Paragraph::new(vec![
         Line::from(vec![
-            Span::styled(" agents ", Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+            Span::styled(
+                " agents ",
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
             Span::styled(
                 format!(
                     "· {live_label} · {} tool call(s){spark}",
@@ -400,9 +409,21 @@ pub fn render_agents_overlay(frame: &mut Frame, area: Rect, params: &AgentsRende
         frame.render_widget(gantt, chunks[1]);
     }
 
-    let list_chunk = if gantt_height > 0 { chunks[2] } else { chunks[1] };
-    let history_chunk = if gantt_height > 0 { chunks[3] } else { chunks[2] };
-    let footer_chunk = if gantt_height > 0 { chunks[4] } else { chunks[3] };
+    let list_chunk = if gantt_height > 0 {
+        chunks[2]
+    } else {
+        chunks[1]
+    };
+    let history_chunk = if gantt_height > 0 {
+        chunks[3]
+    } else {
+        chunks[2]
+    };
+    let footer_chunk = if gantt_height > 0 {
+        chunks[4]
+    } else {
+        chunks[3]
+    };
 
     if params.rows.is_empty() {
         let mut empty_lines = vec![
@@ -432,7 +453,9 @@ pub fn render_agents_overlay(frame: &mut Frame, area: Rect, params: &AgentsRende
             .rows
             .iter()
             .enumerate()
-            .map(|(i, row)| delegate_list_item(row, i, params.overlay.cursor, accent, dim, warn, hot))
+            .map(|(i, row)| {
+                delegate_list_item(row, i, params.overlay.cursor, accent, dim, warn, hot)
+            })
             .collect();
 
         let list = List::new(items).block(
@@ -449,10 +472,7 @@ pub fn render_agents_overlay(frame: &mut Frame, area: Rect, params: &AgentsRende
             .map(|turn| {
                 Line::from(vec![
                     Span::styled(" ◷ ", Style::default().fg(accent)),
-                    Span::styled(
-                        turn.label.clone(),
-                        Style::default().fg(dim),
-                    ),
+                    Span::styled(turn.label.clone(), Style::default().fg(dim)),
                     Span::styled(
                         format!(
                             " · {} del · {} tools · {}",
@@ -561,7 +581,10 @@ fn delegate_list_item(
                     Style::default().fg(dim)
                 },
             ),
-            Span::styled(detail, Style::default().fg(dim).add_modifier(Modifier::ITALIC)),
+            Span::styled(
+                detail,
+                Style::default().fg(dim).add_modifier(Modifier::ITALIC),
+            ),
             Span::styled(tool_suffix, Style::default().fg(dim)),
             Span::styled(
                 format!(" · {}", fmt_duration(row.elapsed_secs)),
@@ -581,7 +604,11 @@ fn delegate_list_item(
 }
 
 fn render_diff_view(frame: &mut Frame, popup: Rect, params: &AgentsRenderParams<'_>) {
-    let accent = params.theme.shelf_accent.fg.unwrap_or(Color::Rgb(205, 175, 50));
+    let accent = params
+        .theme
+        .shelf_accent
+        .fg
+        .unwrap_or(Color::Rgb(205, 175, 50));
     let dim = params.theme.shelf_dim.fg.unwrap_or(Color::DarkGray);
     let ok = Color::Rgb(120, 200, 120);
     let hot = params.theme.output_error.fg.unwrap_or(Color::Red);
@@ -664,15 +691,7 @@ fn render_diff_view(frame: &mut Frame, popup: Rect, params: &AgentsRenderParams<
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(chunks[2]);
 
-    render_diff_turn_pane(
-        frame,
-        panes[0],
-        "baseline",
-        baseline,
-        dim,
-        border,
-        false,
-    );
+    render_diff_turn_pane(frame, panes[0], "baseline", baseline, dim, border, false);
     render_diff_turn_pane(
         frame,
         panes[1],
@@ -705,9 +724,7 @@ fn render_diff_turn_pane(
     let mut lines = vec![
         Line::from(Span::styled(
             format!(" {title} "),
-            Style::default()
-                .fg(accent)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
         )),
         Line::from(Span::styled(
             snapshot.label.clone(),
@@ -756,7 +773,7 @@ fn render_diff_turn_pane(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::spawn_history::{SpawnHistory, SpawnHistoryEntry, SpawnTurnSnapshot};
+    use crate::spawn_history::{SpawnHistoryEntry, SpawnTurnSnapshot};
 
     fn sample_row(index: usize, tools: usize, elapsed: u64) -> DelegateRow {
         DelegateRow {
@@ -777,14 +794,22 @@ mod tests {
 
     #[test]
     fn sort_busiest_first() {
-        let mut rows = vec![sample_row(0, 1, 5), sample_row(1, 9, 2), sample_row(2, 3, 8)];
+        let mut rows = vec![
+            sample_row(0, 1, 5),
+            sample_row(1, 9, 2),
+            sample_row(2, 3, 8),
+        ];
         sort_delegate_rows_by(&mut rows, AgentsSortMode::ToolCountDesc);
         assert_eq!(rows[0].task_index, 1);
     }
 
     #[test]
     fn sort_slowest_first() {
-        let mut rows = vec![sample_row(0, 1, 5), sample_row(1, 1, 40), sample_row(2, 1, 10)];
+        let mut rows = vec![
+            sample_row(0, 1, 5),
+            sample_row(1, 1, 40),
+            sample_row(2, 1, 10),
+        ];
         sort_delegate_rows_by(&mut rows, AgentsSortMode::DurationDesc);
         assert_eq!(rows[0].task_index, 1);
     }

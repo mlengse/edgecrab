@@ -270,8 +270,9 @@ impl App {
                 crate::proxy_setup_tui::ProxySetupAction::RunOAuthLogin(target) => {
                     if crate::auth_cmd::is_grok_auth_target(target) {
                         self.open_grok_auth_overlay(crate::grok_auth_tui::GrokAuthScreen::Start);
-                        self.proxy_setup.toast =
-                            Some("Grok sign-in — follow the overlay (paste code from x.ai).".into());
+                        self.proxy_setup.toast = Some(
+                            "Grok sign-in — follow the overlay (paste code from x.ai).".into(),
+                        );
                     } else {
                         self.run_login_target_with_terminal_handoff(target, false, false);
                         self.proxy_setup.toast =
@@ -2745,5 +2746,4 @@ impl App {
             InputEditorMode::ComposeNormal => self.handle_compose_normal_key(key),
         }
     }
-
 }

@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use reqwest::Client;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 use tokio::time::sleep;
 
 use super::auth_store::{
@@ -18,12 +18,7 @@ pub const CODEX_OAUTH_TOKEN_URL: &str = "https://auth.openai.com/oauth/token";
 pub const CODEX_OAUTH_ISSUER: &str = "https://auth.openai.com";
 pub const DEFAULT_CODEX_BASE_URL: &str = "https://chatgpt.com/backend-api/codex";
 
-pub const OPENAI_CODEX_ALIASES: &[&str] = &[
-    "openai-codex",
-    "chatgpt-pro",
-    "chatgpt_pro",
-    "codex",
-];
+pub const OPENAI_CODEX_ALIASES: &[&str] = &["openai-codex", "chatgpt-pro", "chatgpt_pro", "codex"];
 
 #[derive(Clone, Default)]
 pub struct CodexDeviceLoginOptions {
@@ -54,7 +49,9 @@ pub fn codex_has_credentials(path: &std::path::Path) -> bool {
 
 pub async fn refresh_codex_oauth(refresh_token: &str) -> Result<Value, String> {
     if refresh_token.trim().is_empty() {
-        return Err("Codex OAuth: missing refresh_token — run `edgecrab auth add chatgpt-pro`".into());
+        return Err(
+            "Codex OAuth: missing refresh_token — run `edgecrab auth add chatgpt-pro`".into(),
+        );
     }
     let client = Client::builder()
         .timeout(Duration::from_secs(20))
@@ -73,7 +70,10 @@ pub async fn refresh_codex_oauth(refresh_token: &str) -> Result<Value, String> {
         .await
         .map_err(|e| format!("codex refresh: {e}"))?;
     let status = resp.status();
-    let body = resp.text().await.map_err(|e| format!("codex refresh body: {e}"))?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| format!("codex refresh body: {e}"))?;
     if !status.is_success() {
         let relogin = status.as_u16() == 401 || status.as_u16() == 403;
         let hint = if relogin {
@@ -81,7 +81,10 @@ pub async fn refresh_codex_oauth(refresh_token: &str) -> Result<Value, String> {
         } else {
             ""
         };
-        return Err(format!("codex refresh HTTP {}: {body}{hint}", status.as_u16()));
+        return Err(format!(
+            "codex refresh HTTP {}: {body}{hint}",
+            status.as_u16()
+        ));
     }
     serde_json::from_str(&body).map_err(|e| format!("codex refresh JSON: {e}"))
 }
@@ -161,7 +164,9 @@ pub async fn login_codex_device_oauth(
         .map_err(|e| format!("http client: {e}"))?;
 
     let resp = client
-        .post(format!("{CODEX_OAUTH_ISSUER}/api/accounts/deviceauth/usercode"))
+        .post(format!(
+            "{CODEX_OAUTH_ISSUER}/api/accounts/deviceauth/usercode"
+        ))
         .json(&json!({ "client_id": CODEX_OAUTH_CLIENT_ID }))
         .header("Content-Type", "application/json")
         .send()
@@ -190,7 +195,11 @@ pub async fn login_codex_device_oauth(
     }
     let poll_interval = device_data
         .get("interval")
-        .and_then(|v| v.as_str().and_then(|s| s.parse().ok()).or_else(|| v.as_u64()))
+        .and_then(|v| {
+            v.as_str()
+                .and_then(|s| s.parse().ok())
+                .or_else(|| v.as_u64())
+        })
         .unwrap_or(5)
         .max(3);
 
@@ -214,7 +223,9 @@ pub async fn login_codex_device_oauth(
     while started.elapsed() < max_wait {
         sleep(Duration::from_secs(poll_interval)).await;
         let poll = client
-            .post(format!("{CODEX_OAUTH_ISSUER}/api/accounts/deviceauth/token"))
+            .post(format!(
+                "{CODEX_OAUTH_ISSUER}/api/accounts/deviceauth/token"
+            ))
             .json(&json!({
                 "device_auth_id": device_auth_id,
                 "user_code": user_code,
@@ -226,9 +237,7 @@ pub async fn login_codex_device_oauth(
         let poll_status = poll.status();
         if poll_status.as_u16() == 200 {
             let text = poll.text().await.map_err(|e| format!("poll body: {e}"))?;
-            code_resp = Some(
-                serde_json::from_str(&text).map_err(|e| format!("poll JSON: {e}"))?,
-            );
+            code_resp = Some(serde_json::from_str(&text).map_err(|e| format!("poll JSON: {e}"))?);
             break;
         }
         if poll_status.as_u16() == 403 || poll_status.as_u16() == 404 {

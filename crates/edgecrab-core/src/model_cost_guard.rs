@@ -89,26 +89,23 @@ mod tests {
     fn synthetic_expensive_message_shape() {
         let input = INPUT_COST_WARNING_THRESHOLD + 1.0;
         assert!(is_expensive_pricing(input, 0.0));
-        let message = format!(
-            "Input tokens: {}",
-            format_money(input)
-        );
+        let message = format!("Input tokens: {}", format_money(input));
         assert!(message.contains("$21.00/M"));
     }
 
     #[test]
     fn pricing_source_is_documented_in_warning() {
-        if let Some(pricing) = get_pricing("anthropic/claude-opus-4.6") {
-            if is_expensive_pricing(
+        if let Some(pricing) = get_pricing("anthropic/claude-opus-4.6")
+            && is_expensive_pricing(
                 pricing.input_cost_per_million,
                 pricing.output_cost_per_million,
-            ) {
-                let warning = expensive_model_warning("anthropic/claude-opus-4.6").unwrap();
-                assert!(warning.message.contains("EXPENSIVE MODEL WARNING"));
-                assert_eq!(warning.model, "anthropic/claude-opus-4.6");
-                let _ = CostSource::OfficialDocsSnapshot;
-                return;
-            }
+            )
+        {
+            let warning =
+                expensive_model_warning("anthropic/claude-opus-4.6").expect("expensive model");
+            assert!(warning.message.contains("EXPENSIVE MODEL WARNING"));
+            assert_eq!(warning.model, "anthropic/claude-opus-4.6");
+            let _ = CostSource::OfficialDocsSnapshot;
         }
     }
 }

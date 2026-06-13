@@ -1,11 +1,11 @@
 //! Model picker overlay stages — Hermes `modelPicker.tsx` disconnect parity.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph};
-use ratatui::Frame;
 
 use crate::auth_cmd::{disconnect_catalog_provider, provider_disconnect_supported};
 use crate::theme::Theme;
@@ -78,10 +78,7 @@ pub fn handle_picker_keys(stage: &ModelPickerStage, key: KeyEvent) -> ModelPicke
     }
 }
 
-pub fn handle_disconnect_keys(
-    stage: &ModelPickerStage,
-    key: KeyEvent,
-) -> ModelPickerKeyAction {
+pub fn handle_disconnect_keys(stage: &ModelPickerStage, key: KeyEvent) -> ModelPickerKeyAction {
     match stage {
         ModelPickerStage::DisconnectConfirm { .. } => match key.code {
             KeyCode::Char('y') | KeyCode::Char('Y') | KeyCode::Enter => {
@@ -129,9 +126,7 @@ pub fn render_expensive_confirm(
 
     let header = Paragraph::new(Line::from(Span::styled(
         " expensive model ",
-        Style::default()
-            .fg(warn)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(warn).add_modifier(Modifier::BOLD),
     )))
     .block(
         Block::default()
@@ -163,12 +158,7 @@ pub fn render_expensive_confirm(
     frame.render_widget(help, chunks[2]);
 }
 
-pub fn render_disconnect_confirm(
-    frame: &mut Frame,
-    area: Rect,
-    provider: &str,
-    theme: &Theme,
-) {
+pub fn render_disconnect_confirm(frame: &mut Frame, area: Rect, provider: &str, theme: &Theme) {
     frame.render_widget(Clear, area);
     let popup = crate::overlay_layout::popup_rect(area, 58, 11);
     let accent = theme.shelf_accent.fg.unwrap_or(Color::Cyan);
@@ -186,9 +176,7 @@ pub fn render_disconnect_confirm(
 
     let header = Paragraph::new(Line::from(Span::styled(
         " disconnect provider ",
-        Style::default()
-            .fg(accent)
-            .add_modifier(Modifier::BOLD),
+        Style::default().fg(accent).add_modifier(Modifier::BOLD),
     )))
     .block(
         Block::default()
@@ -203,9 +191,7 @@ pub fn render_disconnect_confirm(
             Span::styled("Remove credentials for ", Style::default().fg(dim)),
             Span::styled(
                 provider,
-                Style::default()
-                    .fg(warn)
-                    .add_modifier(Modifier::BOLD),
+                Style::default().fg(warn).add_modifier(Modifier::BOLD),
             ),
             Span::styled("?", Style::default().fg(dim)),
         ]),

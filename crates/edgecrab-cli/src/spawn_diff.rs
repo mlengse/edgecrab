@@ -19,7 +19,11 @@ pub fn diff_turn_snapshots(
     let base_err = count_delegate_status(baseline, "error");
     let cand_err = count_delegate_status(candidate, "error");
     vec![
-        metric_usize("delegates", baseline.delegate_count(), candidate.delegate_count()),
+        metric_usize(
+            "delegates",
+            baseline.delegate_count(),
+            candidate.delegate_count(),
+        ),
         metric_usize("tool calls", baseline.total_tools, candidate.total_tools),
         metric_u64(
             "max duration",
@@ -74,8 +78,11 @@ pub fn diff_delegate_goals_removed(
     baseline: &SpawnTurnSnapshot,
     candidate: &SpawnTurnSnapshot,
 ) -> Vec<String> {
-    let cand_goals: std::collections::HashSet<&str> =
-        candidate.delegates.iter().map(|d| d.goal.as_str()).collect();
+    let cand_goals: std::collections::HashSet<&str> = candidate
+        .delegates
+        .iter()
+        .map(|d| d.goal.as_str())
+        .collect();
     baseline
         .delegates
         .iter()
@@ -142,12 +149,7 @@ fn metric_usize(label: &'static str, base: usize, cand: usize) -> DiffMetric {
     }
 }
 
-fn metric_u64(
-    label: &'static str,
-    base: u64,
-    cand: u64,
-    fmt: fn(u64) -> String,
-) -> DiffMetric {
+fn metric_u64(label: &'static str, base: u64, cand: u64, fmt: fn(u64) -> String) -> DiffMetric {
     DiffMetric {
         label,
         baseline: fmt(base),
@@ -248,17 +250,18 @@ mod tests {
         base.delegates[0].goal = "scan repo".into();
         let mut cand = snap("run-b", 2, 4, 20);
         cand.delegates[0].goal = "scan repo".into();
-        cand.delegates.push(crate::spawn_history::SpawnHistoryEntry {
-            task_index: 1,
-            task_count: 2,
-            goal: "write tests".into(),
-            agent_id: "sa-1".into(),
-            parent_id: None,
-            depth: 1,
-            tool_count: 2,
-            duration_secs: 15,
-            status: "completed".into(),
-        });
+        cand.delegates
+            .push(crate::spawn_history::SpawnHistoryEntry {
+                task_index: 1,
+                task_count: 2,
+                goal: "write tests".into(),
+                agent_id: "sa-1".into(),
+                parent_id: None,
+                depth: 1,
+                tool_count: 2,
+                duration_secs: 15,
+                status: "completed".into(),
+            });
         let added = diff_delegate_goals(&base, &cand);
         assert!(added.iter().any(|g| g.contains("write tests")));
     }

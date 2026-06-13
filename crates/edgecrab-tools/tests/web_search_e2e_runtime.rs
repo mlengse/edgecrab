@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+#![allow(dead_code)]
 //! E2E: runtime web_search — disk SSoT, fallback notes, stale session edge cases.
 
 mod common;

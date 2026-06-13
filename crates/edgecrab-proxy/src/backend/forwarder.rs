@@ -3,9 +3,9 @@
 //! Verbatim body pass-through; replaces client `Authorization` with upstream OAuth/API bearer.
 
 use axum::body::Body;
+use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, StatusCode};
 use axum::response::Response;
-use axum::body::Bytes;
 use futures::StreamExt;
 use reqwest::Client;
 
@@ -171,11 +171,7 @@ async fn send_upstream(
     );
 
     let req = client.request(method, &url).headers(fwd);
-    let req = if body.is_empty() {
-        req
-    } else {
-        req.body(body)
-    };
+    let req = if body.is_empty() { req } else { req.body(body) };
 
     let resp = req.send().await.map_err(|e| {
         if e.is_timeout() {
@@ -190,9 +186,10 @@ async fn send_upstream(
     let body = if upstream_response_is_sse(&headers) {
         UpstreamBody::Stream(resp)
     } else {
-        let bytes = resp.bytes().await.map_err(|e| {
-            ProxyError::Upstream(format!("read upstream body: {e}"))
-        })?;
+        let bytes = resp
+            .bytes()
+            .await
+            .map_err(|e| ProxyError::Upstream(format!("read upstream body: {e}")))?;
         UpstreamBody::Buffered(bytes)
     };
     Ok((status, headers, body))
@@ -208,9 +205,9 @@ fn build_axum_response(status: u16, headers: HeaderMap, upstream: UpstreamBody) 
             .body(Body::from(bytes))
             .unwrap_or_else(|_| Response::new(Body::empty())),
         UpstreamBody::Stream(resp) => {
-            let stream = resp.bytes_stream().map(|r| {
-                r.map_err(|e| std::io::Error::other(e.to_string()))
-            });
+            let stream = resp
+                .bytes_stream()
+                .map(|r| r.map_err(|e| std::io::Error::other(e.to_string())));
             builder
                 .body(Body::from_stream(stream))
                 .unwrap_or_else(|_| Response::new(Body::empty()))
@@ -231,10 +228,7 @@ mod tests {
         );
         let q = "stream=true";
         url = format!("{url}?{q}");
-        assert_eq!(
-            url,
-            "https://api.example/v1/chat/completions?stream=true"
-        );
+        assert_eq!(url, "https://api.example/v1/chat/completions?stream=true");
     }
 
     #[test]

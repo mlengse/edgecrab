@@ -11,10 +11,7 @@ use super::auth_store::HermesAuthFileAdapter;
 use super::nous::NousPortalAdapter;
 use super::xai::XaiGrokAdapter;
 
-pub fn build_forward_adapter(
-    key: &str,
-    cfg: &ForwardUpstreamConfig,
-) -> Arc<dyn UpstreamAdapter> {
+pub fn build_forward_adapter(key: &str, cfg: &ForwardUpstreamConfig) -> Arc<dyn UpstreamAdapter> {
     match cfg.adapter {
         ForwardAdapterKind::XaiOauth => Arc::new(XaiGrokAdapter::new(
             key,

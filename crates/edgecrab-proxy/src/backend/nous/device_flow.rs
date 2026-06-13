@@ -6,7 +6,7 @@ use std::time::{Duration, Instant};
 use chrono::Utc;
 use reqwest::Client;
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::{Value, json};
 
 use crate::backend::auth_file::{default_auth_path, write_provider_state};
 use crate::error::ProxyError;
@@ -14,9 +14,7 @@ use crate::http_client::build_oauth_http_client;
 
 use super::inference_url::validate_nous_inference_url_from_network;
 use super::jwt::INFERENCE_INVOKE_SCOPE;
-use super::refresh::{
-    resolve_nous_credentials_async, DEFAULT_NOUS_INFERENCE, DEFAULT_NOUS_PORTAL,
-};
+use super::refresh::{DEFAULT_NOUS_INFERENCE, DEFAULT_NOUS_PORTAL, resolve_nous_credentials_async};
 
 pub const DEFAULT_NOUS_CLIENT_ID: &str = "hermes-cli";
 const POLL_INTERVAL_CAP_SECS: u64 = 1;
@@ -94,18 +92,18 @@ async fn request_device_code(
         .await
         .map_err(|e| ProxyError::UpstreamAuth(format!("nous device code request failed: {e}")))?;
     let status = resp.status();
-    let body = resp.text().await.map_err(|e| {
-        ProxyError::UpstreamAuth(format!("nous device code body: {e}"))
-    })?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| ProxyError::UpstreamAuth(format!("nous device code body: {e}")))?;
     if !status.is_success() {
         return Err(ProxyError::UpstreamAuth(format!(
             "nous device code HTTP {}: {body}",
             status.as_u16()
         )));
     }
-    serde_json::from_str(&body).map_err(|e| {
-        ProxyError::UpstreamAuth(format!("nous device code JSON: {e}"))
-    })
+    serde_json::from_str(&body)
+        .map_err(|e| ProxyError::UpstreamAuth(format!("nous device code JSON: {e}")))
 }
 
 async fn poll_device_token(
@@ -133,10 +131,15 @@ async fn poll_device_token(
             .map_err(|e| ProxyError::UpstreamAuth(format!("nous token poll failed: {e}")))?;
 
         if resp.status().is_success() {
-            let payload: Value = resp.json().await.map_err(|e| {
-                ProxyError::UpstreamAuth(format!("nous token JSON: {e}"))
-            })?;
-            if payload.get("access_token").and_then(|v| v.as_str()).is_some() {
+            let payload: Value = resp
+                .json()
+                .await
+                .map_err(|e| ProxyError::UpstreamAuth(format!("nous token JSON: {e}")))?;
+            if payload
+                .get("access_token")
+                .and_then(|v| v.as_str())
+                .is_some()
+            {
                 return Ok(payload);
             }
             return Err(ProxyError::UpstreamAuth(
@@ -177,7 +180,13 @@ async fn poll_device_token(
     ))
 }
 
-fn build_auth_state(portal: &str, inference: &str, client_id: &str, scope: &str, token: &Value) -> Value {
+fn build_auth_state(
+    portal: &str,
+    inference: &str,
+    client_id: &str,
+    scope: &str,
+    token: &Value,
+) -> Value {
     let now = Utc::now();
     let expires_in = token
         .get("expires_in")
@@ -263,7 +272,11 @@ async fn finalize_nous_state(
         )
     {
         super::jwt::set_agent_key_from_invoke_jwt(state);
-        if state.get("agent_key").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()) {
+        if state
+            .get("agent_key")
+            .and_then(|v| v.as_str())
+            .is_some_and(|s| !s.is_empty())
+        {
             return Ok(());
         }
     }
@@ -279,26 +292,23 @@ async fn finalize_nous_state(
     let resp = client
         .post(&url)
         .header("x-nous-refresh-token", refresh_token)
-        .form(&[
-            ("grant_type", "refresh_token"),
-            ("client_id", client_id),
-        ])
+        .form(&[("grant_type", "refresh_token"), ("client_id", client_id)])
         .send()
         .await
         .map_err(|e| ProxyError::UpstreamAuth(format!("nous finalize refresh: {e}")))?;
     let status = resp.status();
-    let body = resp.text().await.map_err(|e| {
-        ProxyError::UpstreamAuth(format!("nous finalize body: {e}"))
-    })?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| ProxyError::UpstreamAuth(format!("nous finalize body: {e}")))?;
     if !status.is_success() {
         return Err(ProxyError::UpstreamAuth(format!(
             "nous finalize HTTP {}: {body}",
             status.as_u16()
         )));
     }
-    let refreshed: Value = serde_json::from_str(&body).map_err(|e| {
-        ProxyError::UpstreamAuth(format!("nous finalize JSON: {e}"))
-    })?;
+    let refreshed: Value = serde_json::from_str(&body)
+        .map_err(|e| ProxyError::UpstreamAuth(format!("nous finalize JSON: {e}")))?;
     if let Some(access) = refreshed.get("access_token").and_then(|v| v.as_str()) {
         state["access_token"] = Value::String(access.to_string());
     }
@@ -306,8 +316,10 @@ async fn finalize_nous_state(
         state["refresh_token"] = Value::String(rt.to_string());
     }
     if let Some(url) = refreshed.get("inference_base_url").and_then(|v| v.as_str()) {
-        state["inference_base_url"] =
-            Value::String(validate_nous_inference_url_from_network(Some(url), inference));
+        state["inference_base_url"] = Value::String(validate_nous_inference_url_from_network(
+            Some(url),
+            inference,
+        ));
     }
     super::jwt::set_agent_key_from_invoke_jwt(state);
     if state
@@ -350,7 +362,11 @@ pub async fn persist_nous_oauth(
         .and_then(|v| v.as_str())
         .unwrap_or(DEFAULT_NOUS_CLIENT_ID)
         .to_string();
-    if state.get("agent_key").and_then(|v| v.as_str()).is_none_or(|s| s.is_empty()) {
+    if state
+        .get("agent_key")
+        .and_then(|v| v.as_str())
+        .is_none_or(|s| s.is_empty())
+    {
         finalize_nous_state(&mut state, &portal, &client_id, &inference).await?;
     }
     write_provider_state(auth_path, "nous", &state)?;
@@ -364,7 +380,9 @@ pub async fn login_nous_portal(
     opts: &NousDeviceLoginOptions,
     label: Option<&str>,
 ) -> Result<String, ProxyError> {
-    let path = auth_path.map(Path::to_path_buf).unwrap_or_else(default_auth_path);
+    let path = auth_path
+        .map(Path::to_path_buf)
+        .unwrap_or_else(default_auth_path);
     let state = nous_device_code_login(opts).await?;
     persist_nous_oauth(&path, state, label).await?;
     Ok(format!(
@@ -389,8 +407,8 @@ fn open_browser(url: &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::routing::post;
     use axum::Router;
+    use axum::routing::post;
     use tokio::net::TcpListener;
 
     #[tokio::test]
@@ -417,13 +435,14 @@ mod tests {
             )
             .route(
                 "/api/oauth/token",
-                post(move |form: axum::Form<std::collections::HashMap<String, String>>| {
-                    let approved_poll = approved_poll.clone();
-                    async move {
-                        if form.get("grant_type").map(String::as_str)
-                            == Some("urn:ietf:params:oauth:grant-type:device_code")
-                        {
-                            if !approved_poll.swap(true, std::sync::atomic::Ordering::SeqCst) {
+                post(
+                    move |form: axum::Form<std::collections::HashMap<String, String>>| {
+                        let approved_poll = approved_poll.clone();
+                        async move {
+                            if form.get("grant_type").map(String::as_str)
+                                == Some("urn:ietf:params:oauth:grant-type:device_code")
+                                && !approved_poll.swap(true, std::sync::atomic::Ordering::SeqCst)
+                            {
                                 return (
                                     axum::http::StatusCode::BAD_REQUEST,
                                     axum::Json(serde_json::json!({
@@ -431,19 +450,19 @@ mod tests {
                                     })),
                                 );
                             }
+                            (
+                                axum::http::StatusCode::OK,
+                                axum::Json(serde_json::json!({
+                                    "access_token": make_test_invoke_jwt(),
+                                    "refresh_token": "rt-test",
+                                    "expires_in": 7200,
+                                    "token_type": "Bearer",
+                                    "scope": INFERENCE_INVOKE_SCOPE
+                                })),
+                            )
                         }
-                        (
-                            axum::http::StatusCode::OK,
-                            axum::Json(serde_json::json!({
-                                "access_token": make_test_invoke_jwt(),
-                                "refresh_token": "rt-test",
-                                "expires_in": 7200,
-                                "token_type": "Bearer",
-                                "scope": INFERENCE_INVOKE_SCOPE
-                            })),
-                        )
-                    }
-                }),
+                    },
+                ),
             );
         tokio::spawn(async move {
             axum::serve(listener, app).await.expect("serve");
@@ -472,10 +491,10 @@ mod tests {
         let exp = (Utc::now().timestamp() + 7200).to_string();
         let payload = serde_json::json!({
             "scope": INFERENCE_INVOKE_SCOPE,
-            "exp": exp.parse::<i64>().unwrap()
+            "exp": exp.parse::<i64>().expect("exp timestamp")
         });
         let body = base64::engine::general_purpose::URL_SAFE_NO_PAD
-            .encode(serde_json::to_vec(&payload).unwrap());
+            .encode(serde_json::to_vec(&payload).expect("jwt payload"));
         format!("{header}.{body}.sig")
     }
 }

@@ -1,10 +1,10 @@
 //! Queued follow-up prompts above the composer — Hermes `queuedMessages.tsx` parity.
 
+use ratatui::Frame;
 use ratatui::layout::Rect;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
-use ratatui::Frame;
 
 use crate::theme::Theme;
 use edgecrab_core::safe_truncate;
@@ -80,10 +80,7 @@ pub fn render_queued_messages(
     let cols = area.width as usize;
 
     let header_suffix = queue_edit_idx.map_or(String::new(), |idx| {
-        format!(
-            " · editing {} · Ctrl+X delete · Esc cancel",
-            idx + 1
-        )
+        format!(" · editing {} · Ctrl+X delete · Esc cancel", idx + 1)
     });
     let mut lines = vec![Line::from(Span::styled(
         format!("queued ({}){header_suffix}", queued.len()),

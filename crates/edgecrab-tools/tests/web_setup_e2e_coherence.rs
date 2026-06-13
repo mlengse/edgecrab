@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+#![allow(dead_code)]
 //! E2E: web setup chain coherence — chain vs extract, overlay subcommands.
 
 mod common;

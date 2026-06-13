@@ -8,7 +8,7 @@ mod quarantine;
 mod refresh;
 
 pub use adapter::NousPortalAdapter;
-pub use jwt::{make_jwt, INFERENCE_INVOKE_SCOPE};
+pub use device_flow::{NousDeviceLoginOptions, login_nous_portal, persist_nous_oauth};
+pub use jwt::{INFERENCE_INVOKE_SCOPE, make_jwt};
 pub use quarantine::state_requires_relogin;
-pub use device_flow::{login_nous_portal, persist_nous_oauth, NousDeviceLoginOptions};
-pub use refresh::{resolve_nous_credentials_async, DEFAULT_NOUS_INFERENCE, DEFAULT_NOUS_PORTAL};
+pub use refresh::{DEFAULT_NOUS_INFERENCE, DEFAULT_NOUS_PORTAL, resolve_nous_credentials_async};

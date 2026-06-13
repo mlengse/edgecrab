@@ -47,7 +47,10 @@ pub fn discovery_availability_short(availability: DiscoveryAvailability) -> Stri
     }
 }
 
-pub fn discovery_availability_detail(provider: &str, availability: DiscoveryAvailability) -> String {
+pub fn discovery_availability_detail(
+    provider: &str,
+    availability: DiscoveryAvailability,
+) -> String {
     match availability {
         DiscoveryAvailability::Supported => {
             format!("{provider} supports live discovery in this build.")

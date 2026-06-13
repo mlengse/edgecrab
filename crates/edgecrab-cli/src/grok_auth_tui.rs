@@ -217,7 +217,10 @@ impl GrokAuthTui {
             return GrokAuthAction::None;
         }
 
-        if key.modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+        if key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)
+        {
             return GrokAuthAction::None;
         }
 
@@ -280,7 +283,9 @@ fn finish_instruction_lines() -> Vec<Line<'static>> {
         Line::from(""),
         Line::from("1. Copy the code from x.ai (the long token, not the URL)."),
         Line::from("2. Press p to load from clipboard, or press Enter to submit."),
-        Line::from("3. Enter: clipboard → terminal prompt; if the session expired, opens x.ai again."),
+        Line::from(
+            "3. Enter: clipboard → terminal prompt; if the session expired, opens x.ai again.",
+        ),
         Line::from(""),
         Line::from(Span::styled(
             "The terminal paste prompt always works (same as Copilot /login).",

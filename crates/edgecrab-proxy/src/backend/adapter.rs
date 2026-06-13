@@ -73,9 +73,7 @@ impl StaticBearerAdapter {
     ) -> Self {
         let name = name.into();
         let hint = auth_hint.unwrap_or_else(|| {
-            format!(
-                "set proxy.forward_upstreams.{name}.bearer_env or bearer in config.yaml"
-            )
+            format!("set proxy.forward_upstreams.{name}.bearer_env or bearer in config.yaml")
         });
         Self {
             display_name: name.clone(),
@@ -112,9 +110,10 @@ impl UpstreamAdapter for StaticBearerAdapter {
 
     async fn get_credential(&self) -> Result<UpstreamCredential, ProxyError> {
         if !self.is_authenticated() {
-            return Err(ProxyError::UpstreamAuth(
-                format!("upstream '{}' is not authenticated", self.name),
-            ));
+            return Err(ProxyError::UpstreamAuth(format!(
+                "upstream '{}' is not authenticated",
+                self.name
+            )));
         }
         Ok(UpstreamCredential {
             bearer: self.bearer.clone(),

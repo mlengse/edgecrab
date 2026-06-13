@@ -38,12 +38,12 @@ pub async fn discover_token_endpoint(client: &Client) -> Result<String, ProxyErr
         .send()
         .await
         .map_err(|e| ProxyError::UpstreamAuth(format!("xai OIDC discovery failed: {e}")))?;
-    let body = resp.text().await.map_err(|e| {
-        ProxyError::UpstreamAuth(format!("xai discovery body: {e}"))
-    })?;
-    let payload: Value = serde_json::from_str(&body).map_err(|e| {
-        ProxyError::UpstreamAuth(format!("xai discovery JSON: {e}"))
-    })?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| ProxyError::UpstreamAuth(format!("xai discovery body: {e}")))?;
+    let payload: Value = serde_json::from_str(&body)
+        .map_err(|e| ProxyError::UpstreamAuth(format!("xai discovery JSON: {e}")))?;
     let endpoint = payload
         .get("token_endpoint")
         .and_then(|v| v.as_str())
@@ -69,18 +69,22 @@ pub async fn refresh_xai_tokens(
         .await
         .map_err(|e| ProxyError::UpstreamAuth(format!("xai refresh request failed: {e}")))?;
     let status = resp.status();
-    let body = resp.text().await.map_err(|e| {
-        ProxyError::UpstreamAuth(format!("xai refresh body: {e}"))
-    })?;
+    let body = resp
+        .text()
+        .await
+        .map_err(|e| ProxyError::UpstreamAuth(format!("xai refresh body: {e}")))?;
     if !status.is_success() {
         return Err(ProxyError::UpstreamAuth(format!(
             "xai refresh failed HTTP {status}: {body}"
         )));
     }
-    let payload: Value = serde_json::from_str(&body).map_err(|e| {
-        ProxyError::UpstreamAuth(format!("xai refresh JSON: {e}"))
-    })?;
-    if payload.get("access_token").and_then(|v| v.as_str()).is_some() {
+    let payload: Value = serde_json::from_str(&body)
+        .map_err(|e| ProxyError::UpstreamAuth(format!("xai refresh JSON: {e}")))?;
+    if payload
+        .get("access_token")
+        .and_then(|v| v.as_str())
+        .is_some()
+    {
         Ok(payload)
     } else {
         Err(ProxyError::UpstreamAuth(
@@ -123,9 +127,7 @@ pub async fn resolve_xai_credentials_async(
         ))
     })?;
 
-    if !force_refresh
-        && let Some(pair) = bearer_and_base_from_entry(&state, fallback_base)
-    {
+    if !force_refresh && let Some(pair) = bearer_and_base_from_entry(&state, fallback_base) {
         return Ok(pair);
     }
 
@@ -155,7 +157,9 @@ pub async fn resolve_xai_credentials_async(
             o.get_mut("tokens")
         })
         .and_then(|t| t.as_object_mut())
-        .ok_or_else(|| ProxyError::UpstreamAuth("xai provider state missing tokens object".into()))?;
+        .ok_or_else(|| {
+            ProxyError::UpstreamAuth("xai provider state missing tokens object".into())
+        })?;
     tokens.insert("access_token".into(), Value::String(access.clone()));
     if let Some(rt) = refreshed.get("refresh_token").and_then(|v| v.as_str()) {
         tokens.insert("refresh_token".into(), Value::String(rt.to_string()));

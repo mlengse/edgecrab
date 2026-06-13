@@ -26,10 +26,7 @@ mod tests {
     fn root_and_nested_ids() {
         assert_eq!(subagent_agent_id(2), "sa-2");
         assert_eq!(nested_subagent_agent_id("sa-0", 1), "sa-0/1");
-        assert_eq!(
-            resolve_subagent_agent_id(Some("sa-0"), 0),
-            "sa-0/0"
-        );
+        assert_eq!(resolve_subagent_agent_id(Some("sa-0"), 0), "sa-0/0");
         assert_eq!(resolve_subagent_agent_id(None, 3), "sa-3");
     }
 }

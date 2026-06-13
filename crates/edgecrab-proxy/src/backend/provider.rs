@@ -2,20 +2,20 @@
 
 use std::sync::Arc;
 
-use axum::response::sse::{KeepAlive, Sse};
-use axum::response::{IntoResponse, Response};
-use axum::Json;
-use edgequake_llm::error::LlmError;
-use edgequake_llm::traits::StreamChunk;
-use edgequake_llm::{CompletionOptions, LLMProvider};
 use crate::error::ProxyError;
 use crate::resolve::ResolvedBackend;
 use crate::wire::messages::openai_messages_to_chat;
 use crate::wire::openai::{
-    ChatCompletionRequest, ChatCompletionResponse, ChatChoiceOut, ChatMessageOut, FunctionCallOut,
+    ChatChoiceOut, ChatCompletionRequest, ChatCompletionResponse, ChatMessageOut, FunctionCallOut,
     ToolCallOut, UsageOut, unix_now,
 };
 use crate::wire::sse::stream_chunks_to_sse;
+use axum::Json;
+use axum::response::sse::{KeepAlive, Sse};
+use axum::response::{IntoResponse, Response};
+use edgequake_llm::error::LlmError;
+use edgequake_llm::traits::StreamChunk;
+use edgequake_llm::{CompletionOptions, LLMProvider};
 
 pub async fn handle_chat_completion(
     provider: Arc<dyn LLMProvider>,
@@ -92,18 +92,16 @@ async fn handle_stream(
 fn synthesize_sse_from_response(
     display_model: String,
     response: edgequake_llm::LLMResponse,
-) -> Sse<impl futures::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>> + Send>
-{
-    let finish = response
-        .finish_reason
-        .clone()
-        .unwrap_or_else(|| {
-            if response.tool_calls.is_empty() {
-                "stop".into()
-            } else {
-                "tool_calls".into()
-            }
-        });
+) -> Sse<
+    impl futures::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>> + Send,
+> {
+    let finish = response.finish_reason.clone().unwrap_or_else(|| {
+        if response.tool_calls.is_empty() {
+            "stop".into()
+        } else {
+            "tool_calls".into()
+        }
+    });
     let mut chunks = Vec::new();
     if !response.content.is_empty() {
         chunks.push(Ok(StreamChunk::Content(response.content.clone())));
@@ -149,16 +147,13 @@ fn completion_json(
                 .collect(),
         )
     };
-    let finish = response
-        .finish_reason
-        .clone()
-        .unwrap_or_else(|| {
-            if tool_calls.is_some() {
-                "tool_calls".into()
-            } else {
-                "stop".into()
-            }
-        });
+    let finish = response.finish_reason.clone().unwrap_or_else(|| {
+        if tool_calls.is_some() {
+            "tool_calls".into()
+        } else {
+            "stop".into()
+        }
+    });
     ChatCompletionResponse {
         id: format!("chatcmpl-{}", uuid::Uuid::new_v4()),
         object: "chat.completion",

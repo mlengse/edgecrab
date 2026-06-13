@@ -2,76 +2,75 @@
 
 use super::*;
 
-    /// Apply semantic TUI colors to a single line from the gateway diagnose report.
-    ///
-    /// WHY free associated function (no `self`): `render_diagnose_panel` maps over
-    /// report lines and only needs the raw text + color palette — no app state.
-    /// Keeping it here keeps all diagnose-overlay logic co-located.
+/// Apply semantic TUI colors to a single line from the gateway diagnose report.
+///
+/// WHY free associated function (no `self`): `render_diagnose_panel` maps over
+/// report lines and only needs the raw text + color palette — no app state.
+/// Keeping it here keeps all diagnose-overlay logic co-located.
 pub fn colorize_diagnose_line<'a>(
-        raw: &'a str,
-        ok_color: Color,
-        err_color: Color,
-        warn_color: Color,
-        heading_color: Color,
-        dim_color: Color,
-        accent: Color,
-    ) -> Line<'a> {
-        // Box-drawing borders (╔ ╚ ║ ═ etc.)
-        if raw.contains('╔') || raw.contains('╚') || raw.contains('║') || raw.contains('╠')
-        {
-            return Line::from(Span::styled(
-                raw,
-                Style::default().fg(accent).add_modifier(Modifier::BOLD),
-            ));
-        }
-        // Section dividers e.g. "── Title ──"
-        let trimmed = raw.trim_start();
-        if trimmed.starts_with("──") || trimmed.starts_with("─────") {
-            return Line::from(Span::styled(raw, Style::default().fg(heading_color)));
-        }
-        // Status marker lines
-        if raw.contains(" \u{2713} ") || raw.contains(" \u{2714} ") {
-            // ✓ ✔
-            return Line::from(Span::styled(raw, Style::default().fg(ok_color)));
-        }
-        if raw.contains(" \u{2717} ") || raw.contains(" \u{2718} ") {
-            // ✗ ✘
-            return Line::from(Span::styled(raw, Style::default().fg(err_color)));
-        }
-        if raw.contains(" \u{25cb} ") || raw.contains(" \u{25e6} ") {
-            // ○ ◦  (offline / not configured)
-            return Line::from(Span::styled(raw, Style::default().fg(dim_color)));
-        }
-        // Issues section entries  e.g. "[ERROR] ..."
-        if trimmed.starts_with('[') && (trimmed.contains("] ") || trimmed.ends_with(']')) {
-            let color = if trimmed.contains("[WARN") {
-                warn_color
-            } else {
-                err_color
-            };
-            return Line::from(Span::styled(raw, Style::default().fg(color)));
-        }
-        // Fix suggestions
-        if trimmed.starts_with("Fix:") || trimmed.starts_with("fix:") {
-            return Line::from(Span::styled(
-                raw,
-                Style::default().fg(ok_color).add_modifier(Modifier::BOLD),
-            ));
-        }
-        // Log severity keywords
-        if raw.contains("ERROR") {
-            return Line::from(Span::styled(raw, Style::default().fg(err_color)));
-        }
-        if raw.contains("WARN") {
-            return Line::from(Span::styled(raw, Style::default().fg(warn_color)));
-        }
-        // Quick-action command lines e.g. "  edgecrab gateway start"
-        if trimmed.starts_with("edgecrab ") {
-            return Line::from(Span::styled(raw, Style::default().fg(accent)));
-        }
-        // Default: plain text, let the paragraph style apply
-        Line::from(raw)
+    raw: &'a str,
+    ok_color: Color,
+    err_color: Color,
+    warn_color: Color,
+    heading_color: Color,
+    dim_color: Color,
+    accent: Color,
+) -> Line<'a> {
+    // Box-drawing borders (╔ ╚ ║ ═ etc.)
+    if raw.contains('╔') || raw.contains('╚') || raw.contains('║') || raw.contains('╠') {
+        return Line::from(Span::styled(
+            raw,
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ));
     }
+    // Section dividers e.g. "── Title ──"
+    let trimmed = raw.trim_start();
+    if trimmed.starts_with("──") || trimmed.starts_with("─────") {
+        return Line::from(Span::styled(raw, Style::default().fg(heading_color)));
+    }
+    // Status marker lines
+    if raw.contains(" \u{2713} ") || raw.contains(" \u{2714} ") {
+        // ✓ ✔
+        return Line::from(Span::styled(raw, Style::default().fg(ok_color)));
+    }
+    if raw.contains(" \u{2717} ") || raw.contains(" \u{2718} ") {
+        // ✗ ✘
+        return Line::from(Span::styled(raw, Style::default().fg(err_color)));
+    }
+    if raw.contains(" \u{25cb} ") || raw.contains(" \u{25e6} ") {
+        // ○ ◦  (offline / not configured)
+        return Line::from(Span::styled(raw, Style::default().fg(dim_color)));
+    }
+    // Issues section entries  e.g. "[ERROR] ..."
+    if trimmed.starts_with('[') && (trimmed.contains("] ") || trimmed.ends_with(']')) {
+        let color = if trimmed.contains("[WARN") {
+            warn_color
+        } else {
+            err_color
+        };
+        return Line::from(Span::styled(raw, Style::default().fg(color)));
+    }
+    // Fix suggestions
+    if trimmed.starts_with("Fix:") || trimmed.starts_with("fix:") {
+        return Line::from(Span::styled(
+            raw,
+            Style::default().fg(ok_color).add_modifier(Modifier::BOLD),
+        ));
+    }
+    // Log severity keywords
+    if raw.contains("ERROR") {
+        return Line::from(Span::styled(raw, Style::default().fg(err_color)));
+    }
+    if raw.contains("WARN") {
+        return Line::from(Span::styled(raw, Style::default().fg(warn_color)));
+    }
+    // Quick-action command lines e.g. "  edgecrab gateway start"
+    if trimmed.starts_with("edgecrab ") {
+        return Line::from(Span::styled(raw, Style::default().fg(accent)));
+    }
+    // Default: plain text, let the paragraph style apply
+    Line::from(raw)
+}
 
 impl App {
     /// Render the full-screen Gateway Diagnostics overlay.
@@ -79,7 +78,7 @@ impl App {
     /// DRY: re-uses `browser_overlay_chunks` and the established accent palette
     /// so it inherits the same visual language as other overlays with zero
     /// extra styling primitives.
-pub(super) fn render_diagnose_panel(&self, frame: &mut Frame, area: Rect) {
+    pub(super) fn render_diagnose_panel(&self, frame: &mut Frame, area: Rect) {
         frame.render_widget(Clear, area);
 
         // Accent: teal — distinct from the warm-amber log/model overlays.
@@ -186,7 +185,7 @@ pub(super) fn render_diagnose_panel(&self, frame: &mut Frame, area: Rect) {
         frame.render_widget(help, chunks[2]);
     }
     /// Handle keyboard input while the Gateway Diagnostics overlay is open.
-pub(super) fn handle_diagnose_panel_key(&mut self, key: event::KeyEvent) {
+    pub(super) fn handle_diagnose_panel_key(&mut self, key: event::KeyEvent) {
         let page = self.output_area_height.max(4).saturating_sub(2) as usize;
         match key.code {
             KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('Q') => {

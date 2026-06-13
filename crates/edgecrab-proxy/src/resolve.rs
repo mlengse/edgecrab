@@ -3,8 +3,8 @@
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use edgecrab_core::model_catalog::ModelCatalog;
 use edgecrab_core::ForwardUpstreamConfig;
+use edgecrab_core::model_catalog::ModelCatalog;
 use edgecrab_tools::create_provider_for_model;
 use edgequake_llm::LLMProvider;
 
@@ -142,7 +142,7 @@ mod tests {
 
     #[test]
     fn unknown_model_without_alias_returns_not_found() {
-        let err = resolve_model("no-such-model", &HashMap::new(), None).unwrap_err();
+        let err = resolve_model("no-such-model", &HashMap::new(), None).expect_err("unknown model");
         assert!(matches!(err, ProxyError::ModelNotFound(_)));
     }
 
@@ -165,8 +165,8 @@ mod tests {
                 ..Default::default()
             },
         );
-        let route = resolve_route("forward:test-up", &HashMap::new(), None, &upstreams)
-            .expect("route");
+        let route =
+            resolve_route("forward:test-up", &HashMap::new(), None, &upstreams).expect("route");
         assert!(matches!(
             route,
             ResolvedRoute::Forward(ResolvedForward {

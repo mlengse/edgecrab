@@ -794,6 +794,4 @@ impl App {
 
         frame.render_widget(Paragraph::new(picker_help_line(accent)), chunks[2]);
     }
-
-
 }

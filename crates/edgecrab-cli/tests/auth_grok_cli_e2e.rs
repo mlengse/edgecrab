@@ -47,7 +47,10 @@ fn auth_list_includes_grok_line() {
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
-    assert!(stdout.contains("grok"), "expected grok in auth list:\n{stdout}");
+    assert!(
+        stdout.contains("grok"),
+        "expected grok in auth list:\n{stdout}"
+    );
 }
 
 #[test]
@@ -87,8 +90,7 @@ fn auth_status_grok_with_mock_auth_json() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.to_ascii_lowercase().contains("ready")
-            || stdout.contains("oauth"),
+        stdout.to_ascii_lowercase().contains("ready") || stdout.contains("oauth"),
         "expected ready/oauth hint:\n{stdout}"
     );
 }

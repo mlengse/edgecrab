@@ -105,8 +105,10 @@ mod tests {
 
     #[test]
     fn explicit_aux_override_detects_model_only() {
-        let mut cfg = AppConfigRef::default();
-        cfg.auxiliary_model = Some("openai/gpt-4o".into());
+        let cfg = AppConfigRef {
+            auxiliary_model: Some("openai/gpt-4o".into()),
+            ..Default::default()
+        };
         assert!(explicit_aux_vision_override(&cfg));
     }
 
@@ -138,9 +140,11 @@ mod tests {
 
     #[test]
     fn explicit_aux_forces_routing_even_for_vision_main() {
-        let mut cfg = AppConfigRef::default();
-        cfg.auxiliary_provider = Some("openai".into());
-        cfg.auxiliary_model = Some("gpt-4o".into());
+        let cfg = AppConfigRef {
+            auxiliary_provider: Some("openai".into()),
+            auxiliary_model: Some("gpt-4o".into()),
+            ..Default::default()
+        };
         assert!(should_route_capture_to_aux_vision(
             "anthropic",
             "claude-opus-4.6",

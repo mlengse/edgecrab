@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+#![allow(dead_code)]
 //! E2E: `edgecrab setup web` config persistence (Hermes tools picker write path).
 
 mod common;

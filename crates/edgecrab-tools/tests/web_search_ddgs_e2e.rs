@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+#![allow(dead_code)]
 //! E2E/unit integration: DDGS module exceeds Hermes ddgs provider contract.
 
 mod common;

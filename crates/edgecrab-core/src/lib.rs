@@ -4,6 +4,7 @@
 //! model routing, @context reference expansion.
 
 #![deny(clippy::unwrap_used)]
+#![cfg_attr(test, allow(clippy::unwrap_used))]
 
 use edgecrab_lsp as _;
 
@@ -19,13 +20,13 @@ pub mod copilot_model_policy;
 pub mod gateway_home;
 pub mod goal_judge;
 pub mod goals;
-pub mod oauth;
 pub mod model_catalog;
 pub mod model_cost_guard;
 pub mod model_discovery;
 pub mod model_router;
 pub mod model_transfer;
 pub mod multimodal_tool_content;
+pub mod oauth;
 pub mod pricing;
 pub mod prompt_builder;
 pub mod session_handoff;
@@ -43,11 +44,8 @@ pub use completion_assessor::{CompletionContext, CompletionPolicy, DefaultComple
 pub use compression::{PRUNED_TOOL_PLACEHOLDER, SUMMARY_PREFIX};
 pub use config::{
     AppConfig, CliOverrides, ForwardAdapterKind, ForwardUpstreamConfig, GoalJudgeConfig,
-    GoalsConfig, ProxyConfig,
-        SmartRoutingYaml,
-    ShelfDetailsConfig, ToolProgressMode, edgecrab_home, ensure_edgecrab_home,
-    gateway_image_cache_dir,
-    gateway_media_dir,
+    GoalsConfig, ProxyConfig, ShelfDetailsConfig, SmartRoutingYaml, ToolProgressMode,
+    edgecrab_home, ensure_edgecrab_home, gateway_image_cache_dir, gateway_media_dir,
 };
 pub use context_engine::{
     BuiltinCompressorEngine, ContextEngine, ContextEngineSessionCtx, MAX_ENGINE_TOOLS,
@@ -67,6 +65,10 @@ pub use goals::{
 pub use model_catalog::{
     CatalogData, ModelCatalog, ModelEntry, ModelTier, PricingPair, ProviderEntry, ResolvedModelSpec,
 };
+pub use model_cost_guard::{
+    ExpensiveModelWarning, INPUT_COST_WARNING_THRESHOLD, OUTPUT_COST_WARNING_THRESHOLD,
+    expensive_model_warning, is_expensive_pricing,
+};
 pub use model_discovery::{
     DiscoveryAvailability, DiscoverySource, ProviderModels, discover_multiple,
     discover_provider_models, discovery_provider_statuses, live_discovery_availability,
@@ -76,19 +78,15 @@ pub use model_router::{
     SmartRoutingConfig, TurnRoute, classify_message, fallback_route, resolve_turn_route,
 };
 pub use model_transfer::{
-    MODEL_TRANSFER_BUSY_MESSAGE, MODEL_TRANSFER_USAGE, ModelChangeOutcome, ModelTransferBrief,
-    ModelTransferContext, ModelTransferError, ModelTransferOrchestrator, ModelTransferOutcome,
-    ModelTransferTarget, ModelSwitchOutcome, context_window_for_model,
+    MODEL_TRANSFER_BUSY_MESSAGE, MODEL_TRANSFER_USAGE, ModelChangeOutcome, ModelSwitchOutcome,
+    ModelTransferBrief, ModelTransferContext, ModelTransferError, ModelTransferOrchestrator,
+    ModelTransferOutcome, ModelTransferTarget, context_window_for_model,
     create_model_transfer_provider, format_model_change_confirmation, format_model_change_error,
-    format_model_change_result, format_model_switch_confirmation, format_model_transfer_confirmation,
-    format_model_transfer_insights_section, format_model_transfer_result,
-    format_model_transfer_user_message, generate_model_transfer_brief,
-    maybe_compress_for_model_transfer, resolve_model_transfer_target,
-    session_requires_model_transfer,
-};
-pub use model_cost_guard::{
-    ExpensiveModelWarning, INPUT_COST_WARNING_THRESHOLD, OUTPUT_COST_WARNING_THRESHOLD,
-    expensive_model_warning, is_expensive_pricing,
+    format_model_change_result, format_model_switch_confirmation,
+    format_model_transfer_confirmation, format_model_transfer_insights_section,
+    format_model_transfer_result, format_model_transfer_user_message,
+    generate_model_transfer_brief, maybe_compress_for_model_transfer,
+    resolve_model_transfer_target, session_requires_model_transfer,
 };
 pub use pricing::{
     CanonicalUsage, CostResult, CostSource, CostStatus, PricingEntry, estimate_cost, get_pricing,

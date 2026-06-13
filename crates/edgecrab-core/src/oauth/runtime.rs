@@ -1,7 +1,7 @@
 //! Inject subscription OAuth tokens into process env before provider construction.
 
 use super::anthropic::resolve_anthropic_oauth_access_token;
-use super::codex::{resolve_codex_access_token, DEFAULT_CODEX_BASE_URL};
+use super::codex::{DEFAULT_CODEX_BASE_URL, resolve_codex_access_token};
 
 fn env_nonempty(key: &str) -> bool {
     std::env::var(key)
@@ -30,7 +30,9 @@ pub async fn inject_subscription_oauth_env(provider: &str) -> Result<(), String>
             }
         }
         "openai-codex" | "chatgpt-pro" | "codex" => {
-            if !openai_key_from_env() && let Some(token) = resolve_codex_access_token().await? {
+            if !openai_key_from_env()
+                && let Some(token) = resolve_codex_access_token().await?
+            {
                 unsafe { std::env::set_var("OPENAI_API_KEY", token) };
             }
         }

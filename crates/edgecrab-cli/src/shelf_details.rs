@@ -54,12 +54,7 @@ pub enum ShelfSection {
 }
 
 impl ShelfSection {
-    pub const ALL: [Self; 4] = [
-        Self::Thinking,
-        Self::Tools,
-        Self::Subagents,
-        Self::Activity,
-    ];
+    pub const ALL: [Self; 4] = [Self::Thinking, Self::Tools, Self::Subagents, Self::Activity];
 
     pub fn parse(raw: &str) -> Option<Self> {
         match raw.trim().to_ascii_lowercase().as_str() {
@@ -135,10 +130,7 @@ impl ShelfDetailsState {
     }
 
     /// Live reasoning snippet auto-expands thinking without mutating `/details` config.
-    pub fn effective_thinking_render(
-        &self,
-        has_reasoning_snippet: bool,
-    ) -> SectionRender {
+    pub fn effective_thinking_render(&self, has_reasoning_snippet: bool) -> SectionRender {
         if has_reasoning_snippet {
             return SectionRender::Full;
         }
@@ -201,9 +193,13 @@ impl ShelfDetailsState {
 
     pub fn mode_blurb(mode: ShelfDetailsMode) -> &'static str {
         match mode {
-            ShelfDetailsMode::Hidden => "Section omitted from the live shelf (errors may still backstop).",
+            ShelfDetailsMode::Hidden => {
+                "Section omitted from the live shelf (errors may still backstop)."
+            }
             ShelfDetailsMode::Collapsed => "One summary line in the shelf — calm, at-a-glance.",
-            ShelfDetailsMode::Expanded => "Full tree rows — tool tails, delegate churn, activity feed.",
+            ShelfDetailsMode::Expanded => {
+                "Full tree rows — tool tails, delegate churn, activity feed."
+            }
         }
     }
 
@@ -243,19 +239,13 @@ impl ShelfDetailsState {
             self.global = self.global.cycle();
             self.command_override = true;
             self.section_overrides.clear();
-            return format!(
-                "Shelf details → {} (all sections).",
-                self.global.label()
-            );
+            return format!("Shelf details → {} (all sections).", self.global.label());
         }
         if let Some(mode) = ShelfDetailsMode::parse(word) {
             self.global = mode;
             self.command_override = true;
             self.section_overrides.clear();
-            return format!(
-                "Shelf details → {} (all sections).",
-                self.global.label()
-            );
+            return format!("Shelf details → {} (all sections).", self.global.label());
         }
 
         GLOBAL_USAGE.into()
@@ -310,8 +300,7 @@ impl ShelfDetailsState {
 
 const GLOBAL_USAGE: &str = "Usage: /details [hidden|collapsed|expanded|cycle|status]  or  /details <thinking|tools|subagents|activity> [hidden|collapsed|expanded|reset]";
 
-const SECTION_USAGE: &str =
-    "Usage: /details <section> [hidden|collapsed|expanded|reset]  (sections: thinking, tools, subagents, activity)";
+const SECTION_USAGE: &str = "Usage: /details <section> [hidden|collapsed|expanded|reset]  (sections: thinking, tools, subagents, activity)";
 
 #[cfg(test)]
 mod tests {
@@ -338,8 +327,14 @@ mod tests {
     fn global_command_override_applies_to_all() {
         let mut state = ShelfDetailsState::default();
         state.handle_command("hidden");
-        assert_eq!(state.effective_mode(ShelfSection::Thinking), ShelfDetailsMode::Hidden);
-        assert_eq!(state.effective_mode(ShelfSection::Tools), ShelfDetailsMode::Hidden);
+        assert_eq!(
+            state.effective_mode(ShelfSection::Thinking),
+            ShelfDetailsMode::Hidden
+        );
+        assert_eq!(
+            state.effective_mode(ShelfSection::Tools),
+            ShelfDetailsMode::Hidden
+        );
     }
 
     #[test]
@@ -372,7 +367,7 @@ mod tests {
         let cfg = state.to_config();
         let loaded = ShelfDetailsState::from_config(&cfg);
         assert_eq!(loaded.global, ShelfDetailsMode::Hidden);
-        assert_eq!(loaded.command_override, true);
+        assert!(loaded.command_override);
         assert_eq!(
             loaded.effective_mode(ShelfSection::Activity),
             ShelfDetailsMode::Expanded

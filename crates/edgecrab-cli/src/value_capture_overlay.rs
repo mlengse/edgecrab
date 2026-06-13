@@ -1,8 +1,8 @@
 //! Pure value-capture overlay display helpers.
 
 pub use crate::overlay_text_input::{
-    map_overlay_text_input_key as map_value_capture_key,
     OverlayTextInputAction as ValueCaptureKeyAction,
+    map_overlay_text_input_key as map_value_capture_key,
 };
 
 /// Visible input line for the overlay (placeholder, masking, cursor handled separately).
@@ -26,10 +26,7 @@ mod tests {
 
     #[test]
     fn masked_display_hides_chars() {
-        assert_eq!(
-            value_capture_visible_text("secret", "hint", true),
-            "••••••"
-        );
+        assert_eq!(value_capture_visible_text("secret", "hint", true), "••••••");
     }
 
     #[test]

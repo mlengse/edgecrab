@@ -19,4 +19,7 @@ ignore = [
     # Transitive via wreq -> lru ^0.13; no patched 0.13.x release is available.
     # Track upstream migration to wreq >= 6.x (or another backend) to remove this.
     "RUSTSEC-2026-0002",
+    # Python SDK still pins pyo3 0.24 until maturin/FromPyObject migration (0.29+).
+    "RUSTSEC-2026-0176",
+    "RUSTSEC-2026-0177",
 ]

@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+#![allow(dead_code)]
 //! E2E: Hermes `web.extract_backend` config drives web_extract routing.
 
 mod common;

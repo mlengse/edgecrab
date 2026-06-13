@@ -10,6 +10,7 @@ use crate::artifact_spill::{
     SpillConfig, web_search_inline_threshold, web_search_spilled_json, write_artifact_proactive,
 };
 use crate::registry::{ToolContext, ToolHandler};
+use crate::tool_progress_tail::ToolProgressTail;
 use crate::tools::web::search::backend_settings::MAX_SEARCH_RESULTS;
 use crate::tools::web::search::chain::BackendChain;
 use crate::tools::web::search::config::{
@@ -18,7 +19,6 @@ use crate::tools::web::search::config::{
 };
 use crate::tools::web::search::error::SearchError;
 use crate::tools::web::search::response::{build_web_search_agent_notes, success_payload};
-use crate::tool_progress_tail::ToolProgressTail;
 
 pub struct WebSearchTool;
 

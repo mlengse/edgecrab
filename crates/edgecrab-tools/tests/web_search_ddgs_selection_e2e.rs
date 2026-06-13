@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+#![allow(dead_code)]
 //! DDGS selection E2E — real-world queries + edge cases (fixture HTML, no network).
 
 mod common;
@@ -8,20 +10,28 @@ use edgecrab_tools::tools::web::search::backends::ddgs::{
 };
 
 fn bing_li(title: &str, url: &str, snippet: &str) -> String {
-    format!(
-        r#"<li class="b_algo"><h2><a href="{url}">{title}</a></h2><p>{snippet}</p></li>"#
-    )
+    format!(r#"<li class="b_algo"><h2><a href="{url}">{title}</a></h2><p>{snippet}</p></li>"#)
 }
 
-fn parse_bing_blocks(blocks: &str, max: usize) -> Vec<edgecrab_tools::tools::web::search::backend::SearchResult> {
+fn parse_bing_blocks(
+    blocks: &str,
+    max: usize,
+) -> Vec<edgecrab_tools::tools::web::search::backend::SearchResult> {
     parse_bing_html(blocks, max, "ddgs").expect("bing parse")
 }
 
-fn select_ranked_query(query: &str, html: &str, max: usize) -> Vec<edgecrab_tools::tools::web::search::backend::SearchResult> {
+fn select_ranked_query(
+    query: &str,
+    html: &str,
+    max: usize,
+) -> Vec<edgecrab_tools::tools::web::search::backend::SearchResult> {
     select_ranked(query, parse_bing_blocks(html, max), max)
 }
 
-fn select_raw_html(html: &str, max: usize) -> Vec<edgecrab_tools::tools::web::search::backend::SearchResult> {
+fn select_raw_html(
+    html: &str,
+    max: usize,
+) -> Vec<edgecrab_tools::tools::web::search::backend::SearchResult> {
     select_raw(parse_bing_blocks(html, max), max)
 }
 
@@ -36,7 +46,11 @@ fn e2e_query_person_name_prefers_linkedin_in_ranked_mode() {
             "https://www.linkedin.com/in/raphaelmansuy",
             "Data engineering leader"
         ),
-        bing_li("Dexsport token", "https://coinmarketcap.com/dex", "DESU price"),
+        bing_li(
+            "Dexsport token",
+            "https://coinmarketcap.com/dex",
+            "DESU price"
+        ),
     );
     let out = select_ranked_query("Raphaël MANSUY", &html, 3);
     assert!(out[0].url.contains("linkedin.com"));
@@ -77,10 +91,9 @@ fn e2e_edge_ddg_ad_url_filtered_on_html_backend_only() {
             </a>
         </div>
     "#;
-    let results = edgecrab_tools::tools::web::search::backends::ddgs::parse_ddg_html(
-        html, 5, "ddgs",
-    )
-    .expect("parse");
+    let results =
+        edgecrab_tools::tools::web::search::backends::ddgs::parse_ddg_html(html, 5, "ddgs")
+            .expect("parse");
     assert!(results.is_empty());
 }
 

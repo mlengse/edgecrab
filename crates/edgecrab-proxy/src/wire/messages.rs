@@ -1,6 +1,6 @@
 //! OpenAI request messages → [`edgequake_llm::ChatMessage`].
 
-use edgequake_llm::{ChatMessage, ToolCall, ToolDefinition, ToolChoice};
+use edgequake_llm::{ChatMessage, ToolCall, ToolChoice, ToolDefinition};
 
 use crate::error::ProxyError;
 use crate::wire::openai::{ChatCompletionRequest, ChatMessageIn, ToolIn};
@@ -35,15 +35,16 @@ fn map_message(msg: &ChatMessageIn) -> Result<ChatMessage, ProxyError> {
             Ok(ChatMessage::assistant(&text))
         }
         "tool" => {
-            let id = msg
-                .tool_call_id
-                .as_deref()
-                .ok_or_else(|| ProxyError::BadRequest("tool message missing tool_call_id".into()))?;
+            let id = msg.tool_call_id.as_deref().ok_or_else(|| {
+                ProxyError::BadRequest("tool message missing tool_call_id".into())
+            })?;
             let mut chat = ChatMessage::tool_result(id, &text);
             chat.name = msg.name.clone();
             Ok(chat)
         }
-        other => Err(ProxyError::BadRequest(format!("unsupported message role: {other}"))),
+        other => Err(ProxyError::BadRequest(format!(
+            "unsupported message role: {other}"
+        ))),
     }
 }
 
@@ -105,15 +106,13 @@ mod tests {
     fn maps_tool_roundtrip_roles() {
         let req = ChatCompletionRequest {
             model: "mock/test".into(),
-            messages: vec![
-                ChatMessageIn {
-                    role: "user".into(),
-                    content: MessageContentIn::Text("hi".into()),
-                    name: None,
-                    tool_calls: None,
-                    tool_call_id: None,
-                },
-            ],
+            messages: vec![ChatMessageIn {
+                role: "user".into(),
+                content: MessageContentIn::Text("hi".into()),
+                name: None,
+                tool_calls: None,
+                tool_call_id: None,
+            }],
             stream: false,
             temperature: None,
             max_tokens: None,

@@ -1,10 +1,10 @@
 //! E2E: Grok / xAI OAuth flows (`edgecrab proxy setup grok` + `--provider xai`).
 
 use edgecrab_proxy::e2e_harness::{
-    e2e_http_client, grok_recipe_proxy_config, spawn_proxy, spawn_xai_mock_stack,
-    upstream_stream, write_xai_auth_json, UpstreamCapture,
+    UpstreamCapture, e2e_http_client, grok_recipe_proxy_config, spawn_proxy, spawn_xai_mock_stack,
+    upstream_stream, write_xai_auth_json,
 };
-use edgecrab_proxy::guide::{apply_recipe, resolve_recipe, RECIPE_XAI};
+use edgecrab_proxy::guide::{RECIPE_XAI, apply_recipe, resolve_recipe};
 
 #[tokio::test]
 async fn e2e_grok_setup_recipe_refreshes_oauth_and_forwards() {
@@ -15,7 +15,10 @@ async fn e2e_grok_setup_recipe_refreshes_oauth_and_forwards() {
     write_xai_auth_json(&auth_path, &token_url);
 
     let cfg = grok_recipe_proxy_config(&upstream_base, auth_path.clone());
-    assert_eq!(cfg.model_aliases.get("grok"), Some(&"forward:xai".to_string()));
+    assert_eq!(
+        cfg.model_aliases.get("grok"),
+        Some(&"forward:xai".to_string())
+    );
 
     let (proxy_base, _handle) = spawn_proxy(cfg, None, "proxy-client-token").await;
     let client = e2e_http_client();
@@ -75,7 +78,10 @@ async fn e2e_grok_models_list_exposes_grok_alias() {
         .iter()
         .filter_map(|m| m["id"].as_str().map(str::to_string))
         .collect();
-    assert!(ids.contains(&"grok".to_string()), "expected grok alias in {ids:?}");
+    assert!(
+        ids.contains(&"grok".to_string()),
+        "expected grok alias in {ids:?}"
+    );
 }
 
 #[tokio::test]
@@ -125,16 +131,11 @@ async fn e2e_grok_streaming_sse_passes_through_with_xai_oauth() {
         )
         .with_state(capture.clone());
     tokio::spawn(async move {
-        axum::serve(oauth_listener, oauth_app)
-            .await
-            .expect("oauth");
+        axum::serve(oauth_listener, oauth_app).await.expect("oauth");
     });
 
     let upstream_app = axum::Router::new()
-        .route(
-            "/v1/chat/completions",
-            axum::routing::post(upstream_stream),
-        )
+        .route("/v1/chat/completions", axum::routing::post(upstream_stream))
         .with_state(capture.clone());
     let upstream_listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await

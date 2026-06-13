@@ -1,11 +1,11 @@
 //! Interactive `/details` picker — matches `/reasoning`, `/statusbar`, `/verbose` overlays.
 
 use crossterm::event::{KeyCode, KeyEvent};
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
-use ratatui::Frame;
 
 use crate::shelf_details::{ShelfDetailsMode, ShelfDetailsState, ShelfSection};
 use crate::theme::Theme;
@@ -406,7 +406,9 @@ fn detail_lines_for_row(
                 Style::default().fg(accent).add_modifier(Modifier::BOLD),
             )]));
             lines.push(Line::from("hidden → collapsed → expanded → hidden"));
-            lines.push(Line::from(ShelfDetailsState::mode_blurb(state.global.cycle())));
+            lines.push(Line::from(ShelfDetailsState::mode_blurb(
+                state.global.cycle(),
+            )));
         }
         _ => {
             if let Some(section) = row.section() {
@@ -464,9 +466,11 @@ mod tests {
 
     #[test]
     fn enter_on_global_collapsed_sets_mode() {
-        let mut panel = DetailsPanel::default();
-        panel.active = true;
-        panel.cursor = 1;
+        let mut panel = DetailsPanel {
+            active: true,
+            cursor: 1,
+            ..Default::default()
+        };
         let mut state = ShelfDetailsState::default();
         let action = handle_details_panel_key(&mut panel, key(KeyCode::Enter), &mut state);
         assert!(matches!(action, DetailsPanelAction::Changed));
@@ -476,9 +480,11 @@ mod tests {
 
     #[test]
     fn r_resets_section_override() {
-        let mut panel = DetailsPanel::default();
-        panel.active = true;
-        panel.cursor = 4;
+        let mut panel = DetailsPanel {
+            active: true,
+            cursor: 4,
+            ..Default::default()
+        };
         let mut state = ShelfDetailsState::default();
         state.set_section_mode(ShelfSection::Thinking, ShelfDetailsMode::Hidden);
         handle_details_panel_key(&mut panel, key(KeyCode::Char('r')), &mut state);

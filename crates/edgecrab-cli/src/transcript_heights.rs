@@ -192,7 +192,10 @@ mod tests {
 
     #[test]
     fn verbose_trail_truncates_lines() {
-        let body: String = (1..=20).map(|n| format!("line{n}")).collect::<Vec<_>>().join("\n");
+        let body: String = (1..=20)
+            .map(|n| format!("line{n}"))
+            .collect::<Vec<_>>()
+            .join("\n");
         let out = bounded_verbose_trail(&body, 10_000, 12);
         assert!(out.contains("lines omitted"));
         assert!(out.contains("line20"));

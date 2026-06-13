@@ -3,7 +3,7 @@
 use super::*;
 
 impl App {
-pub(super) fn render_input(&mut self, frame: &mut Frame, area: Rect) {
+    pub(super) fn render_input(&mut self, frame: &mut Frame, area: Rect) {
         // Configure the block before rendering so mode and pending-operator
         // feedback appear immediately on the current frame.
         let text = self.textarea_text();

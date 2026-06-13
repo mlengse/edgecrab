@@ -1,6 +1,5 @@
 //! Shared proxy hub logic — DRY for `edgecrab proxy`, `/proxy`, and the setup TUI.
 
-use std::fmt::Write as _;
 use anyhow::{Context, Result};
 use edgecrab_core::ProxyConfig;
 use edgecrab_proxy::{
@@ -8,6 +7,7 @@ use edgecrab_proxy::{
     builtin_upstream_catalog_lines, client_snippet, format_upstream_status_table, probe_oauth_auth,
     resolve_recipe,
 };
+use std::fmt::Write as _;
 
 use crate::proxy_cmd::ProxySession;
 
@@ -37,11 +37,7 @@ pub fn usage() -> &'static str {
 pub fn format_status(session: &ProxySession) -> String {
     let cfg = session.proxy();
     let mut out = String::new();
-    let _ = writeln!(
-        out,
-        "Proxy listen: http://{}:{}/v1",
-        cfg.bind, cfg.port
-    );
+    let _ = writeln!(out, "Proxy listen: http://{}:{}/v1", cfg.bind, cfg.port);
     let _ = writeln!(
         out,
         "Token: {} ({})",
@@ -82,11 +78,7 @@ pub fn format_doctor(session: &ProxySession) -> (u32, String) {
     let mut out = String::from("Proxy doctor\n\n");
 
     if session.token_present() {
-        let _ = writeln!(
-            out,
-            "  ✓ proxy token at {}",
-            session.token_path.display()
-        );
+        let _ = writeln!(out, "  ✓ proxy token at {}", session.token_path.display());
     } else {
         let _ = writeln!(
             out,
@@ -113,7 +105,11 @@ pub fn format_doctor(session: &ProxySession) -> (u32, String) {
         let _ = writeln!(out, "\nOAuth presets (auth.json):");
         for recipe in ALL_RECIPES {
             let probe = probe_oauth_auth(recipe);
-            let icon = if probe == AuthProbe::Ready { "✓" } else { "○" };
+            let icon = if probe == AuthProbe::Ready {
+                "✓"
+            } else {
+                "○"
+            };
             let _ = writeln!(out, "  {icon} {}", auth_probe_message(recipe, probe));
             if !matches!(probe, AuthProbe::Ready) {
                 issues += 1;
@@ -123,7 +119,10 @@ pub fn format_doctor(session: &ProxySession) -> (u32, String) {
 
     let _ = writeln!(out);
     if issues == 0 {
-        let _ = writeln!(out, "All checks passed. Start: edgecrab proxy start --provider xai");
+        let _ = writeln!(
+            out,
+            "All checks passed. Start: edgecrab proxy start --provider xai"
+        );
     } else {
         let _ = writeln!(
             out,

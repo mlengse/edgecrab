@@ -40,9 +40,9 @@ pub async fn run_engine(
 }
 
 fn bing_region_cookie(settings: &DdgsSettings) -> Option<String> {
-    settings.region().map(|region| {
-        format!("_EDGE_CD=u={region}&m={region}; _EDGE_S=ui={region}&mkt={region}")
-    })
+    settings
+        .region()
+        .map(|region| format!("_EDGE_CD=u={region}&m={region}; _EDGE_S=ui={region}&mkt={region}"))
 }
 
 async fn search_bing(
@@ -122,10 +122,8 @@ async fn search_ddg_form_engine(
         max,
         backend,
     } = req;
-    let mut payload: HashMap<String, String> = HashMap::from([
-        ("q".into(), query.to_string()),
-        ("b".into(), String::new()),
-    ]);
+    let mut payload: HashMap<String, String> =
+        HashMap::from([("q".into(), query.to_string()), ("b".into(), String::new())]);
     if let Some(region) = settings.region() {
         payload.insert("kl".into(), region.to_string());
     }
@@ -238,8 +236,10 @@ mod tests {
     #[test]
     fn bing_cookie_only_when_region_set() {
         assert!(bing_region_cookie(&DdgsSettings::default()).is_none());
-        let mut s = DdgsSettings::default();
-        s.region = "fr-fr".into();
+        let s = DdgsSettings {
+            region: "fr-fr".into(),
+            ..Default::default()
+        };
         assert!(bing_region_cookie(&s).unwrap().contains("fr-fr"));
     }
 
@@ -267,6 +267,9 @@ mod tests {
         let batch = process_page(DdgsEngine::Bing, html, 5, "ddgs")
             .expect("parse")
             .expect("some");
-        assert!(batch.is_empty(), "Python returns [] on HTTP 200 + no b_algo");
+        assert!(
+            batch.is_empty(),
+            "Python returns [] on HTTP 200 + no b_algo"
+        );
     }
 }

@@ -22,7 +22,6 @@ fn format_context_pressure_notice(estimated_tokens: usize, threshold_tokens: usi
     )
 }
 
-
 pub(super) struct RecoveredAssistantTurn {
     pub(super) reasoning: Option<String>,
     pub(super) text: String,

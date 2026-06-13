@@ -38,10 +38,7 @@ impl App {
         }
     }
 
-    pub(super) fn handle_approval_choice_command(
-        &mut self,
-        choice: edgecrab_core::ApprovalChoice,
-    ) {
+    pub(super) fn handle_approval_choice_command(&mut self, choice: edgecrab_core::ApprovalChoice) {
         if self.approval_pending_tx.is_some() {
             let text = match &choice {
                 edgecrab_core::ApprovalChoice::Once => "Approved current command once.",

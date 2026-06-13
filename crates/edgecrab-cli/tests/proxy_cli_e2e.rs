@@ -65,8 +65,14 @@ fn proxy_enable_grok_writes_xai_upstream_and_alias() {
     assert!(stdout.contains("forward:xai") || stdout.contains("grok"));
 
     let saved = fs::read_to_string(&config_path).expect("read config");
-    assert!(saved.contains("xai"), "expected xai upstream in config:\n{saved}");
-    assert!(saved.contains("grok"), "expected grok alias in config:\n{saved}");
+    assert!(
+        saved.contains("xai"),
+        "expected xai upstream in config:\n{saved}"
+    );
+    assert!(
+        saved.contains("grok"),
+        "expected grok alias in config:\n{saved}"
+    );
 }
 
 #[test]

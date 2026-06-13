@@ -1,8 +1,8 @@
 //! OpenAI-shaped error responses for the proxy.
 
+use axum::Json;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::Json;
 use serde::Serialize;
 
 #[derive(Debug, thiserror::Error)]
@@ -66,7 +66,8 @@ impl ProxyError {
                 edgequake_llm::LlmError::AuthError(_) => StatusCode::UNAUTHORIZED,
                 edgequake_llm::LlmError::RateLimited(_) => StatusCode::TOO_MANY_REQUESTS,
                 edgequake_llm::LlmError::InvalidRequest(_) => StatusCode::BAD_REQUEST,
-                edgequake_llm::LlmError::ApiError(m) | edgequake_llm::LlmError::ProviderError(m)
+                edgequake_llm::LlmError::ApiError(m)
+                | edgequake_llm::LlmError::ProviderError(m)
                     if is_overloaded(m) =>
                 {
                     StatusCode::SERVICE_UNAVAILABLE
@@ -253,8 +254,7 @@ mod tests {
 
     #[test]
     fn overloaded_api_error_maps_to_503() {
-        let err: ProxyError =
-            LlmError::ApiError("overloaded_error: servers busy".into()).into();
+        let err: ProxyError = LlmError::ApiError("overloaded_error: servers busy".into()).into();
         assert_eq!(err.status(), StatusCode::SERVICE_UNAVAILABLE);
         assert_eq!(
             err.openai_detail().code.as_deref(),

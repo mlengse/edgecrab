@@ -1,10 +1,10 @@
 //! `/tail` overlay — read-only view of a background process buffer (Hermes `process.list` parity).
 
+use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
-use ratatui::Frame;
 
 use crate::overlay_layout::popup_rect;
 
@@ -36,9 +36,7 @@ impl ProcessTailPanel {
         exit_code: Option<i32>,
     ) {
         let trimmed = truncate_tail_body(&body, TAIL_PANEL_MAX_CHARS);
-        let exit = exit_code
-            .map(|c| format!(" exit {c}"))
-            .unwrap_or_default();
+        let exit = exit_code.map(|c| format!(" exit {c}")).unwrap_or_default();
         self.active = true;
         self.process_id = process_id;
         self.body = trimmed;

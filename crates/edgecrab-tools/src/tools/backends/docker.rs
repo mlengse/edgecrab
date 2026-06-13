@@ -355,7 +355,8 @@ impl DockerState {
         // Collect streamed output
         let mut stdout_parts: Vec<String> = Vec::new();
         let mut stderr_parts: Vec<String> = Vec::new();
-        let mut progress = crate::tool_progress_tail::OutputProgressSink::from_execute_options(&options);
+        let mut progress =
+            crate::tool_progress_tail::OutputProgressSink::from_execute_options(&options);
 
         if let StartExecResults::Attached { mut output, .. } = start_result {
             let collect_fut = async {

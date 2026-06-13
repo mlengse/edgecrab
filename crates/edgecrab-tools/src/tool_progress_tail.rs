@@ -204,7 +204,11 @@ pub fn collect_output_progress_lines(stdout: &str, stderr: &str) -> Vec<String> 
         .map(sanitize_output_line)
         .filter(|line| !line.is_empty())
         .collect();
-    for line in stderr.lines().map(sanitize_output_line).filter(|l| !l.is_empty()) {
+    for line in stderr
+        .lines()
+        .map(sanitize_output_line)
+        .filter(|l| !l.is_empty())
+    {
         lines.push(format_stderr_progress_line(&line));
     }
     lines
@@ -319,7 +323,9 @@ impl OutputProgressSink {
         } else {
             &mut self.stdout
         };
-        splitter.push_chunk(&chunk, |line| dispatch_progress_line(&on_line, line, stderr));
+        splitter.push_chunk(&chunk, |line| {
+            dispatch_progress_line(&on_line, line, stderr)
+        });
     }
 }
 
@@ -447,12 +453,7 @@ impl ToolProgressTail {
         let tool_call_id = ctx.current_tool_call_id.clone()?;
         let tool_name = ctx.current_tool_name.clone()?;
         Some(Arc::new(move |message: &str| {
-            try_send_tool_progress(
-                Some(&tx),
-                Some(&tool_call_id),
-                Some(&tool_name),
-                message,
-            );
+            try_send_tool_progress(Some(&tx), Some(&tool_call_id), Some(&tool_name), message);
         }))
     }
 
@@ -729,11 +730,7 @@ mod tests {
                 captured.lock().unwrap().push(line.to_string());
             })),
         };
-        emit_batch_output_progress(
-            &options,
-            "line1\nline2\nline3\nline4",
-            "err1\n",
-        );
+        emit_batch_output_progress(&options, "line1\nline2\nline3\nline4", "err1\n");
         let got = lines.lock().unwrap().clone();
         assert_eq!(got.len(), 3);
         assert_eq!(got[0], "line3");
@@ -779,10 +776,8 @@ mod tests {
 
     #[test]
     fn format_gateway_tool_progress_uses_last_line() {
-        let msg = format_gateway_tool_progress(
-            "terminal",
-            "line1\nline2\nCompiling edgecrab v0.9.0",
-        );
+        let msg =
+            format_gateway_tool_progress("terminal", "line1\nline2\nCompiling edgecrab v0.9.0");
         assert!(msg.contains("terminal"));
         assert!(msg.contains("Compiling"));
         assert!(!msg.contains("line1"));

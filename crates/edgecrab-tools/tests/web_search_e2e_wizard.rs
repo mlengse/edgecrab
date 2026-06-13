@@ -1,3 +1,5 @@
+#![allow(clippy::await_holding_lock)]
+#![allow(dead_code)]
 //! E2E: split search chain / web.extract_backend persistence.
 
 mod common;

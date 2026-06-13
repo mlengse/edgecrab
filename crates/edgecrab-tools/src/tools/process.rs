@@ -183,15 +183,7 @@ pub(crate) async fn start_background_process(
     }
 
     if ctx.config.terminal_backend == BackendKind::Local {
-        spawn_local_process(
-            tool_name,
-            command,
-            &cwd,
-            pty,
-            table,
-            process_id,
-        )
-        .await
+        spawn_local_process(tool_name, command, &cwd, pty, table, process_id).await
     } else {
         let backend = get_or_create_backend(ctx).await?;
         spawn_remote_process(
@@ -977,7 +969,9 @@ impl ToolHandler for WaitForProcessTool {
 
                     let now = std::time::Instant::now();
                     if now.duration_since(last_heartbeat)
-                        >= std::time::Duration::from_secs(crate::tool_progress_tail::HEARTBEAT_INTERVAL_SECS)
+                        >= std::time::Duration::from_secs(
+                            crate::tool_progress_tail::HEARTBEAT_INTERVAL_SECS,
+                        )
                     {
                         last_heartbeat = now;
                         ctx.emit_progress(crate::tool_progress_tail::format_wait_heartbeat(

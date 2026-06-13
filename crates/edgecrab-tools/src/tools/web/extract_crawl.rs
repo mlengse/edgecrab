@@ -1104,10 +1104,7 @@ async fn extract_with_fallback(
             .await
         {
             Ok(doc) => {
-                ctx.emit_progress(format_results_milestone(
-                    1,
-                    &content_backend_name(backend),
-                ));
+                ctx.emit_progress(format_results_milestone(1, &content_backend_name(backend)));
                 return Ok((doc, backend.clone()));
             }
             Err(e) if e.is_transient() => {
@@ -1787,9 +1784,11 @@ fn validate_url(url: &str, tool: &str) -> Result<(), ToolError> {
 /// Delegates to the shared DDGS [`crate::tools::web::search::http::build_chrome_client`] /
 /// [`crate::tools::web::search::backends::ddgs::fingerprint`] pool (Apache-2.0, no GPL wreq-util).
 fn build_chrome_client(tool: &str) -> Result<wreq::Client, ToolError> {
-    crate::tools::web::search::http::build_chrome_client(15).map_err(|e| ToolError::ExecutionFailed {
-        tool: tool.into(),
-        message: e.message,
+    crate::tools::web::search::http::build_chrome_client(15).map_err(|e| {
+        ToolError::ExecutionFailed {
+            tool: tool.into(),
+            message: e.message,
+        }
     })
 }
 
