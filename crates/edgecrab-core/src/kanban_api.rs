@@ -10,6 +10,8 @@ use edgecrab_state::{
 use edgecrab_types::AgentError;
 use serde_json::{json, Value};
 
+use crate::kanban_task_patch::{patch_kanban_task, TaskPatch};
+
 pub fn task_to_json(t: &KanbanTask) -> Value {
     json!({
         "id": t.id,
@@ -27,6 +29,8 @@ pub fn task_to_json(t: &KanbanTask) -> Value {
         "max_retries": t.max_retries,
         "current_run_id": t.current_run_id,
         "max_runtime_seconds": t.max_runtime_seconds,
+        "assignee": t.assignee,
+        "scheduled_at": t.scheduled_at,
     })
 }
 
@@ -110,6 +114,9 @@ pub fn board_snapshot(home: Option<&Path>, board: Option<&str>) -> Result<Value,
     });
 
     for t in db.list_tasks(None, 500)? {
+        if t.status == "archived" {
+            continue;
+        }
         let col = match t.status.as_str() {
             "triage" => "triage",
             "doing" => "doing",
@@ -176,11 +183,13 @@ pub fn task_detail(
         .into_iter()
         .map(|c| comment_to_json(&c))
         .collect::<Vec<_>>();
+    let worker_context = edgecrab_state::build_worker_context(&db, task_id)?;
     Ok(json!({
         "board": slug,
         "task": task_to_json(&task),
         "runs": runs,
         "comments": comments,
+        "worker_context": worker_context,
     }))
 }
 
@@ -199,6 +208,38 @@ pub fn events_since(
         "board": slug,
         "cursor": cursor,
         "events": events_json,
+    }))
+}
+
+/// Partial task update — `PATCH /api/kanban/tasks/:id`.
+pub fn patch_task(
+    home: Option<&Path>,
+    board: Option<&str>,
+    task_id: &str,
+    patch: &TaskPatch,
+    install_root: &Path,
+) -> Result<Value, AgentError> {
+    let home = kanban_home(home);
+    let (_slug, db) = open_board_db(&home, board)?;
+    patch_kanban_task(&db, task_id, patch, install_root)
+}
+
+/// Hard-delete task — `DELETE /api/kanban/tasks/:id`.
+pub fn delete_task(
+    home: Option<&Path>,
+    board: Option<&str>,
+    task_id: &str,
+) -> Result<Value, AgentError> {
+    crate::kanban_workers::cancel_worker(task_id);
+    let home = kanban_home(home);
+    let (slug, db) = open_board_db(&home, board)?;
+    if !db.delete_task(task_id)? {
+        return Err(AgentError::Validation(format!("task '{task_id}' not found")));
+    }
+    Ok(json!({
+        "deleted": true,
+        "task_id": task_id,
+        "board": slug,
     }))
 }
 

@@ -157,6 +157,54 @@ pub fn handle_kanban_slash(
                 Err(e) => format!("Comment failed: {e}"),
             }
         }
+        "schedule" => {
+            let Some(id) = tokens.get(1) else {
+                return "Usage: /kanban schedule <task-id> --at <ISO8601>|--clear".into();
+            };
+            if tokens.contains(&"--clear") {
+                match db.set_scheduled_at(id, None) {
+                    Ok(()) => format!("Cleared scheduled_at on {id}"),
+                    Err(e) => format!("Schedule clear failed: {e}"),
+                }
+            } else if let Some(pos) = tokens.iter().position(|t| *t == "--at") {
+                let Some(at_str) = tokens.get(pos + 1) else {
+                    return "Usage: /kanban schedule <task-id> --at <ISO8601>".into();
+                };
+                match parse_schedule_at(at_str) {
+                    Ok(at) => match db.set_scheduled_at(id, Some(at)) {
+                        Ok(()) => format!(
+                            "Scheduled {id} — dispatch after {}",
+                            chrono::DateTime::from_timestamp(at, 0)
+                                .map(|dt| dt.to_rfc3339())
+                                .unwrap_or_else(|| at.to_string())
+                        ),
+                        Err(e) => format!("Schedule failed: {e}"),
+                    },
+                    Err(e) => format!("Invalid --at timestamp: {e}"),
+                }
+            } else {
+                "Usage: /kanban schedule <task-id> --at <ISO8601>|--clear".into()
+            }
+        }
+        "archive" => {
+            let Some(id) = tokens.get(1) else {
+                return "Usage: /kanban archive <task-id>".into();
+            };
+            match db.archive_task(id) {
+                Ok(t) => format!("Archived {} — {}", t.id, t.title),
+                Err(e) => format!("Archive failed: {e}"),
+            }
+        }
+        "delete" | "rm" => {
+            let Some(id) = tokens.get(1) else {
+                return "Usage: /kanban delete <task-id>".into();
+            };
+            match db.delete_task(id) {
+                Ok(true) => format!("Deleted {id}"),
+                Ok(false) => format!("Task not found: {id}"),
+                Err(e) => format!("Delete failed: {e}"),
+            }
+        }
         "subscribe" | "notify" => {
             let Some(id) = tokens.get(1) else {
                 return "Usage: /kanban subscribe <task-id>".into();
@@ -188,15 +236,25 @@ pub fn handle_kanban_slash(
             }
         }
         "dispatch" | "tick" => {
-            let cfg = crate::kanban_dispatcher::KanbanDispatchConfig {
-                claim_ttl_secs: KanbanDb::default_claim_ttl_secs(),
-                max_workers: 3,
-                failure_limit: edgecrab_state::DEFAULT_FAILURE_LIMIT,
-            };
+            let cfg = crate::kanban_dispatcher::KanbanDispatchConfig::from_kanban_config(
+                &crate::config::KanbanConfig {
+                    claim_ttl_secs: KanbanDb::default_claim_ttl_secs() as u32,
+                    max_workers: 3,
+                    failure_limit: edgecrab_state::DEFAULT_FAILURE_LIMIT,
+                    ..Default::default()
+                },
+            );
             match crate::kanban_dispatcher::dispatch_once(&db, &cfg, |_| true) {
                 Ok(r) => format!(
-                    "Dispatch tick: reclaimed={}, timed_out={}, promoted={}, spawned={}, at_capacity={}",
-                    r.reclaimed, r.timed_out, r.promoted, r.spawned, r.skipped_at_capacity
+                    "Dispatch tick: reclaimed={}, timed_out={}, promoted={}, spawned={}, \
+                     unassigned={}, nonspawnable={}, at_capacity={}",
+                    r.reclaimed,
+                    r.timed_out,
+                    r.promoted,
+                    r.spawned,
+                    r.skipped_unassigned,
+                    r.skipped_nonspawnable,
+                    r.skipped_at_capacity
                 ),
                 Err(e) => format!("Dispatch failed: {e}"),
             }
@@ -313,7 +371,28 @@ fn format_task_detail(t: &KanbanTask) -> String {
     if let Some(r) = &t.result {
         out.push(format!("Result: {r}"));
     }
+    if let Some(at) = t.scheduled_at {
+        out.push(format!(
+            "Scheduled at: {}",
+            chrono::DateTime::from_timestamp(at, 0)
+                .map(|dt| dt.to_rfc3339())
+                .unwrap_or_else(|| at.to_string())
+        ));
+    }
     out.join("\n")
+}
+
+fn parse_schedule_at(raw: &str) -> Result<i64, String> {
+    if let Ok(ts) = raw.parse::<i64>() {
+        return Ok(ts);
+    }
+    chrono::DateTime::parse_from_rfc3339(raw)
+        .map(|dt| dt.timestamp())
+        .or_else(|_| {
+            chrono::NaiveDateTime::parse_from_str(raw, "%Y-%m-%dT%H:%M:%S")
+                .map(|ndt| ndt.and_utc().timestamp())
+        })
+        .map_err(|e| e.to_string())
 }
 
 /// Gateway `/kanban` handler — async decompose when agent + LLM available.
@@ -358,12 +437,21 @@ mod tests {
     use tempfile::TempDir;
 
     #[test]
-    fn slash_create_and_list() {
+    fn slash_schedule_and_clear() {
         let dir = TempDir::new().expect("tmpdir");
         fs::create_dir_all(dir.path()).expect("mkdir");
-        let created = handle_kanban_slash("create Test card from slash", Some(dir.path()), None);
-        assert!(created.contains("Created task kb-"));
-        let listed = handle_kanban_slash("list", Some(dir.path()), None);
-        assert!(listed.contains("Test card from slash"));
+        let created = handle_kanban_slash("create Schedule test", Some(dir.path()), None);
+        let id = created
+            .split_whitespace()
+            .find(|w| w.starts_with("kb-"))
+            .expect("task id");
+        let scheduled = handle_kanban_slash(
+            &format!("schedule {id} --at 2099-01-01T12:00:00Z"),
+            Some(dir.path()),
+            None,
+        );
+        assert!(scheduled.contains("Scheduled"));
+        let cleared = handle_kanban_slash(&format!("schedule {id} --clear"), Some(dir.path()), None);
+        assert!(cleared.contains("Cleared"));
     }
 }

@@ -50,6 +50,8 @@ fn tick_boards(
             aggregate.promoted += r.promoted;
             aggregate.timed_out += r.timed_out;
             aggregate.skipped_at_capacity |= r.skipped_at_capacity;
+            aggregate.skipped_per_profile_capped += r.skipped_per_profile_capped;
+            aggregate.respawn_guarded += r.respawn_guarded;
         }
     }
     any.then_some(aggregate)
@@ -87,6 +89,18 @@ pub fn spawn_kanban_watcher(
                 if result.timed_out > 0 {
                     tracing::info!(timed_out = result.timed_out, "kanban: timed out long-running workers");
                 }
+                if result.skipped_per_profile_capped > 0 {
+                    tracing::debug!(
+                        deferred = result.skipped_per_profile_capped,
+                        "kanban: deferred tasks at per-profile cap"
+                    );
+                }
+                if result.respawn_guarded > 0 {
+                    tracing::debug!(
+                        guarded = result.respawn_guarded,
+                        "kanban: deferred tasks by respawn guard"
+                    );
+                }
             }
         }
     })
@@ -97,11 +111,12 @@ pub fn spawn_kanban_reaper(home: impl AsRef<Path>, interval_secs: u64) -> tokio:
     spawn_kanban_watcher(
         home,
         interval_secs,
-        KanbanDispatchConfig {
+        KanbanDispatchConfig::from_kanban_config(&crate::config::KanbanConfig {
             claim_ttl_secs: 900,
             max_workers: 1,
             failure_limit: 2,
-        },
+            ..Default::default()
+        }),
         None,
     )
 }

@@ -20,7 +20,7 @@ Single cross-reference table. Status from code inspection + [001-gap-analysis-v1
 | Mission steering (typed) | 🟡 `/steer` | ✅ HINT/REDIRECT/STOP | EC ahead | EC |
 | Shadow judge | ❌ | ✅ | EC only | EC |
 | File mutation footer | ✅ | ✅ | Parity | — |
-| Kanban multi-agent | ✅ 9 tools + dispatcher + notifier + dashboard WS + decomposer | 🟡 11 tools + triage + decomposer + static UI + events WS | Partial | Hermes |
+| Kanban multi-agent | ✅ 9 tools + dispatcher + React dashboard + decomposer + profile routing + PATCH + drag-drop + parent blockers + respawn guard + scheduled_at + build_worker_context | 🟡 11 tools + decomposer + profile routing + static UI + PATCH + drag-drop + parent blockers (409) + respawn guard + scheduled_at + build_worker_context | Partial | Hermes (React SPA depth) |
 | Delegate + `/agents` | ✅ | ✅ | Parity | EC (TUI control) |
 | Checkpoints v2 | ✅ | ✅ | Parity | — |
 | Config `/snapshot` | ✅ | ✅ | Parity | — |
@@ -173,7 +173,7 @@ Priority items still **not** at Hermes parity:
 
 | ID | Feature | Tier |
 |----|---------|------|
-| 007 | Multi-agent kanban (React dashboard, profile routing) | A 🟡 partial — decomposer + static UI shipped |
+| 007 | Multi-agent kanban (React dashboard) | A 🟡 partial — orchestration API + profile routing + static settings UI |
 | 009 | Pluggable providers/plugins | A |
 | 012 | Video tools | A |
 | 015 | Native clarify buttons (WhatsApp Cloud list mode) | B 🟡 partial — Baileys list 4–10 shipped |
@@ -184,4 +184,4 @@ Priority items still **not** at Hermes parity:
 | 029 | Pareto code router | C |
 | 032 | Secrets manager | C |
 
-Shipped notable gaps: 001 goals, 002 mutation verifier, 003 LSP diagnostics, 004 cache, 005 handoff, 006 checkpoints, 010 MCP OAuth, 011 computer use, 024 OAuth providers, **memory write approval**, **config `/snapshot`**, **pre-update auto-snapshot**, **smart approval**, **kanban Phase 2–6** (comments, block/unblock, deps, dispatch, task_runs, failure_limit, multi-board, gateway notifier, max_runtime, worker interrupt, `/kanban subscribe`, read API + events WS, **decomposer + triage + static UI**), **clarify buttons (Telegram + Discord + WhatsApp buttons/list)**, **kanban_create max_runtime wired**.
+Shipped notable gaps: 001 goals, 002 mutation verifier, 003 LSP diagnostics, 004 cache, 005 handoff, 006 checkpoints, 010 MCP OAuth, 011 computer use, 024 OAuth providers, **memory write approval**, **config `/snapshot`**, **pre-update auto-snapshot**, **smart approval**, **kanban Phase 2–6** (comments, block/unblock, deps, dispatch, task_runs, failure_limit, multi-board, gateway notifier, max_runtime, worker interrupt, `/kanban subscribe`, read API + events WS, **decomposer + triage + static UI + API auth + orchestration settings + profile routing + PATCH/DELETE tasks + describe-auto + drag-drop + parent blockers 409 + archive + per-profile cap + scheduled_at + respawn guard + rate-limit requeue + `/kanban schedule|archive|delete` + build_worker_context handoff**), **clarify buttons (Telegram + Discord + WhatsApp buttons/list)**, **kanban_create max_runtime wired**.

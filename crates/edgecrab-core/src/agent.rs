@@ -134,6 +134,10 @@ pub struct IsolatedAgentOptions {
     pub origin_chat: Option<OriginChat>,
     /// Pin kanban worker to a specific task card.
     pub kanban_task_id: Option<String>,
+    /// Spawn worker with a named profile's config/state (kanban assignee).
+    pub profile: Option<String>,
+    /// Install root for profile resolution (`~/.edgecrab`).
+    pub install_root: Option<std::path::PathBuf>,
 }
 
 /// Immutable per-agent configuration (subset of AppConfig relevant to the loop).
@@ -933,8 +937,44 @@ impl Agent {
     /// share conversation history, process tables, or cancellation state with
     /// the foreground session.
     pub async fn fork_isolated(&self, options: IsolatedAgentOptions) -> Result<Self, AgentError> {
-        let mut config = self.config.read().await.clone();
-        let provider = self.provider.read().await.clone();
+        let profile = options
+            .profile
+            .as_deref()
+            .map(crate::kanban_profiles::normalize_profile_name)
+            .filter(|s| !s.is_empty());
+
+        let (mut config, provider, state_db) = if let Some(profile_name) = profile {
+            let root = options
+                .install_root
+                .clone()
+                .unwrap_or_else(crate::kanban_profiles::install_root);
+            let profile_cfg =
+                crate::kanban_profiles::load_config_for_profile(&root, &profile_name)?;
+            let model = profile_cfg.model.default_model.clone();
+            let provider = if let Some((provider_name, model_name)) = model.split_once('/') {
+                let canonical = edgecrab_tools::vision_models::normalize_provider_name(provider_name);
+                edgecrab_tools::create_provider_for_model(&canonical, model_name)
+                    .map_err(|e| AgentError::Config(format!("kanban worker provider: {e}")))?
+            } else {
+                return Err(AgentError::Config(format!(
+                    "kanban worker profile '{profile_name}' model must be provider/model form, got '{model}'"
+                )));
+            };
+            let profile_home =
+                crate::kanban_profiles::profile_effective_home(&root, &profile_name);
+            let db = Arc::new(
+                edgecrab_state::SessionDb::open(&profile_home.join("state.db"))
+                    .map_err(|e| AgentError::Database(format!("profile state db: {e}")))?,
+            );
+            let agent_cfg = AgentBuilder::from_config(&profile_cfg).into_agent_config();
+            (agent_cfg, provider, Some(db))
+        } else {
+            let config = self.config.read().await.clone();
+            let provider = self.provider.read().await.clone();
+            let state_db = self.state_db.clone();
+            (config, provider, state_db)
+        };
+
         let gateway_sender = self.gateway_sender.read().await.clone();
 
         if let Some(session_id) = options.session_id {
@@ -962,10 +1002,10 @@ impl Agent {
         let child = Self::build_runtime_clone(
             config,
             provider,
-            self.state_db.clone(),
+            state_db,
             self.tool_registry.read().await.clone(),
             self.context_engine.clone(),
-            Some(self.goal_store.clone()),
+            None,
         );
         if let Some(sender) = gateway_sender {
             child.set_gateway_sender(sender).await;
@@ -2682,6 +2722,11 @@ impl AgentBuilder {
             self.context_engine,
             self.goal_store,
         ))
+    }
+
+    /// Extract built agent config (for kanban profile worker forks).
+    pub fn into_agent_config(self) -> AgentConfig {
+        self.config
     }
 }
 

@@ -1,4 +1,4 @@
-//! Kanban decomposer — Hermes `kanban_decompose.py` subset (no profile routing).
+//! Kanban decomposer — Hermes `kanban_decompose.py` profile routing parity.
 
 use std::path::Path;
 use std::sync::Arc;
@@ -10,10 +10,19 @@ use serde_json::Value;
 
 use crate::auxiliary_model::resolve_side_task_provider_and_model;
 use crate::config::{AppConfig, KanbanDecomposerConfig};
+use crate::kanban_profiles::{
+    format_roster_for_prompt, install_root, list_profile_roster, normalize_assignee_choice,
+    resolve_default_assignee, resolve_orchestrator_profile, valid_assignee_names,
+};
 
 const SYSTEM_PROMPT: &str = r#"You are the Kanban decomposer for EdgeCrab.
 
-A user dropped a rough idea into the Triage column. Break it into a small graph of concrete child tasks.
+A user dropped a rough idea into the Triage column. Break it into a small graph of concrete child tasks and route each one to the best-matching profile from the available roster.
+
+You will be given:
+  - The original task title and body
+  - The list of available profiles (each with name + description)
+  - The fallback "default_assignee" used when no profile fits
 
 Output a single JSON object:
 
@@ -25,6 +34,7 @@ Fan-out (2–6 parallel/sequenced tasks):
     {
       "title": "<imperative title, <= 80 chars>",
       "body": "<detailed spec for the worker>",
+      "assignee": "<profile name from the roster, or null for default>",
       "parents": [<int>, ...]
     }
   ]
@@ -35,12 +45,14 @@ Single task (no useful decomposition):
   "fanout": false,
   "rationale": "<one sentence>",
   "title": "<tightened title>",
-  "body": "<concrete spec>"
+  "body": "<concrete spec>",
+  "assignee": "<profile name from the roster, or null for default>"
 }
 
 Rules:
 - "parents" are 0-based indices into the same "tasks" list (data dependencies).
 - Prefer parallelism — independent tasks get empty parents.
+- Pick assignees from the roster by matching DESCRIPTION (not just name).
 - Each child body must stand alone for a fresh worker.
 - No preamble, no code fences — JSON only.
 "#;
@@ -66,6 +78,8 @@ struct FanoutResponse {
     title: Option<String>,
     #[serde(default)]
     body: Option<String>,
+    #[serde(default)]
+    assignee: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -74,7 +88,23 @@ struct LlmTask {
     #[serde(default)]
     body: Option<String>,
     #[serde(default)]
+    assignee: Option<String>,
+    #[serde(default)]
     parents: Vec<usize>,
+}
+
+struct DecomposeContext {
+    default_assignee: String,
+    orchestrator: String,
+    valid_names: std::collections::HashSet<String>,
+}
+
+fn decompose_context(app_cfg: &AppConfig, install_root: &Path) -> DecomposeContext {
+    DecomposeContext {
+        default_assignee: resolve_default_assignee(&app_cfg.kanban, install_root),
+        orchestrator: resolve_orchestrator_profile(&app_cfg.kanban, install_root),
+        valid_names: valid_assignee_names(install_root),
+    }
 }
 
 fn extract_json_object(raw: &str) -> Option<Value> {
@@ -92,26 +122,36 @@ fn extract_json_object(raw: &str) -> Option<Value> {
     serde_json::from_str(&stripped[start..=end]).ok()
 }
 
-fn llm_tasks_to_children(tasks: Vec<LlmTask>) -> Vec<KanbanDecomposeChild> {
+fn llm_tasks_to_children(tasks: Vec<LlmTask>, ctx: &DecomposeContext) -> Vec<KanbanDecomposeChild> {
     tasks
         .into_iter()
         .map(|t| KanbanDecomposeChild {
             title: t.title.trim().chars().take(200).collect(),
             body: t.body.map(|b| b.trim().to_string()).filter(|b| !b.is_empty()),
+            assignee: Some(normalize_assignee_choice(
+                t.assignee.as_deref(),
+                &ctx.default_assignee,
+                &ctx.valid_names,
+            )),
             parents: t.parents,
         })
         .collect()
 }
 
-/// Decompose one triage task via auxiliary LLM (never panics; returns outcome).
-pub async fn decompose_task(
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn decompose_task(
     db: &KanbanDb,
     task_id: &str,
     provider: Arc<dyn LLMProvider>,
     main_model: &str,
     decomposer_cfg: &KanbanDecomposerConfig,
     auxiliary_model: Option<&str>,
+    app_cfg: &AppConfig,
+    install_root: &Path,
 ) -> DecomposeOutcome {
+    let ctx = decompose_context(app_cfg, install_root);
+    let roster = list_profile_roster(install_root);
+
     let task = match db.get_task(task_id) {
         Ok(Some(t)) => t,
         Ok(None) => {
@@ -154,8 +194,13 @@ pub async fn decompose_task(
 
     let body = task.body.as_deref().unwrap_or("(empty)");
     let user = format!(
-        "Task id: {}\nTitle: {}\nBody:\n{body}",
-        task.id, task.title
+        "Task id: {}\nTitle: {}\nBody:\n{body}\n\n\
+         Available profiles (assignees you may pick from):\n{}\n\n\
+         Default assignee (used when no profile fits a task): {}",
+        task.id,
+        task.title,
+        format_roster_for_prompt(&roster),
+        ctx.default_assignee,
     );
     let messages = vec![
         edgequake_llm::ChatMessage::system(SYSTEM_PROMPT),
@@ -163,7 +208,7 @@ pub async fn decompose_task(
     ];
     let options = edgequake_llm::CompletionOptions {
         max_tokens: Some(decomposer_cfg.max_tokens as usize),
-        temperature: Some(0.2),
+        temperature: Some(0.3),
         ..Default::default()
     };
 
@@ -212,7 +257,22 @@ pub async fn decompose_task(
             .filter(|t| !t.trim().is_empty())
             .unwrap_or_else(|| task.title.clone());
         let body = parsed.body.as_deref().or(task.body.as_deref());
-        match db.specify_triage_task(task_id, &title, body, Some("decomposer")) {
+        let assignee = if task.assignee.is_some() {
+            None
+        } else {
+            Some(normalize_assignee_choice(
+                parsed.assignee.as_deref(),
+                &ctx.default_assignee,
+                &ctx.valid_names,
+            ))
+        };
+        match db.specify_triage_task(
+            task_id,
+            &title,
+            body,
+            assignee.as_deref(),
+            Some("decomposer"),
+        ) {
             Ok(true) => DecomposeOutcome {
                 task_id: task_id.to_string(),
                 ok: true,
@@ -236,7 +296,7 @@ pub async fn decompose_task(
             },
         }
     } else {
-        let children = llm_tasks_to_children(parsed.tasks);
+        let children = llm_tasks_to_children(parsed.tasks, &ctx);
         if children.is_empty() {
             return DecomposeOutcome {
                 task_id: task_id.to_string(),
@@ -246,7 +306,12 @@ pub async fn decompose_task(
                 child_ids: None,
             };
         }
-        match db.decompose_triage_task(task_id, &children, Some("decomposer")) {
+        match db.decompose_triage_task(
+            task_id,
+            Some(&ctx.orchestrator),
+            &children,
+            Some("decomposer"),
+        ) {
             Ok(Some(ids)) => DecomposeOutcome {
                 task_id: task_id.to_string(),
                 ok: true,
@@ -295,6 +360,7 @@ pub async fn run_auto_decompose_tick(
     if !cfg.kanban.enabled || !cfg.kanban.auto_decompose {
         return 0;
     }
+    let root = install_root();
     let per_tick = cfg.kanban.auto_decompose_per_tick.max(1);
     let mut attempted = 0usize;
     let mut decomposed = 0usize;
@@ -320,6 +386,8 @@ pub async fn run_auto_decompose_tick(
                 main_model,
                 &cfg.auxiliary.kanban_decomposer,
                 cfg.auxiliary.model.as_deref(),
+                cfg,
+                &root,
             )
             .await;
             if outcome.ok {
@@ -342,7 +410,7 @@ pub async fn run_auto_decompose_tick(
     decomposed
 }
 
-/// Synchronous decompose for slash commands (blocks on LLM in async runtime).
+/// Synchronous decompose for slash commands and HTTP API.
 pub async fn decompose_task_by_id(
     home: Option<&Path>,
     task_id: &str,
@@ -352,6 +420,7 @@ pub async fn decompose_task_by_id(
 ) -> DecomposeOutcome {
     let home = edgecrab_state::kanban_home(home);
     let path = edgecrab_state::kanban_db_path_for_board(&home, None);
+    let root = install_root();
     let db = match KanbanDb::open(&path) {
         Ok(db) => db,
         Err(e) => {
@@ -371,8 +440,20 @@ pub async fn decompose_task_by_id(
         main_model,
         &cfg.auxiliary.kanban_decomposer,
         cfg.auxiliary.model.as_deref(),
+        cfg,
+        &root,
     )
     .await
+}
+
+pub fn decompose_outcome_json(outcome: &DecomposeOutcome) -> serde_json::Value {
+    serde_json::json!({
+        "ok": outcome.ok,
+        "task_id": outcome.task_id,
+        "reason": outcome.reason,
+        "fanout": outcome.fanout,
+        "child_ids": outcome.child_ids,
+    })
 }
 
 /// Format a decompose outcome for slash command replies.

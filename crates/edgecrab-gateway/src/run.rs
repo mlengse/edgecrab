@@ -24,7 +24,7 @@ use std::time::{Duration, Instant};
 use axum::body::Bytes;
 use axum::extract::{Path as AxumPath, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::routing::{get, post};
+use axum::routing::{get, patch, post};
 use axum::{Json, Router};
 use edgecrab_command_catalog::{SlashSurface, slash_commands_for_surface};
 use edgecrab_tools::tools::transcribe::TranscribeAudioTool;
@@ -1107,6 +1107,8 @@ pub struct GatewayState {
     pub hook_registry: Arc<HookRegistry>,
     pub message_tx: mpsc::Sender<IncomingMessage>,
     pub cancel: CancellationToken,
+    pub agent: Option<Arc<Agent>>,
+    pub gateway_host: String,
     webhook_ingress: Arc<tokio::sync::Mutex<WebhookIngressState>>,
 }
 
@@ -1828,16 +1830,21 @@ impl Gateway {
                 let failure_limit = ec_config.kanban.failure_limit;
                 let kanban_home = home.clone();
                 let spawn_agent = agent.clone();
+                let install_root = edgecrab_core::install_root();
                 let spawn_fn: edgecrab_core::KanbanSpawnFn = Arc::new(move |req| {
                     let agent = spawn_agent.clone();
                     let kanban_home = kanban_home.clone();
+                    let install_root = install_root.clone();
                     let worker_id = req.worker_id.clone();
                     let task_id = req.task_id.clone();
+                    let assignee = req.assignee.clone();
                     tokio::spawn(async move {
                         let Ok(child) = agent
                             .fork_isolated(IsolatedAgentOptions {
                                 session_id: Some(format!("kb-{}", req.task_id)),
                                 kanban_task_id: Some(req.task_id.clone()),
+                                profile: Some(assignee),
+                                install_root: Some(install_root),
                                 quiet_mode: Some(true),
                                 ..Default::default()
                             })
@@ -1866,12 +1873,20 @@ impl Gateway {
                         let child = Arc::new(child);
                         edgecrab_core::kanban_workers::register_worker(&task_id, &child);
                         let body = req.body.as_deref().unwrap_or("");
-                        let prompt = format!(
-                            "[KANBAN WORKER] Task `{}` — {}\n{body}\n\n\
-                             Use kanban_show for context. Call kanban_complete when done \
-                             or kanban_block if you need human input.",
-                            req.task_id, req.title
-                        );
+                        let prompt = if req.worker_context.trim().is_empty() {
+                            format!(
+                                "[KANBAN WORKER] Task `{}` — {}\n{body}\n\n\
+                                 Use kanban_show for context. Call kanban_complete when done \
+                                 or kanban_block if you need human input.",
+                                req.task_id, req.title
+                            )
+                        } else {
+                            format!(
+                                "{}\n\n---\n\n\
+                                 Call kanban_complete when done or kanban_block if you need human input.",
+                                req.worker_context.trim()
+                            )
+                        };
                         let chat_err = child.chat(&prompt).await.is_err();
                         edgecrab_core::kanban_workers::unregister_worker(&task_id);
                         if chat_err {
@@ -1951,8 +1966,11 @@ impl Gateway {
             hook_registry: self.hook_registry.clone(),
             message_tx: tx.clone(),
             cancel: self.cancel.clone(),
+            agent: self.agent.clone(),
+            gateway_host: self.config.host.clone(),
             webhook_ingress: Arc::new(tokio::sync::Mutex::new(WebhookIngressState::default())),
         };
+        crate::kanban_routes::init_kanban_api_auth(&ec_config);
         let app = build_router(state);
 
         // Start HTTP server
@@ -2860,6 +2878,7 @@ impl Gateway {
                                                     platform_name.clone(),
                                                     origin_chat_id_clone.clone(),
                                                 )),
+                                                ..Default::default()
                                             })
                                             .await
                                         {
@@ -4084,7 +4103,30 @@ fn build_router(state: GatewayState) -> Router {
         .route("/api/kanban/boards", get(crate::kanban_routes::kanban_boards))
         .route(
             "/api/kanban/tasks/:id",
-            get(crate::kanban_routes::kanban_task_detail),
+            get(crate::kanban_routes::kanban_task_detail)
+                .patch(crate::kanban_routes::kanban_task_patch)
+                .delete(crate::kanban_routes::kanban_task_delete),
+        )
+        .route(
+            "/api/kanban/orchestration",
+            get(crate::kanban_routes::kanban_orchestration_get)
+                .put(crate::kanban_routes::kanban_orchestration_put),
+        )
+        .route(
+            "/api/kanban/profiles",
+            get(crate::kanban_routes::kanban_profiles_list),
+        )
+        .route(
+            "/api/kanban/profiles/:name",
+            patch(crate::kanban_routes::kanban_profile_patch),
+        )
+        .route(
+            "/api/kanban/profiles/:name/describe-auto",
+            post(crate::kanban_routes::kanban_profile_describe_auto),
+        )
+        .route(
+            "/api/kanban/tasks/:id/decompose",
+            post(crate::kanban_routes::kanban_decompose_task),
         )
         .route(
             "/api/kanban/events",
@@ -4953,6 +4995,8 @@ def register(ctx):
             hook_registry: Arc::new(HookRegistry::new()),
             message_tx: tx,
             cancel: CancellationToken::new(),
+            agent: None,
+            gateway_host: "127.0.0.1".into(),
             webhook_ingress: Arc::new(tokio::sync::Mutex::new(WebhookIngressState::default())),
         };
         let app = build_router(state);
@@ -4978,6 +5022,8 @@ def register(ctx):
             hook_registry: Arc::new(HookRegistry::new()),
             message_tx: tx,
             cancel: CancellationToken::new(),
+            agent: None,
+            gateway_host: "127.0.0.1".into(),
             webhook_ingress: Arc::new(tokio::sync::Mutex::new(WebhookIngressState::default())),
         };
         let app = build_router(state);
@@ -5042,6 +5088,8 @@ def register(ctx):
             hook_registry: Arc::new(HookRegistry::new()),
             message_tx: tx,
             cancel: CancellationToken::new(),
+            agent: None,
+            gateway_host: "127.0.0.1".into(),
             webhook_ingress: Arc::new(tokio::sync::Mutex::new(WebhookIngressState::default())),
         };
         let app = build_router(state);
@@ -5117,6 +5165,8 @@ def register(ctx):
             hook_registry: Arc::new(HookRegistry::new()),
             message_tx: tx,
             cancel: CancellationToken::new(),
+            agent: None,
+            gateway_host: "127.0.0.1".into(),
             webhook_ingress: Arc::new(tokio::sync::Mutex::new(WebhookIngressState::default())),
         };
         let app = build_router(state);
@@ -5240,6 +5290,8 @@ def register(ctx):
             hook_registry: Arc::new(HookRegistry::new()),
             message_tx: tx,
             cancel: CancellationToken::new(),
+            agent: None,
+            gateway_host: "127.0.0.1".into(),
             webhook_ingress: Arc::new(tokio::sync::Mutex::new(WebhookIngressState::default())),
         };
         let app = build_router(state);

@@ -2545,6 +2545,8 @@ pub struct KanbanConfig {
     pub claim_ttl_secs: u32,
     /// Soft cap on concurrent workers (enforced by orchestrator in later phases).
     pub max_workers: u32,
+    /// Per-profile cap on concurrent `doing` tasks (unset = unlimited). Hermes #21582.
+    pub max_in_progress_per_profile: Option<u32>,
     /// Run stale-claim reaper inside the gateway (Hermes `dispatch_in_gateway`).
     pub dispatch_in_gateway: bool,
     /// Reaper tick interval in seconds when `dispatch_in_gateway` is true.
@@ -2557,6 +2559,24 @@ pub struct KanbanConfig {
     pub auto_decompose: bool,
     /// Max decompositions per tick (Hermes default: 3).
     pub auto_decompose_per_tick: u32,
+    /// Require Bearer/`X-Kanban-Token` for `/api/kanban/*` and `/kanban` (default true).
+    pub require_api_auth: bool,
+    /// Token file path (default `~/.edgecrab/kanban-token`).
+    pub api_token_path: Option<PathBuf>,
+    /// Skip auth when gateway binds loopback (default true — Hermes loopback mode).
+    pub allow_localhost_without_auth: bool,
+    /// Profile that owns the root task after decompose fan-out (orchestrator).
+    pub orchestrator_profile: Option<String>,
+    /// Fallback assignee when decomposer picks unknown profile or task is unassigned.
+    pub default_assignee: Option<String>,
+    /// Promote parent-free children to claimable immediately after decompose (Hermes default).
+    pub auto_promote_children: bool,
+    /// Cooldown after rate-limited requeue before respawn (seconds, default 300).
+    pub rate_limit_cooldown_secs: u32,
+    /// Window where a completed run blocks respawn (seconds, default 3600).
+    pub respawn_guard_success_window_secs: u32,
+    /// Window where a GitHub PR comment blocks respawn (seconds, default 86400).
+    pub respawn_guard_pr_window_secs: u32,
 }
 
 impl Default for KanbanConfig {
@@ -2565,12 +2585,22 @@ impl Default for KanbanConfig {
             enabled: false,
             claim_ttl_secs: 900,
             max_workers: 3,
+            max_in_progress_per_profile: None,
             dispatch_in_gateway: true,
             reclaim_interval_secs: 60,
             failure_limit: 2,
             default_max_runtime_secs: 0,
             auto_decompose: true,
             auto_decompose_per_tick: 3,
+            require_api_auth: true,
+            api_token_path: None,
+            allow_localhost_without_auth: true,
+            orchestrator_profile: None,
+            default_assignee: None,
+            auto_promote_children: true,
+            rate_limit_cooldown_secs: 300,
+            respawn_guard_success_window_secs: 3600,
+            respawn_guard_pr_window_secs: 86_400,
         }
     }
 }
@@ -2588,6 +2618,23 @@ impl Default for KanbanDecomposerConfig {
         Self {
             model: None,
             max_tokens: 4096,
+        }
+    }
+}
+
+/// Profile describer auxiliary model (`auxiliary.profile_describer`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ProfileDescriberConfig {
+    pub model: Option<String>,
+    pub max_tokens: u32,
+}
+
+impl Default for ProfileDescriberConfig {
+    fn default() -> Self {
+        Self {
+            model: None,
+            max_tokens: 512,
         }
     }
 }
@@ -2612,6 +2659,8 @@ pub struct AuxiliaryConfig {
     pub goal_judge: GoalJudgeConfig,
     /// Kanban decomposer overrides (`auxiliary.kanban_decomposer`).
     pub kanban_decomposer: KanbanDecomposerConfig,
+    /// Profile describer overrides (`auxiliary.profile_describer`).
+    pub profile_describer: ProfileDescriberConfig,
 }
 
 /// Goal judge auxiliary task configuration.

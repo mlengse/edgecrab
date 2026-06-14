@@ -57,6 +57,8 @@ fn task_json(t: &edgecrab_state::KanbanTask) -> serde_json::Value {
         "max_retries": t.max_retries,
         "current_run_id": t.current_run_id,
         "max_runtime_seconds": t.max_runtime_seconds,
+        "assignee": t.assignee,
+        "scheduled_at": t.scheduled_at,
     })
 }
 
@@ -89,6 +91,8 @@ struct CreateArgs {
     priority: i32,
     #[serde(default)]
     max_runtime_seconds: Option<i32>,
+    #[serde(default)]
+    assignee: Option<String>,
 }
 
 #[async_trait]
@@ -120,6 +124,10 @@ impl ToolHandler for KanbanCreateTool {
                     "max_runtime_seconds": {
                         "type": "integer",
                         "description": "Optional wall-clock limit for worker runs (seconds); uses kanban.default_max_runtime_secs when omitted"
+                    },
+                    "assignee": {
+                        "type": "string",
+                        "description": "Profile name to execute this task (must exist under ~/.edgecrab/profiles/)"
                     }
                 },
                 "required": ["title"]
@@ -135,12 +143,14 @@ impl ToolHandler for KanbanCreateTool {
         })?;
         let db = open_board(ctx)?;
         let max_runtime = resolve_max_runtime(ctx, args.max_runtime_seconds);
+        let assignee = args.assignee.as_deref().map(str::trim).filter(|s| !s.is_empty());
         let task = db
-            .create_task_with_runtime(
+            .create_task_with_assignee(
                 &args.title,
                 args.body.as_deref(),
                 args.priority,
                 max_runtime,
+                assignee,
             )
             .map_err(|e| ToolError::Other(e.to_string()))?;
         Ok(json!({ "success": true, "task": task_json(&task) }).to_string())
@@ -507,6 +517,8 @@ impl ToolHandler for KanbanShowTool {
         let runs = db
             .list_task_runs(&task_id, 10)
             .map_err(|e| ToolError::Other(e.to_string()))?;
+        let worker_context = edgecrab_state::build_worker_context(&db, &task_id)
+            .map_err(|e| ToolError::Other(e.to_string()))?;
         Ok(json!({
             "success": true,
             "task": task_json(&task),
@@ -514,6 +526,7 @@ impl ToolHandler for KanbanShowTool {
             "parents": parents,
             "children": children,
             "runs": runs,
+            "worker_context": worker_context,
         })
         .to_string())
     }

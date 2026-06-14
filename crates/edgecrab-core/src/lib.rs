@@ -21,13 +21,19 @@ pub mod gateway_home;
 pub mod goal_judge;
 pub mod goals;
 pub mod kanban_api;
-pub mod local_provider_policy;
+pub mod kanban_auth;
 pub mod kanban_decompose;
 pub mod kanban_dispatcher;
 pub mod kanban_notifier;
+pub mod kanban_orchestration;
+pub mod kanban_profiles;
+pub mod kanban_profile_describer;
+pub mod kanban_task_patch;
 pub mod kanban_reaper;
+pub mod kanban_respawn_guard;
 pub mod kanban_slash;
 pub mod kanban_workers;
+pub mod local_provider_policy;
 pub mod model_catalog;
 pub mod model_cost_guard;
 pub mod model_discovery;
@@ -121,7 +127,28 @@ pub use kanban_notifier::{
     format_notifier_message, spawn_kanban_notifier,
 };
 pub use kanban_reaper::{spawn_kanban_reaper, spawn_kanban_watcher, KanbanSpawnFn};
-pub use kanban_decompose::{format_decompose_outcome, run_auto_decompose_tick, DecomposeOutcome};
+pub use kanban_auth::{
+    check_kanban_token, default_kanban_token_path, ensure_kanban_api_token,
+    load_kanban_api_token, resolved_kanban_token_path,
+};
+pub use kanban_decompose::{
+    decompose_outcome_json, decompose_task_by_id, format_decompose_outcome,
+    run_auto_decompose_tick, DecomposeOutcome,
+};
+pub use kanban_orchestration::{
+    get_orchestration_settings, patch_orchestration_settings, OrchestrationSettingsPatch,
+};
+pub use kanban_profile_describer::{
+    describe_outcome_json, describe_profile, DescribeProfileOutcome,
+};
+pub use kanban_profiles::{
+    active_profile_name, format_roster_for_prompt, install_root, list_profile_roster,
+    load_config_for_profile, normalize_assignee_choice, normalize_profile_name,
+    profile_effective_home, profile_exists, profiles_api_json, resolve_default_assignee,
+    resolve_orchestrator_profile, valid_assignee_names, write_profile_description,
+    write_profile_meta, KanbanProfileEntry,
+};
+pub use kanban_task_patch::{parse_conflict, patch_kanban_task, TaskPatch, CONFLICT_PREFIX};
 pub use kanban_slash::{handle_kanban_slash, handle_kanban_slash_gateway, KanbanNotifyOrigin};
 
 /// Truncate `s` to at most `max_bytes` bytes, always stopping at a valid UTF-8
