@@ -1776,16 +1776,16 @@ impl ToolHandler for SkillManageTool {
         }
 
         let payload = serde_json::to_value(&args).map_err(|e| ToolError::Other(e.to_string()))?;
-        match crate::skills::write_approval::maybe_gate_skill_manage(
+        match crate::skills::maybe_gate_skill_manage(
             &ctx.config.edgecrab_home,
             payload.clone(),
             ctx.config.skills_write_approval,
         ) {
-            crate::skills::write_approval::SkillManageGate::Staged(msg) => return Ok(msg),
-            crate::skills::write_approval::SkillManageGate::Allow => {}
+            crate::skills::SkillManageGate::Staged(msg) => return Ok(msg),
+            crate::skills::SkillManageGate::Allow => {}
         }
 
-        let result = crate::skills::write_approval::apply_skill_manage_payload(
+        let result = crate::skills::apply_skill_manage_payload(
             &ctx.config.edgecrab_home,
             &payload,
         )
@@ -2777,7 +2777,13 @@ impl ToolHandler for SkillsHubTool {
                     message: "search requires 'query' parameter".into(),
                 })?;
 
-                let report = super::skills_hub::search_hub(&query, args.source.as_deref(), 8).await;
+                let report = super::skills_hub::search_hub(
+                    &query,
+                    args.source.as_deref(),
+                    8,
+                    ctx.config.skills_hub_url.as_deref(),
+                )
+                .await;
                 Ok(format!(
                     "{}\nUse `skills_hub install <identifier>` to install a result.",
                     super::skills_hub::render_search_report(&query, &report)

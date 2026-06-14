@@ -50,7 +50,7 @@ Feature-by-feature capability matrix. Counts are **built-in** unless noted.
 | **x_search** | Gated | Gap 027 | Hermes only |
 | **video_analyze** | Opt-in | Gap 012 | Hermes only |
 | **video_generate** | Plugin | Gap 012 | Hermes only |
-| **kanban_*** (9) | Yes | **No** | Hermes only |
+| **kanban_*** (9) | Yes | **11 tools + runs + failure circuit** 🟡 | Hermes (notifier, dashboard) |
 | **discord** / **discord_admin** | Platform-gated | No | Hermes only |
 | **feishu_doc** / **drive** | 5 tools | No | Hermes only |
 | **spotify_*** (7) | Plugin | No | Hermes only |
@@ -117,7 +117,7 @@ Both support:
 | Path jail | Yes | `edgecrab-security` |
 | SSRF | `url_safety.py` | `url_safety.rs` |
 | Command scan | `approval.py` | ~30 patterns |
-| Smart approval (LLM) | Yes | No |
+| Smart approval (LLM) | Yes | Yes (`approvals.mode=smart`) |
 | Edit contract limits | Partial | `edit_contract.rs` |
 | LSP post-write gate | Yes | Yes (spec 003) |
 
@@ -133,9 +133,9 @@ Both support:
 | LSP / IDE coding | **EdgeCrab** |
 | Web crawl + search chain | **EdgeCrab** |
 | Video / x_search / Spotify | **Hermes** |
-| Multi-agent kanban | **Hermes** |
+| Multi-agent kanban | **Hermes** (dispatcher); EC MVP shipped |
 | Media (image/TTS/STT) | **Parity** |
 | Computer use | **Parity** |
 | MCP surface | **≠** (dynamic vs explicit) |
 
-**EdgeCrab open gaps:** 007 kanban, 012 video, 027 x-search — see [012-master-gap-matrix.md](012-master-gap-matrix.md).
+**EdgeCrab open gaps:** 007 kanban Phase 4 (multi-board, task_runs, failure circuit), 012 video, 027 x-search — see [012-master-gap-matrix.md](012-master-gap-matrix.md).

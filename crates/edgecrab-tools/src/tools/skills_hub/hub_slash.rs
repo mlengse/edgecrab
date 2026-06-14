@@ -9,7 +9,11 @@ use super::{
 };
 
 /// Handle hub-related `/skills` args after config/pending handlers return None.
-pub async fn handle_skills_hub_slash(args: &str, skills_dir: &Path) -> Option<String> {
+pub async fn handle_skills_hub_slash(
+    args: &str,
+    skills_dir: &Path,
+    configured_hub_url: Option<&str>,
+) -> Option<String> {
     let trimmed = args.trim();
     if trimmed.is_empty() {
         return None;
@@ -23,7 +27,7 @@ pub async fn handle_skills_hub_slash(args: &str, skills_dir: &Path) -> Option<St
         "index" => Some(handle_index_subcommand(rest).await),
         "inspect" => handle_inspect(rest, skills_dir).await,
         "review" => handle_review(rest, skills_dir).await,
-        "hub" | "search" => Some(handle_search(rest).await),
+        "hub" | "search" => Some(handle_search(rest, configured_hub_url).await),
         "install" => handle_install(rest, skills_dir).await,
         "trust" => Some(handle_trust(rest, skills_dir).await),
         "untrust" => Some(handle_untrust(rest)),
@@ -344,14 +348,14 @@ pub fn parse_inspect_operand(operand: &str) -> (&str, bool) {
     (trimmed, false)
 }
 
-async fn handle_search(query: &str) -> String {
+async fn handle_search(query: &str, configured_hub_url: Option<&str>) -> String {
     if query.is_empty() {
         return format!(
             "{}\n\nTry: /skills search diagram\nOr: /skills index refresh",
             render_sources_catalog()
         );
     }
-    let report = search_hub(query, None, 8).await;
+    let report = search_hub(query, None, 8, configured_hub_url).await;
     format!(
         "{}\nInstall: /skills install <identifier>",
         render_search_report(query, &report)

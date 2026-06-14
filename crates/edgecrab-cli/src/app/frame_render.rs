@@ -261,6 +261,7 @@ impl App {
             terminal_glyph_profile: self.terminal_glyph_profile,
             show_output_scrollbar: self.show_output_scrollbar,
             paging_key_hint,
+            llm_wait_label: self.turn_activity.llm_wait_label(),
         };
         if self.rich_transcript {
             render_transcript_rich(frame, area, &mut params, &mut metrics);

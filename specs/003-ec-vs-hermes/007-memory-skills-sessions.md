@@ -2,7 +2,7 @@
 
 Persistent knowledge, procedural skills, conversation history.
 
-**Status (2026-06-13):** Skills production-complete (hub + guard TUI wired). Remaining: LLM curator (021), memory approval, external memory plugins.
+**Status (2026-06-13):** Skills production-complete (hub + guard TUI wired). Memory write approval shipped. Remaining: LLM curator (021), external memory plugins.
 
 ---
 
@@ -13,7 +13,7 @@ Persistent knowledge, procedural skills, conversation history.
 | MEMORY.md | `~/.hermes/memories/` | `~/.edgecrab/memories/` |
 | USER.md | Yes | Yes |
 | Tool API | `memory` (unified) | `memory_read`, `memory_write` |
-| **Write approval gate** | **`/memory pending\|approve\|reject`** | Scan only |
+| **Write approval gate** | **`/memory pending\|approve\|reject`** | **Yes** — `/memory pending\|approve\|reject\|approval` (CLI + gateway) |
 | Prompt injection in context files | `sanitize_context` | `injection.rs` block |
 
 **Verdict:** **Hermes leads governance** (staging approvals); **parity on storage model**.

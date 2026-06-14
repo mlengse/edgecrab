@@ -132,6 +132,8 @@ pub struct IsolatedAgentOptions {
     pub quiet_mode: Option<bool>,
     /// Optional origin chat override for gateway-created isolated sessions.
     pub origin_chat: Option<OriginChat>,
+    /// Pin kanban worker to a specific task card.
+    pub kanban_task_id: Option<String>,
 }
 
 /// Immutable per-agent configuration (subset of AppConfig relevant to the loop).
@@ -162,6 +164,14 @@ pub struct AgentConfig {
     pub model_config: crate::config::ModelConfig,
     /// Skills config — disabled skills, platform-specific disabled.
     pub skills_config: crate::config::SkillsConfig,
+    /// Memory config — write approval gate, etc.
+    pub memory_config: crate::config::MemoryConfig,
+    /// Terminal/shell dangerous-command approval policy.
+    pub approvals_config: crate::config::ApprovalsConfig,
+    /// Kanban multi-agent board settings.
+    pub kanban_config: crate::config::KanbanConfig,
+    /// When set, scopes kanban lifecycle tools to this task (dispatcher workers).
+    pub kanban_task_id: Option<String>,
     /// Plugin config — enable/disable state and install root.
     pub plugins_config: crate::config::PluginsConfig,
     /// Delegation runtime controls mirrored from AppConfig.delegation.
@@ -235,6 +245,8 @@ pub struct AgentConfig {
     pub result_turn_budget_chars: usize,
     /// Maximum write payload KiB (None = use default 32 KiB).
     pub max_write_payload_kib: Option<u32>,
+    /// Default `write_file` create_dirs when the model omits the flag (local homelab paths).
+    pub local_write_create_dirs: bool,
     /// Per-turn file-mutation footers (success log + failure advisory).
     pub file_mutation_verifier: bool,
     /// Cross-session Anthropic prompt prefix cache (stable/dynamic split + TTL).
@@ -268,6 +280,10 @@ impl Default for AgentConfig {
             custom_system_prompt: None,
             model_config: crate::config::ModelConfig::default(),
             skills_config: crate::config::SkillsConfig::default(),
+            memory_config: crate::config::MemoryConfig::default(),
+            approvals_config: crate::config::ApprovalsConfig::default(),
+            kanban_config: crate::config::KanbanConfig::default(),
+            kanban_task_id: None,
             plugins_config: crate::config::PluginsConfig::default(),
             delegation_enabled: true,
             delegation_model: None,
@@ -308,6 +324,7 @@ impl Default for AgentConfig {
             result_spill_preview_lines: 80,
             result_turn_budget_chars: 200_000,
             max_write_payload_kib: None,
+            local_write_create_dirs: true,
             file_mutation_verifier: true,
             cache: crate::config::CacheConfig::default(),
             web_search: crate::config::WebSearchConfig::default(),
@@ -419,6 +436,13 @@ impl AgentConfig {
             plugin_install_dir: self.plugins_config.install_dir.clone(),
             preloaded_skills: self.skills_config.preloaded.clone(),
             skills_write_approval: self.skills_config.write_approval,
+            memory_write_approval: self.memory_config.write_approval,
+            approval_mode: self.approvals_config.mode,
+            approvals_smart_model: self.approvals_config.smart_model.clone(),
+            kanban_enabled: self.kanban_config.enabled,
+            kanban_claim_ttl_secs: self.kanban_config.claim_ttl_secs,
+            kanban_default_max_runtime_secs: self.kanban_config.default_max_runtime_secs,
+            skills_hub_url: self.skills_config.hub_url.clone(),
             browser_record_sessions: self.browser.record_sessions,
             browser_command_timeout: self.browser.command_timeout,
             browser_recording_max_age_hours: self.browser.recording_max_age_hours,
@@ -463,6 +487,10 @@ impl AgentConfig {
             max_write_payload_kib: self.max_write_payload_kib.map_or(
                 edgecrab_tools::edit_contract::DEFAULT_MAX_MUTATION_PAYLOAD_KIB,
                 |kib| kib as usize,
+            ),
+            local_write_create_dirs: crate::local_provider_policy::effective_local_write_create_dirs(
+                self.local_write_create_dirs,
+                &self.model,
             ),
             web_search: edgecrab_tools::config_ref::WebSearchConfigRef {
                 primary: self.web_search.primary.clone(),
@@ -538,6 +566,8 @@ pub struct SessionState {
     /// Terminal harness outcome for the most recent completed run.
     pub last_run_outcome: Option<RunOutcome>,
     pub session_tool_call_count: u32,
+    /// Consecutive turns where the model emitted an unregistered tool name (Hermes parity).
+    pub invalid_tool_call_retries: u32,
     /// True after the first successful context compression in this session.
     ///
     /// FP33: After the first compression fires, we append a one-shot note to
@@ -919,6 +949,15 @@ impl Agent {
             config.quiet_mode = quiet_mode;
         }
         config.origin_chat = options.origin_chat;
+        config.kanban_task_id = options.kanban_task_id;
+        if config.kanban_task_id.is_some()
+            && !config
+                .enabled_toolsets
+                .iter()
+                .any(|t| t.eq_ignore_ascii_case("kanban"))
+        {
+            config.enabled_toolsets.push("kanban".into());
+        }
 
         let child = Self::build_runtime_clone(
             config,
@@ -1819,6 +1858,7 @@ impl Agent {
             watch_notification_tx: None,
             mutation_turn: None,
             lsp_gate: None,
+            kanban_task_id: config.kanban_task_id.clone(),
         };
         registry.tool_inventory(&ctx)
     }
@@ -1851,6 +1891,18 @@ impl Agent {
     pub async fn set_auxiliary_config(&self, auxiliary: crate::config::AuxiliaryConfig) {
         let mut config = self.config.write().await;
         config.auxiliary = auxiliary;
+    }
+
+    /// Update dangerous-command approval policy for future tool turns.
+    pub async fn set_approvals_config(&self, approvals: crate::config::ApprovalsConfig) {
+        let mut config = self.config.write().await;
+        config.approvals_config = approvals;
+    }
+
+    /// Update kanban board settings for future tool turns.
+    pub async fn set_kanban_config(&self, kanban: crate::config::KanbanConfig) {
+        let mut config = self.config.write().await;
+        config.kanban_config = kanban;
     }
 
     /// Update smart routing for future turns.
@@ -2175,6 +2227,21 @@ pub enum StreamEvent {
     },
     /// Ephemeral human-facing activity notice (compression, background process watch, etc.).
     ActivityNotice(String),
+    /// Periodic progress while a blocking non-streaming LLM request runs (LM Studio, Ollama).
+    ///
+    /// WHY separate from ActivityNotice: wait state must update shelf/status even when the
+    /// activity feed section is collapsed (Info notices are hidden in Skip mode).
+    LlmWaitProgress {
+        provider: String,
+        elapsed_secs: u64,
+        has_tools: bool,
+        /// Rough prompt mass before the request (chars/4 heuristic).
+        prompt_tokens_estimated: Option<u64>,
+        /// Provider-reported or catalog context window.
+        context_length: Option<u64>,
+        /// LM Studio native prefill progress (0–100), when streaming.
+        prefill_pct: Option<f32>,
+    },
     /// Throttled tail from a background process (survives after `run_process` ToolDone).
     BackgroundProcessTail {
         process_id: String,
@@ -2313,6 +2380,18 @@ impl std::fmt::Debug for StreamEvent {
                 let preview = &text[..text.len().min(60)];
                 write!(f, "ActivityNotice({preview:?}…)")
             }
+            Self::LlmWaitProgress {
+                provider,
+                elapsed_secs,
+                has_tools,
+                prompt_tokens_estimated,
+                context_length,
+                prefill_pct,
+            } => write!(
+                f,
+                "LlmWaitProgress({provider}, {elapsed_secs}s, tools={has_tools}, \
+                 prompt={prompt_tokens_estimated:?}, ctx={context_length:?}, prefill={prefill_pct:?})"
+            ),
             Self::BackgroundProcessTail {
                 process_id, tail, ..
             } => {
@@ -2426,6 +2505,10 @@ impl AgentBuilder {
                 temperature: config.model.temperature,
                 model_config: config.model.clone(),
                 skills_config: config.skills.clone(),
+                memory_config: config.memory.clone(),
+                approvals_config: config.approvals.clone(),
+                kanban_config: config.kanban.clone(),
+                kanban_task_id: None,
                 plugins_config: config.plugins.clone(),
                 delegation_enabled: config.delegation.enabled,
                 delegation_model: config.delegation.model.clone(),
@@ -2465,6 +2548,7 @@ impl AgentBuilder {
                 result_spill_preview_lines: config.tools.result_spill_preview_lines,
                 result_turn_budget_chars: config.tools.result_turn_budget_chars,
                 max_write_payload_kib: config.tools.file.max_write_payload_kib,
+                local_write_create_dirs: config.local_inference.write_create_dirs,
                 file_mutation_verifier: config.display.file_mutation_verifier,
                 cache: config.cache.clone(),
                 web_search: config.web_search.clone(),

@@ -20,6 +20,14 @@ pub mod copilot_model_policy;
 pub mod gateway_home;
 pub mod goal_judge;
 pub mod goals;
+pub mod kanban_api;
+pub mod local_provider_policy;
+pub mod kanban_decompose;
+pub mod kanban_dispatcher;
+pub mod kanban_notifier;
+pub mod kanban_reaper;
+pub mod kanban_slash;
+pub mod kanban_workers;
 pub mod model_catalog;
 pub mod model_cost_guard;
 pub mod model_discovery;
@@ -31,6 +39,7 @@ pub mod pricing;
 pub mod prompt_builder;
 pub mod session_handoff;
 pub mod shadow_judge;
+pub mod state_snapshot;
 pub mod steering;
 pub mod sub_agent_runner;
 pub mod subagent_registry;
@@ -99,6 +108,21 @@ pub use steering::{
     SteeringEvent, SteeringKind, SteeringReceiver, SteeringSender, drain_pending_steers,
     steering_channel,
 };
+pub use state_snapshot::{
+    SnapshotManifest, create_pre_update_snapshot, create_quick_snapshot, handle_snapshot_slash,
+    list_quick_snapshots, prune_labeled_snapshots, prune_quick_snapshots, restore_quick_snapshot,
+    PRE_UPDATE_SNAPSHOT_LABEL,
+};
+pub use kanban_dispatcher::{
+    KanbanDispatchConfig, KanbanDispatchResult, KanbanSpawnRequest, dispatch_once,
+};
+pub use kanban_notifier::{
+    KanbanActivePlatformsFn, KanbanNotifyDeliverFn, KanbanNotifyOutbound,
+    format_notifier_message, spawn_kanban_notifier,
+};
+pub use kanban_reaper::{spawn_kanban_reaper, spawn_kanban_watcher, KanbanSpawnFn};
+pub use kanban_decompose::{format_decompose_outcome, run_auto_decompose_tick, DecomposeOutcome};
+pub use kanban_slash::{handle_kanban_slash, handle_kanban_slash_gateway, KanbanNotifyOrigin};
 
 /// Truncate `s` to at most `max_bytes` bytes, always stopping at a valid UTF-8
 /// char boundary so that multi-byte / emoji characters are never split.

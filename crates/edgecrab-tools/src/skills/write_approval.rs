@@ -1,116 +1,30 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use edgecrab_types::ToolError;
 use regex::Regex;
-use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use uuid::Uuid;
 
+use super::pending_store::{
+    SUBSYSTEM_SKILLS, PendingWriteRecord, discard_pending, get_pending, list_pending, stage_write,
+};
 use super::usage::{bump_patch, format_usage_summary, is_pinned, set_pinned};
-use crate::config_ref::resolve_edgecrab_home;
-
-const SUBSYSTEM: &str = "skills";
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct PendingWriteRecord {
-    pub id: String,
-    pub subsystem: String,
-    pub action: String,
-    pub summary: String,
-    pub origin: String,
-    pub created_at: f64,
-    pub payload: Value,
-}
 
 pub fn skills_write_approval_enabled(config_enabled: bool) -> bool {
     config_enabled
 }
 
-fn pending_dir(home: &Path) -> PathBuf {
-    home.join("pending").join(SUBSYSTEM)
-}
-
-fn now_ts() -> f64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs_f64())
-        .unwrap_or(0.0)
-}
-
-pub fn stage_skill_write(
+fn stage_skill_write(
     home: &Path,
     payload: Value,
     summary: &str,
     origin: &str,
 ) -> PendingWriteRecord {
-    let id = Uuid::new_v4().simple().to_string()[..8].to_string();
-    let record = PendingWriteRecord {
-        id: id.clone(),
-        subsystem: SUBSYSTEM.into(),
-        action: payload
-            .get("action")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-        summary: summary.trim().to_string(),
-        origin: if origin.is_empty() {
-            "foreground".into()
-        } else {
-            origin.to_string()
-        },
-        created_at: now_ts(),
-        payload,
-    };
-    let dir = pending_dir(home);
-    if std::fs::create_dir_all(&dir).is_ok() {
-        let path = dir.join(format!("{id}.json"));
-        let tmp = dir.join(format!("{id}.json.tmp"));
-        if serde_json::to_string_pretty(&record)
-            .ok()
-            .and_then(|text| std::fs::write(&tmp, text).ok())
-            .is_some()
-        {
-            let _ = std::fs::rename(&tmp, &path);
-        }
-    }
-    record
-}
-
-pub fn list_pending(home: &Path) -> Vec<PendingWriteRecord> {
-    let dir = pending_dir(home);
-    let mut records = Vec::new();
-    if let Ok(entries) = std::fs::read_dir(&dir) {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.extension().is_some_and(|e| e == "json")
-                && let Ok(text) = std::fs::read_to_string(&path)
-                && let Ok(record) = serde_json::from_str::<PendingWriteRecord>(&text)
-            {
-                records.push(record);
-            }
-        }
-    }
-    records.sort_by(|a, b| {
-        a.created_at
-            .partial_cmp(&b.created_at)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    records
-}
-
-pub fn get_pending(home: &Path, id: &str) -> Option<PendingWriteRecord> {
-    let path = pending_dir(home).join(format!("{id}.json"));
-    let text = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&text).ok()
-}
-
-fn discard_pending(home: &Path, id: &str) -> bool {
-    let path = pending_dir(home).join(format!("{id}.json"));
-    if path.exists() {
-        std::fs::remove_file(path).is_ok()
-    } else {
-        false
-    }
+    let action = payload
+        .get("action")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    stage_write(home, SUBSYSTEM_SKILLS, payload, summary, origin, &action)
 }
 
 use std::sync::LazyLock;
@@ -399,10 +313,10 @@ fn validate_supporting_path(fp: &str) -> Result<(), ToolError> {
 }
 
 pub async fn apply_pending_skill_write(home: &Path, id: &str) -> Result<String, ToolError> {
-    let record = get_pending(home, id)
+    let record = get_pending(home, SUBSYSTEM_SKILLS, id)
         .ok_or_else(|| ToolError::NotFound(format!("Pending {id} not found")))?;
     let result = apply_skill_manage_payload(home, &record.payload).await?;
-    let _ = discard_pending(home, id);
+    let _ = discard_pending(home, SUBSYSTEM_SKILLS, id);
     Ok(result)
 }
 
@@ -415,12 +329,12 @@ pub fn format_skills_pending_state(
         "skills.write_approval = {}\nskills.inline_shell = {}\n\n{}",
         if write_approval { "on" } else { "off" },
         if inline_shell { "on" } else { "off" },
-        format_pending_list(home)
+        format_skills_pending_list(home)
     )
 }
 
-fn format_pending_list(home: &Path) -> String {
-    let records = list_pending(home);
+fn format_skills_pending_list(home: &Path) -> String {
+    let records = list_pending(home, SUBSYSTEM_SKILLS);
     if records.is_empty() {
         return "No pending skills writes.".into();
     }
@@ -435,7 +349,7 @@ fn format_pending_list(home: &Path) -> String {
 }
 
 pub fn skill_pending_diff(home: &Path, id: &str) -> Option<String> {
-    let record = get_pending(home, id)?;
+    let record = get_pending(home, SUBSYSTEM_SKILLS, id)?;
     let payload = &record.payload;
     let action = payload.get("action")?.as_str()?;
     let name = payload.get("name")?.as_str()?;
@@ -499,7 +413,7 @@ pub fn handle_skills_pending_subcommand(
     let tokens: Vec<&str> = args.split_whitespace().collect();
     let first = tokens.first()?.to_ascii_lowercase();
     match first.as_str() {
-        "pending" => Some(format_pending_list(home)),
+        "pending" => Some(format_skills_pending_list(home)),
         "approve" | "apply" => Some(approve_pending(home, tokens.get(1).copied())),
         "reject" | "deny" | "drop" => Some(reject_pending(home, tokens.get(1).copied())),
         "diff" => tokens
@@ -552,7 +466,7 @@ fn approve_pending(home: &Path, target: Option<&str>) -> String {
 }
 
 fn approve_all_pending(home: &Path) -> String {
-    let records = list_pending(home);
+    let records = list_pending(home, SUBSYSTEM_SKILLS);
     if records.is_empty() {
         return "No pending skills writes.".into();
     }
@@ -584,17 +498,20 @@ fn reject_pending(home: &Path, target: Option<&str>) -> String {
         return "Usage: /skills reject <id|all>".into();
     };
     if target.eq_ignore_ascii_case("all") {
-        let ids: Vec<String> = list_pending(home).into_iter().map(|r| r.id).collect();
+        let ids: Vec<String> = list_pending(home, SUBSYSTEM_SKILLS)
+            .into_iter()
+            .map(|r| r.id)
+            .collect();
         if ids.is_empty() {
             return "No pending skills writes.".into();
         }
         let n = ids.len();
         for id in ids {
-            let _ = discard_pending(home, &id);
+            let _ = discard_pending(home, SUBSYSTEM_SKILLS, &id);
         }
         return format!("Rejected {n} pending skill write(s).");
     }
-    if discard_pending(home, target) {
+    if discard_pending(home, SUBSYSTEM_SKILLS, target) {
         format!("Rejected pending write {target}.")
     } else {
         format!("No pending write with id {target}.")
@@ -667,9 +584,6 @@ fn set_inline_shell_mode(
     )
 }
 
-pub fn default_home() -> PathBuf {
-    resolve_edgecrab_home()
-}
 
 #[cfg(test)]
 mod tests {
@@ -682,7 +596,7 @@ mod tests {
         let payload =
             json!({"action":"create","name":"demo","content":"---\ndescription: x\n---\n"});
         let record = stage_skill_write(dir.path(), payload, "create demo", "foreground");
-        let pending = list_pending(dir.path());
+        let pending = list_pending(dir.path(), SUBSYSTEM_SKILLS);
         assert_eq!(pending.len(), 1);
         assert_eq!(pending[0].id, record.id);
     }
@@ -695,7 +609,7 @@ mod tests {
             SkillManageGate::Staged(msg) => assert!(msg.contains("Pending id:")),
             SkillManageGate::Allow => panic!("expected staged"),
         }
-        assert_eq!(list_pending(dir.path()).len(), 1);
+        assert_eq!(list_pending(dir.path(), SUBSYSTEM_SKILLS).len(), 1);
     }
 
     #[test]
@@ -706,7 +620,7 @@ mod tests {
             SkillManageGate::Allow => {}
             SkillManageGate::Staged(_) => panic!("expected allow"),
         }
-        assert!(list_pending(dir.path()).is_empty());
+        assert!(list_pending(dir.path(), SUBSYSTEM_SKILLS).is_empty());
     }
 
     #[test]

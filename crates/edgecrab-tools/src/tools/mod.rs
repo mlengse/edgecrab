@@ -39,6 +39,7 @@ pub mod file_search;
 pub mod file_write;
 pub mod homeassistant;
 pub mod honcho;
+pub mod kanban;
 pub mod mcp_client;
 pub mod memory;
 pub mod mixture_of_agents;

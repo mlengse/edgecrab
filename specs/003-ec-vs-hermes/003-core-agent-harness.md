@@ -145,9 +145,10 @@ What happens when the model stops calling tools?
 | User interface | `/rollback [N]` | `/rollback` + `checkpoint` tool |
 | Default enabled | **Off** (`checkpoints.enabled: false`) | Config-driven |
 | Auto snapshot per turn | Hermes behavior | Before file mutations |
-| `/snapshot` (config state) | Yes | No direct equivalent |
+| `/snapshot` (config state) | Yes | **Yes** — `state_snapshot.rs`, SQLite-safe copy |
+| Pre-update auto-snapshot | Yes (always, lightweight) | **Yes** — `edgecrab update`, `updates.pre_update_snapshot` |
 
-**Verdict:** **Parity on filesystem rollback**; Hermes adds **config snapshot** separate from git checkpoints.
+**Verdict:** **Parity on filesystem rollback and update safety snapshots**; git checkpoints remain separate from config state.
 
 ---
 

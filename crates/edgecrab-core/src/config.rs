@@ -64,6 +64,10 @@ pub struct AppConfig {
     pub image_generation: ImageGenerationConfig,
     pub voice: VoiceConfig,
     pub honcho: HonchoConfig,
+    pub approvals: ApprovalsConfig,
+    /// Update safety and check settings (Hermes `updates:` section).
+    pub updates: UpdatesConfig,
+    pub kanban: KanbanConfig,
     pub auxiliary: AuxiliaryConfig,
     pub shadow_judge: ShadowJudgeConfig,
     pub goals: GoalsConfig,
@@ -74,6 +78,25 @@ pub struct AppConfig {
     pub web_search: WebSearchConfig,
     /// Hermes-aligned per-capability backend overrides (`web:` in config.yaml).
     pub web: WebToolsConfig,
+    /// LM Studio / Ollama harness tuning (prefill prune lives in code; see spec 014).
+    pub local_inference: LocalInferenceConfig,
+}
+
+/// Local inference provider harness options (deterministic; active by default on lmstudio/ollama).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct LocalInferenceConfig {
+    /// When true, `write_file` treats omitted `create_dirs` as true (nested homelab paths).
+    /// Default **true**; auto-enabled on lmstudio/ollama even when set false in yaml.
+    pub write_create_dirs: bool,
+}
+
+impl Default for LocalInferenceConfig {
+    fn default() -> Self {
+        Self {
+            write_create_dirs: true,
+        }
+    }
 }
 
 /// Cross-session Anthropic prompt prefix cache (stable/dynamic system split).
@@ -284,6 +307,20 @@ impl AppConfig {
     pub fn persist_skills_write_approval(enabled: bool) -> Result<(), AgentError> {
         let mut config = Self::load()?;
         config.skills.write_approval = enabled;
+        config.save()
+    }
+
+    /// Update `memory.write_approval` and persist to `~/.edgecrab/config.yaml`.
+    pub fn persist_memory_write_approval(enabled: bool) -> Result<(), AgentError> {
+        let mut config = Self::load()?;
+        config.memory.write_approval = enabled;
+        config.save()
+    }
+
+    /// Update `approvals.mode` and persist to `~/.edgecrab/config.yaml`.
+    pub fn persist_approvals_mode(mode: edgecrab_security::approval::ApprovalMode) -> Result<(), AgentError> {
+        let mut config = Self::load()?;
+        config.approvals.mode = mode;
         config.save()
     }
 
@@ -1597,6 +1634,10 @@ impl Default for McpServerConfig {
 pub struct MemoryConfig {
     pub enabled: bool,
     pub auto_flush: bool,
+    /// When true, `memory_write` stages under `pending/memory/` until approved
+    /// via `/memory approve <id>` (Hermes parity).
+    #[serde(default)]
+    pub write_approval: bool,
 }
 
 impl Default for MemoryConfig {
@@ -1604,6 +1645,7 @@ impl Default for MemoryConfig {
         Self {
             enabled: true,
             auto_flush: true,
+            write_approval: false,
         }
     }
 }
@@ -2449,6 +2491,107 @@ impl Default for HonchoConfig {
     }
 }
 
+/// Dangerous-command approval policy (Hermes `approvals` in config.yaml).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct ApprovalsConfig {
+    /// `manual` (default), `smart` (aux LLM pre-screens), or `off`.
+    pub mode: edgecrab_security::approval::ApprovalMode,
+    /// Seconds to wait for user approval in gateway (default 60).
+    pub timeout: u32,
+    /// Cron headless mode: `deny` (default) or `approve`.
+    pub cron_mode: String,
+    /// Optional model for smart approval (`provider/model`); falls back to `auxiliary.model`.
+    pub smart_model: Option<String>,
+}
+
+impl Default for ApprovalsConfig {
+    fn default() -> Self {
+        Self {
+            mode: edgecrab_security::approval::ApprovalMode::Manual,
+            timeout: 60,
+            cron_mode: "deny".into(),
+            smart_model: None,
+        }
+    }
+}
+
+/// Update command safety (`updates:` in config.yaml).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct UpdatesConfig {
+    /// Lightweight state snapshot before applying an update (Hermes always-on quick snapshot).
+    pub pre_update_snapshot: bool,
+    /// How many labeled pre-update snapshots to retain.
+    pub pre_update_snapshot_keep: u32,
+}
+
+impl Default for UpdatesConfig {
+    fn default() -> Self {
+        Self {
+            pre_update_snapshot: true,
+            pre_update_snapshot_keep: 1,
+        }
+    }
+}
+
+/// Multi-agent kanban board (`kanban:` in config.yaml).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct KanbanConfig {
+    /// Enable kanban tools and `/kanban` slash command.
+    pub enabled: bool,
+    /// Claim lease TTL in seconds (default 900 = 15 min, Hermes parity).
+    pub claim_ttl_secs: u32,
+    /// Soft cap on concurrent workers (enforced by orchestrator in later phases).
+    pub max_workers: u32,
+    /// Run stale-claim reaper inside the gateway (Hermes `dispatch_in_gateway`).
+    pub dispatch_in_gateway: bool,
+    /// Reaper tick interval in seconds when `dispatch_in_gateway` is true.
+    pub reclaim_interval_secs: u32,
+    /// Auto-block after N consecutive non-success attempts (Hermes default: 2).
+    pub failure_limit: u32,
+    /// Default per-task max runtime in seconds (0 = disabled). Applied on create when unset.
+    pub default_max_runtime_secs: u32,
+    /// Auto-run decomposer on triage tasks each dispatcher tick (Hermes default: true).
+    pub auto_decompose: bool,
+    /// Max decompositions per tick (Hermes default: 3).
+    pub auto_decompose_per_tick: u32,
+}
+
+impl Default for KanbanConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            claim_ttl_secs: 900,
+            max_workers: 3,
+            dispatch_in_gateway: true,
+            reclaim_interval_secs: 60,
+            failure_limit: 2,
+            default_max_runtime_secs: 0,
+            auto_decompose: true,
+            auto_decompose_per_tick: 3,
+        }
+    }
+}
+
+/// Kanban decomposer auxiliary model (`auxiliary.kanban_decomposer`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+#[serde(default)]
+pub struct KanbanDecomposerConfig {
+    pub model: Option<String>,
+    pub max_tokens: u32,
+}
+
+impl Default for KanbanDecomposerConfig {
+    fn default() -> Self {
+        Self {
+            model: None,
+            max_tokens: 4096,
+        }
+    }
+}
+
 /// Auxiliary model configuration.
 ///
 /// Mirrors hermes-agent's support for a secondary cheap model used
@@ -2467,6 +2610,8 @@ pub struct AuxiliaryConfig {
     pub api_key_env: Option<String>,
     /// Goal judge overrides (`auxiliary.goal_judge` in config.yaml).
     pub goal_judge: GoalJudgeConfig,
+    /// Kanban decomposer overrides (`auxiliary.kanban_decomposer`).
+    pub kanban_decomposer: KanbanDecomposerConfig,
 }
 
 /// Goal judge auxiliary task configuration.

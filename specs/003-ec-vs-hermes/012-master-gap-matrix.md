@@ -20,10 +20,10 @@ Single cross-reference table. Status from code inspection + [001-gap-analysis-v1
 | Mission steering (typed) | 🟡 `/steer` | ✅ HINT/REDIRECT/STOP | EC ahead | EC |
 | Shadow judge | ❌ | ✅ | EC only | EC |
 | File mutation footer | ✅ | ✅ | Parity | — |
-| Kanban multi-agent | ✅ 9 tools | ❌ gap 007 | Hermes | Hermes |
+| Kanban multi-agent | ✅ 9 tools + dispatcher + notifier + dashboard WS + decomposer | 🟡 11 tools + triage + decomposer + static UI + events WS | Partial | Hermes |
 | Delegate + `/agents` | ✅ | ✅ | Parity | EC (TUI control) |
 | Checkpoints v2 | ✅ | ✅ | Parity | — |
-| Config `/snapshot` | ✅ | ❌ | Hermes | Hermes |
+| Config `/snapshot` | ✅ | ✅ | Parity | — |
 | Codex app-server runtime | ✅ | ❌ | Hermes | Hermes |
 
 ---
@@ -62,7 +62,7 @@ Single cross-reference table. Status from code inspection + [001-gap-analysis-v1
 | DM pairing | ✅ | ✅ | Parity | — |
 | Platform circuit breaker | ✅ | 🟡 | Hermes | Hermes |
 | Discord history backfill | ✅ | ❌ gap 016 | Hermes | Hermes |
-| Native clarify buttons | 🟡 | ❌ gap 015 | Both weak | — |
+| Native clarify buttons | 🟡 | 🟡 Telegram + Discord + WhatsApp (buttons ≤3, list 4–10) | EC ahead (3 platforms) |
 
 ---
 
@@ -87,7 +87,7 @@ Single cross-reference table. Status from code inspection + [001-gap-analysis-v1
 | Feature | Hermes | EdgeCrab | Status | Leader |
 |---------|--------|----------|--------|--------|
 | MEMORY.md / USER.md | ✅ | ✅ | Parity | — |
-| Memory write approval | ✅ | ❌ | Hermes | Hermes |
+| Memory write approval | ✅ | ✅ | Parity | — |
 | 8 memory provider plugins | ✅ | Honcho only | Hermes | Hermes |
 | Skills hub + guard | ✅ | ✅ | Parity | — |
 | Curator subsystem | ✅ | ❌ gap 021 | Hermes | Hermes |
@@ -101,7 +101,7 @@ Single cross-reference table. Status from code inspection + [001-gap-analysis-v1
 | Feature | Hermes | EdgeCrab | Status | Leader |
 |---------|--------|----------|--------|--------|
 | Path/SSRF/command guards | ✅ | ✅ | Parity | — |
-| Smart approval (LLM) | ✅ | ❌ | Hermes | Hermes |
+| Smart approval (LLM) | ✅ | ✅ | Parity | — |
 | Skills guard | ✅ | ✅ | Parity | — |
 | OSV supply-chain audit | ✅ | 🟡 | Hermes | Hermes |
 | Bitwarden secrets | ✅ | ❌ gap 032 | Hermes | Hermes |
@@ -153,11 +153,11 @@ Single cross-reference table. Status from code inspection + [001-gap-analysis-v1
 
 | Category | Hermes wins | EdgeCrab wins | Parity |
 |----------|-------------|---------------|--------|
-| Core harness | 2 | 4 | 8 |
+| Core harness | 1 | 4 | 9 |
 | Tools | 8 | 4 | 6 |
 | Gateway | 5 | 0 | 8 |
 | Models | 6 | 0 | 4 |
-| Memory/skills | 4 | 0 | 4 |
+| Memory/skills | 3 | 0 | 5 |
 | Security | 3 | 1 | 4 |
 | UX | 4 | 2 | 4 |
 | Extensibility | 4 | 2 | 2 |
@@ -173,10 +173,10 @@ Priority items still **not** at Hermes parity:
 
 | ID | Feature | Tier |
 |----|---------|------|
-| 007 | Multi-agent kanban | A |
+| 007 | Multi-agent kanban (React dashboard, profile routing) | A 🟡 partial — decomposer + static UI shipped |
 | 009 | Pluggable providers/plugins | A |
 | 012 | Video tools | A |
-| 015 | Native clarify buttons | B |
+| 015 | Native clarify buttons (WhatsApp Cloud list mode) | B 🟡 partial — Baileys list 4–10 shipped |
 | 016 | Discord history backfill | B |
 | 021 | Curator subsystem | C |
 | 025 | i18n | C |
@@ -184,4 +184,4 @@ Priority items still **not** at Hermes parity:
 | 029 | Pareto code router | C |
 | 032 | Secrets manager | C |
 
-Shipped notable gaps: 001 goals, 002 mutation verifier, 003 LSP diagnostics, 004 cache, 005 handoff, 006 checkpoints, 010 MCP OAuth, 011 computer use, 024 OAuth providers.
+Shipped notable gaps: 001 goals, 002 mutation verifier, 003 LSP diagnostics, 004 cache, 005 handoff, 006 checkpoints, 010 MCP OAuth, 011 computer use, 024 OAuth providers, **memory write approval**, **config `/snapshot`**, **pre-update auto-snapshot**, **smart approval**, **kanban Phase 2–6** (comments, block/unblock, deps, dispatch, task_runs, failure_limit, multi-board, gateway notifier, max_runtime, worker interrupt, `/kanban subscribe`, read API + events WS, **decomposer + triage + static UI**), **clarify buttons (Telegram + Discord + WhatsApp buttons/list)**, **kanban_create max_runtime wired**.

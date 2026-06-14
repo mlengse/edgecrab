@@ -63,6 +63,7 @@ pub struct PatchTool;
 
 #[derive(Deserialize)]
 struct ReplaceArgs {
+    #[serde(alias = "file_path")]
     path: String,
     /// String to find (8-strategy fuzzy matching is applied if exact fails)
     old_string: String,
@@ -77,7 +78,7 @@ struct ReplaceArgs {
 struct PatchArgs {
     #[serde(default)]
     mode: Option<String>,
-    #[serde(default)]
+    #[serde(default, alias = "file_path")]
     path: Option<String>,
     #[serde(default)]
     old_string: Option<String>,

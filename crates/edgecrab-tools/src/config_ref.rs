@@ -200,6 +200,20 @@ pub struct AppConfigRef {
     pub preloaded_skills: Vec<String>,
     /// Stage skill_manage writes for `/skills approve` when true.
     pub skills_write_approval: bool,
+    /// Stage memory_write for `/memory approve` when true.
+    pub memory_write_approval: bool,
+    /// Dangerous-command approval mode (`approvals.mode` in config.yaml).
+    pub approval_mode: edgecrab_security::approval::ApprovalMode,
+    /// Optional model for smart approval (`approvals.smart_model`).
+    pub approvals_smart_model: Option<String>,
+    /// Enable kanban board tools (`kanban.enabled`).
+    pub kanban_enabled: bool,
+    /// Kanban claim TTL seconds (`kanban.claim_ttl_secs`).
+    pub kanban_claim_ttl_secs: u32,
+    /// Default per-task max runtime seconds (`kanban.default_max_runtime_secs`; 0 = none).
+    pub kanban_default_max_runtime_secs: u32,
+    /// Optional custom skills hub base URL (`skills.hub_url`) for well-known discovery.
+    pub skills_hub_url: Option<String>,
 
     /// Env-var names allowed to bypass the subprocess security blocklist.
     ///
@@ -280,6 +294,8 @@ pub struct AppConfigRef {
     /// larger JSON tool arguments can increase this. The value is clamped to
     /// [8, 256] KiB to prevent mis-configuration.
     pub max_write_payload_kib: usize,
+    /// Default `write_file` create_dirs when the model omits the flag.
+    pub local_write_create_dirs: bool,
     /// Pluggable web search backend chain configuration.
     pub web_search: WebSearchConfigRef,
     /// Hermes-aligned web tool backend overrides (`web:` in config.yaml).
@@ -328,6 +344,13 @@ impl Default for AppConfigRef {
             active_model: String::new(),
             preloaded_skills: Vec::new(),
             skills_write_approval: false,
+            memory_write_approval: false,
+            approval_mode: edgecrab_security::approval::ApprovalMode::Manual,
+            approvals_smart_model: None,
+            kanban_enabled: false,
+            kanban_claim_ttl_secs: 900,
+            kanban_default_max_runtime_secs: 0,
+            skills_hub_url: None,
             terminal_env_passthrough: Vec::new(),
             terminal_backend: BackendKind::Local,
             terminal_docker: DockerBackendConfig::default(),
@@ -358,6 +381,7 @@ impl Default for AppConfigRef {
             result_spill_preview_lines: 80,
             result_turn_budget_chars: 200_000,
             max_write_payload_kib: crate::edit_contract::DEFAULT_MAX_MUTATION_PAYLOAD_KIB,
+            local_write_create_dirs: true,
             web_search: WebSearchConfigRef::default(),
             web: WebToolsConfigRef::default(),
         }

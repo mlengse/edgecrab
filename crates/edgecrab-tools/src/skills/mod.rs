@@ -20,7 +20,9 @@ mod protected;
 mod scheduler;
 mod slug;
 mod usage;
-pub mod write_approval;
+mod write_approval;
+mod memory_write_approval;
+mod pending_store;
 
 pub use archive::{
     ArchiveEligibility, archive_skill, check_archive_eligibility, format_archived_list,
@@ -74,9 +76,16 @@ pub use slug::slugify;
 pub use usage::{
     activity_count, bump_patch, bump_use, bump_view, format_usage_summary, is_pinned, set_pinned,
 };
+pub use pending_store::PendingWriteRecord;
+pub use memory_write_approval::{
+    MemorySubcommandContext, MemoryWriteGate, MemoryWritePayload, apply_pending_memory_write,
+    format_memory_pending_state, handle_memory_pending_subcommand, maybe_gate_memory_write,
+    memory_write_approval_enabled,
+};
 pub use write_approval::{
-    SkillsSubcommandContext, apply_pending_skill_write, format_skills_pending_state,
-    handle_skills_pending_subcommand, maybe_gate_skill_manage, skills_write_approval_enabled,
+    SkillManageGate, SkillsSubcommandContext, apply_pending_skill_write,
+    apply_skill_manage_payload, format_skills_pending_state, handle_skills_pending_subcommand,
+    maybe_gate_skill_manage, skills_write_approval_enabled,
 };
 
 /// Invalidate in-process skill discovery caches (bundles). Call alongside

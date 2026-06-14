@@ -20,9 +20,6 @@ use std::sync::{Mutex, OnceLock};
 
 use regex::Regex;
 
-use edgecrab_tools::edit_contract::{
-    DEFAULT_MAX_MUTATION_PAYLOAD_BYTES, DEFAULT_MAX_MUTATION_PAYLOAD_KIB,
-};
 use edgecrab_tools::tools::skills::load_skill_prompt_bundle;
 use edgecrab_types::Platform;
 
@@ -631,27 +628,7 @@ Operational rules:
 EdgeCrab's LSP surface exceeds the common 9-operation baseline: it includes navigation plus code actions, rename, formatting, inlay hints, semantic tokens, signature help, type hierarchy, diagnostics pull, linked editing, LLM-enriched diagnostics, guided action selection, and workspace-wide type-error scans.";
 
 fn code_editing_guidance() -> String {
-    format!(
-        "\
-## Code Editing Execution
-
-When the user asks for a concrete code or file change and the necessary tools are available, inspect the relevant files and apply the edit in the same turn.
-
-Rules:
-  - Do not stop at a plan, draft diff, or 'ready for a patch?' unless the user explicitly asked for a plan/options or the requirements are materially ambiguous.
-  - Use read/search/LSP tools to gather the minimum context needed, then mutate files with apply_patch or write_file.
-  - Create new files directly when the request requires them, but keep the first write small when the file will be substantial.
-        - `write_file` has no touch-only overwrite mode: include `content` when replacing an existing non-empty file. If you already know the full content and it fits within the payload limit, write it in the first call instead of creating an empty scaffold.
-        - Omit `content` only for a genuinely minimal scaffold that you will extend immediately with patch/apply_patch, or when the final artifact is too large for a single write_file call.
-        - For an existing non-empty file, call `read_file` in the current session before using `write_file`. Blind full-file overwrites are rejected because they are too risky under LLM cached context.
-    - If a file may have changed after your last read, call `read_file` again before `write_file`, `patch`, or `apply_patch`. Cached context can be stale even when your reasoning is otherwise correct.
-  - The file-mutation contract is hard-bounded: each write_file content payload and each apply_patch patch payload must stay at or under {DEFAULT_MAX_MUTATION_PAYLOAD_BYTES} bytes ({DEFAULT_MAX_MUTATION_PAYLOAD_KIB} KiB) per call.
-  - For large files, full game engines, long scripts, or other substantial code artifacts, do NOT attempt a single giant write_file or execute_code payload. Create a minimal scaffold first, then add the implementation with focused patch/apply_patch steps.
-  - Do not call execute_code as a placeholder plan. Only call it when you already have a concrete code payload to run.
-  - Once the requested edit or artifact is complete, stop expanding scope. Do not add bonus summary files, quick-reference docs, start-here files, or repeated verification passes unless the user explicitly asked for them.
-  - After editing, report what changed and any verification you ran.
-  - Ask before destructive changes outside the user's stated scope."
-    )
+    edgecrab_tools::mutation_turn_policy::default_code_editing_guidance()
 }
 
 const SKILLS_GUIDANCE: &str = "\
@@ -3297,16 +3274,16 @@ Run `${CLAUDE_SKILL_DIR}/scripts/helper.py --session ${CLAUDE_SESSION_ID}`.\n",
             "guidance must explicitly prohibit waiting for patch approval when not requested"
         );
         assert!(
-            prompt.contains("Do not add bonus summary files"),
+            prompt.contains("stop expanding scope"),
             "guidance must explicitly forbid scope creep after the requested artifact is complete"
         );
         assert!(
-            prompt.contains("do NOT attempt a single giant write_file or execute_code payload"),
+            prompt.contains("NEVER emit one giant write_file or execute_code payload"),
             "guidance must forbid monolithic payload writes for large artifacts"
         );
         assert!(
-            prompt.contains("If you already know the full content and it fits within the payload limit, write it in the first call"),
-            "guidance must tell the model to avoid unnecessary empty scaffolds"
+            prompt.contains("keep the first write small"),
+            "guidance must tell the model to avoid unnecessary large first writes"
         );
         assert!(
             prompt.contains("For an existing non-empty file, call `read_file` in the current session before using `write_file`"),

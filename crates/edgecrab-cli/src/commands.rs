@@ -173,6 +173,14 @@ pub enum CommandResult {
     BranchSession(Option<String>),
     /// Show/manage skills
     ShowSkills(String),
+    /// Show/manage memory write approval (`/memory pending|approve|…`).
+    ShowMemory(String),
+    /// Config/state quick snapshots (`/snapshot create|restore|list`).
+    ShowSnapshot(String),
+    /// Dangerous-command approval mode (`/approvals mode smart|manual|off`).
+    ShowApprovals(String),
+    /// Multi-agent kanban board (`/kanban list|create|claim|complete`).
+    ShowKanban(String),
     /// List or manage skill bundles (`/bundles [create|delete|list]`).
     ShowBundles(String),
     /// Rescan skills dir and refresh slash commands (`/reload-skills`).
@@ -901,15 +909,33 @@ impl CommandRegistry {
         self.register(Command {
             name: "memory",
             aliases: &["mem"],
-            description: "Show memory status",
-            handler: |_| {
+            description: "Memory store status and write-approval governance",
+            handler: |args| {
+                let trimmed = args.trim();
+                if trimmed.is_empty()
+                    || trimmed.eq_ignore_ascii_case("pending")
+                    || trimmed.eq_ignore_ascii_case("approve")
+                    || trimmed.eq_ignore_ascii_case("apply")
+                    || trimmed.eq_ignore_ascii_case("reject")
+                    || trimmed.eq_ignore_ascii_case("deny")
+                    || trimmed.eq_ignore_ascii_case("drop")
+                    || trimmed.starts_with("approve ")
+                    || trimmed.starts_with("reject ")
+                    || trimmed.starts_with("approval")
+                    || trimmed.starts_with("mode ")
+                    || trimmed.starts_with("show ")
+                    || trimmed.starts_with("view ")
+                    || trimmed.starts_with("detail ")
+                {
+                    return CommandResult::ShowMemory(trimmed.to_string());
+                }
                 let home =
                     std::env::var("EDGECRAB_HOME").unwrap_or_else(|_| "~/.edgecrab".to_string());
                 CommandResult::Output(format!(
                     "Memory store: {home}/memories/\n\
-                     Format: §-delimited entries, one topic per file\n\
-                     \nUse memory_read/memory_write tools to manage entries,\n\
-                     or browse files directly in {home}/memories/"
+                     Format: §-delimited entries (MEMORY.md + USER.md)\n\
+                     \nGovernance: /memory pending | /memory approval on|off\n\
+                     Tools: memory_read, memory_write"
                 ))
             },
         });
@@ -1317,6 +1343,27 @@ impl CommandRegistry {
             aliases: &["cu", "desktop", "cua"],
             description: "Computer use: status, setup, enable/on, disable/off (macOS + cua-driver)",
             handler: |args| CommandResult::ShowComputer(args.trim().to_string()),
+        });
+
+        self.register(Command {
+            name: "snapshot",
+            aliases: &["snap"],
+            description: "Create or restore quick config/state snapshots",
+            handler: |args| CommandResult::ShowSnapshot(args.trim().to_string()),
+        });
+
+        self.register(Command {
+            name: "approvals",
+            aliases: &[],
+            description: "Dangerous-command approval mode (manual, smart, off)",
+            handler: |args| CommandResult::ShowApprovals(args.trim().to_string()),
+        });
+
+        self.register(Command {
+            name: "kanban",
+            aliases: &["kb"],
+            description: "Multi-agent task board (list, create, claim, complete)",
+            handler: |args| CommandResult::ShowKanban(args.trim().to_string()),
         });
 
         self.register(Command {

@@ -632,6 +632,7 @@ pub async fn search_hub(
     query: &str,
     source_filter: Option<&str>,
     limit_per_source: usize,
+    configured_hub_url: Option<&str>,
 ) -> SearchReport {
     let query = query.trim();
     if query.is_empty() {
@@ -703,6 +704,12 @@ pub async fn search_hub(
         && (query.starts_with("https://") || query.starts_with("http://"))
     {
         groups.push(search_well_known_source(&client, query, limit).await);
+    }
+
+    if let Some(url) = configured_hub_url.map(str::trim).filter(|u| !u.is_empty())
+        && (filter == "all" || filter == "well-known" || filter == "hub")
+    {
+        groups.push(search_well_known_source(&client, url, limit).await);
     }
 
     if filter == "all" || sources::registry_filter_includes_any(filter) {

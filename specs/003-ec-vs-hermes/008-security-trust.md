@@ -28,13 +28,13 @@ What each runtime assumes about the user, the model, and the network.
 | Mode | Hermes | EdgeCrab |
 |------|--------|----------|
 | manual | Yes | Yes |
-| smart (LLM risk score) | Yes | **No** |
-| off / yolo | `/yolo`, `HERMES_YOLO_MODE` | `/yolo` |
+| smart (LLM risk score) | Yes | **Yes** — `smart_approval.rs`, `approvals.mode=smart`, `/approvals` |
+| off / yolo | `/yolo`, `HERMES_YOLO_MODE` | `/yolo`, `approvals.mode=off` |
 | Hard blocklist (always on) | `UNRECOVERABLE_BLOCKLIST` | Command scan floor |
 | Cron headless mode | `approvals.cron_mode` | Similar |
 | Native confirm UI (gateway) | Partial | Gap 015 |
 
-**Verdict:** **Hermes leads UX sophistication** (smart mode); **EdgeCrab relies on static patterns + LSP/shadow verification**.
+**Verdict:** **Parity on approval modes.** EdgeCrab adds LSP/shadow verification on top; Hermes still leads **gateway native confirm UI** (gap 015).
 
 ---
 
@@ -42,11 +42,11 @@ What each runtime assumes about the user, the model, and the network.
 
 | Surface | Hermes | EdgeCrab |
 |---------|--------|----------|
-| Memory writes | Staging + `/memory approve` | Direct write after scan |
-| Skill installs | Staging + `/skills approve` | Quarantine→scan→install |
+| Memory writes | Staging + `/memory approve` | **Yes** — `memory.write_approval` + shared `pending_store` |
+| Skill installs | Staging + `/skills approve` | Quarantine→scan→install + write approval |
 | Dashboard env writer denylist | `_ENV_VAR_NAME_DENYLIST` | N/A (no dashboard) |
 
-**Verdict:** **Hermes leads** for operators who want human review before persistence.
+**Verdict:** **Parity on human-in-the-loop persistence gates.** EdgeCrab exceeds on skills trust (hash-bound dangerous approvals + TUI inspector). **Parity on smart terminal approval** (aux LLM pre-screen + escalate to manual).
 
 ---
 
@@ -104,7 +104,7 @@ Both agents ** intentionally run arbitrary shell commands** when approved. Neith
 | Dimension | Hermes | EdgeCrab |
 |-----------|--------|----------|
 | Baseline guards | A | A |
-| Human-in-the-loop | A | B |
+| Human-in-the-loop | A | **A** (memory + skills staging + smart mode) |
 | Automated coding checks | B | A− |
 | Supply chain | A− | B |
 | Secrets | A− | B |

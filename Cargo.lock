@@ -835,6 +835,7 @@ checksum = "edca88bc138befd0323b20752846e6587272d3b03b0343c8ea28a6f819e6e71f"
 dependencies = [
  "async-trait",
  "axum-core",
+ "base64 0.22.1",
  "bytes",
  "futures-util",
  "http 1.4.0",
@@ -853,8 +854,10 @@ dependencies = [
  "serde_json",
  "serde_path_to_error",
  "serde_urlencoded",
+ "sha1",
  "sync_wrapper",
  "tokio",
+ "tokio-tungstenite",
  "tower",
  "tower-layer",
  "tower-service",
@@ -2369,6 +2372,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_norway",
+ "tempfile",
  "tokio",
  "tracing",
  "uuid",
@@ -2468,8 +2472,6 @@ dependencies = [
 [[package]]
 name = "edgequake-llm"
 version = "0.6.24"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77b09c29c14207b2826fc310691f7aa3eae0e4da22d5cd2eb9cba98877568477"
 dependencies = [
  "anyhow",
  "async-openai",

@@ -189,8 +189,36 @@ fn skills_scan_context(platform: Option<&str>) -> edgecrab_tools::skills::Skills
     .with_interactive(false)
 }
 
+fn kanban_notify_platform(name: &str) -> Option<edgecrab_types::Platform> {
+    match name.trim().to_ascii_lowercase().as_str() {
+        "telegram" => Some(edgecrab_types::Platform::Telegram),
+        "discord" => Some(edgecrab_types::Platform::Discord),
+        "slack" => Some(edgecrab_types::Platform::Slack),
+        "whatsapp" => Some(edgecrab_types::Platform::Whatsapp),
+        "signal" => Some(edgecrab_types::Platform::Signal),
+        "matrix" => Some(edgecrab_types::Platform::Matrix),
+        "mattermost" => Some(edgecrab_types::Platform::Mattermost),
+        "dingtalk" => Some(edgecrab_types::Platform::DingTalk),
+        "sms" => Some(edgecrab_types::Platform::Sms),
+        "email" => Some(edgecrab_types::Platform::Email),
+        "feishu" => Some(edgecrab_types::Platform::Feishu),
+        "wecom" => Some(edgecrab_types::Platform::Wecom),
+        "bluebubbles" => Some(edgecrab_types::Platform::BlueBubbles),
+        "weixin" => Some(edgecrab_types::Platform::Weixin),
+        _ => None,
+    }
+}
+
 fn persist_skills_write_approval(enabled: bool) -> Result<(), String> {
     edgecrab_core::AppConfig::persist_skills_write_approval(enabled).map_err(|e| e.to_string())
+}
+
+fn persist_memory_write_approval(enabled: bool) -> Result<(), String> {
+    edgecrab_core::AppConfig::persist_memory_write_approval(enabled).map_err(|e| e.to_string())
+}
+
+fn persist_approvals_mode(mode: edgecrab_security::approval::ApprovalMode) -> Result<(), String> {
+    edgecrab_core::AppConfig::persist_approvals_mode(mode).map_err(|e| e.to_string())
 }
 
 fn persist_skills_inline_shell(enabled: bool) -> Result<(), String> {
@@ -591,6 +619,7 @@ async fn build_effective_text(agent: &Agent, msg: &IncomingMessage) -> String {
             watch_notification_tx: None,
             mutation_turn: None,
             lsp_gate: None,
+            kanban_task_id: None,
         };
 
         match VisionAnalyzeTool
@@ -659,6 +688,7 @@ async fn build_effective_text(agent: &Agent, msg: &IncomingMessage) -> String {
             watch_notification_tx: None,
             mutation_turn: None,
             lsp_gate: None,
+            kanban_task_id: None,
         };
 
         match TranscribeAudioTool
@@ -986,6 +1016,7 @@ async fn maybe_send_voice_reply(
         watch_notification_tx: None,
         mutation_turn: None,
         lsp_gate: None,
+        kanban_task_id: None,
     };
 
     let result = match TextToSpeechTool
@@ -1712,6 +1743,7 @@ impl Gateway {
     /// This starts the HTTP server, boots all platform adapters, and
     /// enters the message dispatch loop.
     pub async fn run(&self) -> anyhow::Result<()> {
+        crate::clarify_wiring::install_interaction_broker(self.interaction_broker.clone());
         let (tx, mut rx) = mpsc::channel::<IncomingMessage>(256);
         let mut delivery_router = DeliveryRouter::new();
 
@@ -1784,6 +1816,127 @@ impl Gateway {
             tokio::spawn(async move {
                 watcher.run().await;
             });
+        }
+
+        let ec_config = edgecrab_core::AppConfig::load().unwrap_or_default();
+        if ec_config.kanban.enabled && ec_config.kanban.dispatch_in_gateway {
+            let home = edgecrab_core::edgecrab_home();
+            let interval = ec_config.kanban.reclaim_interval_secs as u64;
+            let dispatch_cfg =
+                edgecrab_core::KanbanDispatchConfig::from_kanban_config(&ec_config.kanban);
+            if let Some(agent) = self.agent.clone() {
+                let failure_limit = ec_config.kanban.failure_limit;
+                let kanban_home = home.clone();
+                let spawn_agent = agent.clone();
+                let spawn_fn: edgecrab_core::KanbanSpawnFn = Arc::new(move |req| {
+                    let agent = spawn_agent.clone();
+                    let kanban_home = kanban_home.clone();
+                    let worker_id = req.worker_id.clone();
+                    let task_id = req.task_id.clone();
+                    tokio::spawn(async move {
+                        let Ok(child) = agent
+                            .fork_isolated(IsolatedAgentOptions {
+                                session_id: Some(format!("kb-{}", req.task_id)),
+                                kanban_task_id: Some(req.task_id.clone()),
+                                quiet_mode: Some(true),
+                                ..Default::default()
+                            })
+                            .await
+                        else {
+                            let _ = tokio::task::spawn_blocking({
+                                let kanban_home = kanban_home.clone();
+                                let task_id = task_id.clone();
+                                let worker_id = worker_id.clone();
+                                move || {
+                                    if let Ok(db) =
+                                        edgecrab_state::KanbanDb::open_default(Some(&kanban_home))
+                                    {
+                                        let _ = db.handle_worker_failure(
+                                            &task_id,
+                                            &worker_id,
+                                            "fork_isolated failed",
+                                            failure_limit,
+                                        );
+                                    }
+                                }
+                            })
+                            .await;
+                            return;
+                        };
+                        let child = Arc::new(child);
+                        edgecrab_core::kanban_workers::register_worker(&task_id, &child);
+                        let body = req.body.as_deref().unwrap_or("");
+                        let prompt = format!(
+                            "[KANBAN WORKER] Task `{}` — {}\n{body}\n\n\
+                             Use kanban_show for context. Call kanban_complete when done \
+                             or kanban_block if you need human input.",
+                            req.task_id, req.title
+                        );
+                        let chat_err = child.chat(&prompt).await.is_err();
+                        edgecrab_core::kanban_workers::unregister_worker(&task_id);
+                        if chat_err {
+                            let _ = tokio::task::spawn_blocking({
+                                let kanban_home = kanban_home.clone();
+                                let task_id = task_id.clone();
+                                let worker_id = worker_id.clone();
+                                move || {
+                                    if let Ok(db) =
+                                        edgecrab_state::KanbanDb::open_default(Some(&kanban_home))
+                                    {
+                                        let _ = db.handle_worker_failure(
+                                            &task_id,
+                                            &worker_id,
+                                            "worker chat failed",
+                                            failure_limit,
+                                        );
+                                    }
+                                }
+                            })
+                            .await;
+                        }
+                    });
+                    true
+                });
+                let _kanban_watcher = edgecrab_core::spawn_kanban_watcher(
+                    home.clone(),
+                    interval,
+                    dispatch_cfg,
+                    Some(spawn_fn),
+                );
+                if ec_config.kanban.auto_decompose {
+                    let agent = agent.clone();
+                    let kanban_home = home;
+                    tokio::spawn(async move {
+                        let mut tick = tokio::time::interval(std::time::Duration::from_secs(interval.max(15)));
+                        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+                        loop {
+                            tick.tick().await;
+                            let cfg = edgecrab_core::AppConfig::load().unwrap_or_default();
+                            if !cfg.kanban.enabled || !cfg.kanban.auto_decompose {
+                                continue;
+                            }
+                            let provider = agent.provider_handle().await;
+                            let model = agent.model().await;
+                            let n = edgecrab_core::run_auto_decompose_tick(
+                                &kanban_home,
+                                provider,
+                                &model,
+                                &cfg,
+                            )
+                            .await;
+                            if n > 0 {
+                                tracing::info!(decomposed = n, "kanban: auto-decompose tick");
+                            }
+                        }
+                    });
+                }
+            } else {
+                let _kanban_watcher = edgecrab_core::spawn_kanban_reaper(home, interval);
+            }
+            tracing::info!(
+                interval_secs = interval,
+                "kanban dispatcher watcher started"
+            );
         }
 
         if let Some(agent) = self.agent.as_ref()
@@ -1900,6 +2053,48 @@ impl Gateway {
         // Seal the delivery router — all adapters are registered; wrap in Arc so
         // the spawned dispatch tasks can share it without cloning the entire map.
         let delivery_router = Arc::new(delivery_router);
+
+        if ec_config.kanban.enabled && ec_config.kanban.dispatch_in_gateway {
+            let home = edgecrab_core::edgecrab_home();
+            let notifier_interval = ec_config.kanban.reclaim_interval_secs.max(5) as u64;
+            let router_for_platforms = delivery_router.clone();
+            let active_fn: edgecrab_core::KanbanActivePlatformsFn = Arc::new(move || {
+                router_for_platforms
+                    .list_platforms()
+                    .into_iter()
+                    .map(|p| p.to_string())
+                    .collect()
+            });
+            let router_for_deliver = delivery_router.clone();
+            let deliver_fn: edgecrab_core::KanbanNotifyDeliverFn = Arc::new(move |out| {
+                let router = router_for_deliver.clone();
+                Box::pin(async move {
+                    let platform = kanban_notify_platform(&out.sub.platform)
+                        .ok_or_else(|| format!("unknown platform {}", out.sub.platform))?;
+                    let mut metadata = crate::platform::MessageMetadata {
+                        channel_id: Some(out.sub.chat_id.clone()),
+                        ..Default::default()
+                    };
+                    if !out.sub.thread_id.is_empty() {
+                        metadata.thread_id = Some(out.sub.thread_id.clone());
+                    }
+                    router
+                        .deliver(&out.message, platform, &metadata)
+                        .await
+                        .map_err(|e| e.to_string())
+                })
+            });
+            let _kanban_notifier = edgecrab_core::spawn_kanban_notifier(
+                home,
+                notifier_interval,
+                active_fn,
+                deliver_fn,
+            );
+            tracing::info!(
+                interval_secs = notifier_interval,
+                "kanban notifier watcher started"
+            );
+        }
 
         // Start session cleanup task
         let sm = self.session_manager.clone();
@@ -2660,6 +2855,7 @@ impl Gateway {
                                                 session_id: Some(task_id_for_spawn.clone()),
                                                 platform: Some(platform),
                                                 quiet_mode: Some(true),
+                                                kanban_task_id: None,
                                                 origin_chat: Some(OriginChat::new(
                                                     platform_name.clone(),
                                                     origin_chat_id_clone.clone(),
@@ -3037,13 +3233,15 @@ impl Gateway {
                                     )
                                 {
                                     Some(reply)
-                                } else if let Some(reply) =
+                                } else if let Some(reply) = {
+                                    let hub_url = config.skills.hub_url.clone();
                                     edgecrab_tools::tools::skills_hub::handle_skills_hub_slash(
                                         args,
                                         &home.join("skills"),
+                                        hub_url.as_deref(),
                                     )
                                     .await
-                                {
+                                } {
                                     if edgecrab_tools::tools::skills_hub::hub_slash_mutates_skills(args)
                                     {
                                         edgecrab_tools::skills::invalidate_discovery_caches();
@@ -3114,6 +3312,76 @@ impl Gateway {
                                         backup_keep: config.curator.backup.keep,
                                     },
                                 ))
+                            }
+                            "memory" | "mem" => {
+                                let args = msg.get_command_args().trim();
+                                let config =
+                                    edgecrab_core::AppConfig::load().unwrap_or_default();
+                                let home = edgecrab_core::edgecrab_home();
+                                edgecrab_tools::skills::handle_memory_pending_subcommand(
+                                    &home,
+                                    args,
+                                    &edgecrab_tools::skills::MemorySubcommandContext {
+                                        write_approval: config.memory.write_approval,
+                                        set_write_approval: Some(&persist_memory_write_approval),
+                                    },
+                                )
+                                .or_else(|| {
+                                    Some(format!(
+                                        "Memory store: {}/memories/\n\
+                                         Governance: /memory pending | /memory approval on|off",
+                                        home.display()
+                                    ))
+                                })
+                            }
+                            "snapshot" | "snap" => {
+                                let args = msg.get_command_args().trim();
+                                Some(edgecrab_core::handle_snapshot_slash(args, None))
+                            }
+                            "approvals" => {
+                                let args = msg.get_command_args().trim();
+                                let config =
+                                    edgecrab_core::AppConfig::load().unwrap_or_default();
+                                Some(edgecrab_tools::handle_approvals_slash(
+                                    args,
+                                    config.approvals.mode,
+                                    config.approvals.smart_model.as_deref(),
+                                    Some(&persist_approvals_mode),
+                                ))
+                            }
+                            "kanban" | "kb" => {
+                                let args = msg.get_command_args().trim();
+                                let notify = {
+                                    let sub = args.split_whitespace().next().unwrap_or("");
+                                    if sub.eq_ignore_ascii_case("create")
+                                        || sub.eq_ignore_ascii_case("add")
+                                        || sub.eq_ignore_ascii_case("subscribe")
+                                        || sub.eq_ignore_ascii_case("notify")
+                                    {
+                                        let chat_id = msg
+                                            .metadata
+                                            .channel_id
+                                            .clone()
+                                            .unwrap_or_else(|| msg.user_id.clone());
+                                        Some(edgecrab_core::KanbanNotifyOrigin {
+                                            platform: msg.platform.to_string(),
+                                            chat_id,
+                                            thread_id: msg.metadata.thread_id.clone(),
+                                            user_id: Some(msg.user_id.clone()),
+                                        })
+                                    } else {
+                                        None
+                                    }
+                                };
+                                Some(
+                                    edgecrab_core::handle_kanban_slash_gateway(
+                                        args,
+                                        None,
+                                        notify.as_ref(),
+                                        self.agent.clone(),
+                                    )
+                                    .await,
+                                )
                             }
                             _ => {
                                 // Unknown command — fall through to agent dispatch
@@ -3811,6 +4079,21 @@ async fn dispatch_streaming_arc(
 fn build_router(state: GatewayState) -> Router {
     Router::new()
         .route("/health", get(health_handler))
+        .route("/kanban", get(crate::kanban_routes::kanban_dashboard))
+        .route("/api/kanban/board", get(crate::kanban_routes::kanban_board))
+        .route("/api/kanban/boards", get(crate::kanban_routes::kanban_boards))
+        .route(
+            "/api/kanban/tasks/:id",
+            get(crate::kanban_routes::kanban_task_detail),
+        )
+        .route(
+            "/api/kanban/events",
+            get(crate::kanban_routes::kanban_events_poll),
+        )
+        .route(
+            "/api/kanban/events/ws",
+            get(crate::kanban_routes::kanban_events_ws),
+        )
         .route("/webhook/incoming", post(webhook_incoming))
         .route("/webhooks/:name", post(webhook_subscription_incoming))
         .with_state(state)

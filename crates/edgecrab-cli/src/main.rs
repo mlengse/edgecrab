@@ -949,9 +949,9 @@ async fn run_subcommand(cmd: Command, args: &CliArgs) -> anyhow::Result<()> {
             run_version();
         }
 
-        Command::Update { check } => {
+        Command::Update { check, no_snapshot } => {
             let config = edgecrab_core::AppConfig::load()?;
-            update::run_update_command(&config, check, &mut std::io::stdout()).await?;
+            update::run_update_command(&config, check, no_snapshot, &mut std::io::stdout()).await?;
         }
 
         Command::Whatsapp => {
@@ -2038,8 +2038,16 @@ async fn run_skills(command: SkillsCommand) -> anyhow::Result<()> {
                 .unwrap_or_else(|| edgecrab_core::edgecrab_home().join("optional-skills"));
             let official_matches =
                 edgecrab_tools::tools::skills_hub::search_optional_skills(&optional_root, &query);
-            let remote_report =
-                edgecrab_tools::tools::skills_hub::search_hub(&query, None, 8).await;
+            let remote_report = edgecrab_tools::tools::skills_hub::search_hub(
+                &query,
+                None,
+                8,
+                edgecrab_core::AppConfig::load()
+                    .ok()
+                    .and_then(|c| c.skills.hub_url)
+                    .as_deref(),
+            )
+            .await;
             let has_remote_matches = remote_report
                 .groups
                 .iter()

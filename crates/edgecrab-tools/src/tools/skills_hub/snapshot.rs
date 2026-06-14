@@ -1,13 +1,15 @@
 //! Portable hub configuration export/import — exceeds Hermes with schema versioning + hashes.
 
+use std::collections::HashMap;
 use std::path::Path;
 
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 
+use super::guard_approvals::{GuardApproval, read_guard_approvals, record_guard_approval};
 use super::{InstallGate, install_identifier, read_lock, read_taps, tap_from_snapshot_value};
 
-const SNAPSHOT_FORMAT_VERSION: u32 = 1;
+const SNAPSHOT_FORMAT_VERSION: u32 = 2;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct HubSnapshot {
@@ -23,6 +25,9 @@ struct HubSnapshot {
     skills: Vec<HubSnapshotSkill>,
     #[serde(default)]
     taps: Vec<serde_json::Value>,
+    /// Hash-bound dangerous-skill trust approvals (EdgeCrab v2+).
+    #[serde(default)]
+    guard_approvals: HashMap<String, GuardApproval>,
 }
 
 fn default_format_version() -> u32 {
@@ -67,6 +72,7 @@ pub fn export_hub_snapshot(output_path: &str) -> Result<String, String> {
         exported_at: Utc::now().to_rfc3339(),
         skills,
         taps: tap_values,
+        guard_approvals: read_guard_approvals(),
     };
 
     let payload = serde_json::to_string_pretty(&snapshot)
@@ -79,9 +85,10 @@ pub fn export_hub_snapshot(output_path: &str) -> Result<String, String> {
 
     std::fs::write(output_path, &payload).map_err(|e| format!("write {}: {e}", output_path))?;
     Ok(format!(
-        "Snapshot exported: {output_path}\n{} skill(s), {} tap(s)",
+        "Snapshot exported: {output_path}\n{} skill(s), {} tap(s), {} trust approval(s)",
         snapshot.skills.len(),
-        snapshot.taps.len()
+        snapshot.taps.len(),
+        snapshot.guard_approvals.len()
     ))
 }
 
@@ -119,6 +126,24 @@ pub async fn import_hub_snapshot(
     }
     if taps_restored > 0 {
         out.push_str(&format!("Restored {taps_restored} tap(s).\n"));
+    }
+
+    let mut approvals_restored = 0usize;
+    for approval in snapshot.guard_approvals.values() {
+        if record_guard_approval(
+            &approval.identifier,
+            &approval.skill_name,
+            &approval.content_hash,
+            &approval.verdict,
+            approval.finding_count,
+        )
+        .is_ok()
+        {
+            approvals_restored += 1;
+        }
+    }
+    if approvals_restored > 0 {
+        out.push_str(&format!("Restored {approvals_restored} trust approval(s).\n"));
     }
 
     if snapshot.skills.is_empty() {
@@ -188,6 +213,30 @@ mod tests {
         let parsed: HubSnapshot = serde_json::from_str(&raw).unwrap();
         assert_eq!(parsed.format_version, SNAPSHOT_FORMAT_VERSION);
         assert!(parsed.edgecrab_version.contains('.'));
+    }
+
+    #[test]
+    fn export_includes_guard_approvals_v2() {
+        let home = TestEdgecrabHome::new();
+        let _ = home;
+        super::super::guard_approvals::record_guard_approval(
+            "skills.sh:demo/test",
+            "test",
+            "sha256:abc",
+            "dangerous",
+            3,
+        )
+        .expect("record");
+
+        let out = TempDir::new().unwrap();
+        let path = out.path().join("snap.json");
+        let msg = export_hub_snapshot(path.to_str().unwrap()).expect("export");
+        assert!(msg.contains("trust approval"));
+
+        let raw = std::fs::read_to_string(&path).unwrap();
+        let parsed: HubSnapshot = serde_json::from_str(&raw).unwrap();
+        assert_eq!(parsed.format_version, SNAPSHOT_FORMAT_VERSION);
+        assert_eq!(parsed.guard_approvals.len(), 1);
     }
 
     #[test]

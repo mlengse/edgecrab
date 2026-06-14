@@ -14,7 +14,7 @@
 //!   │      │                                                  │
 //!   │      ├── exact match? → handler.execute(args, ctx)      │
 //!   │      │                                                  │
-//!   │      └── no match? → fuzzy_match (strsim) → suggestion  │
+//!   │      └── no match? → fuzzy_match_tool_name (Jaro ≥0.7) → suggestion │
 //!   │                                                         │
 //!   │  get_definitions(enabled, disabled)                     │
 //!   │      → filter by toolset + availability                 │
@@ -350,6 +350,8 @@ pub struct ToolContext {
     pub mutation_turn: Option<Arc<crate::mutations::MutationTurnState>>,
     /// Post-write LSP diagnostic gate (injected when `lsp.enabled`).
     pub lsp_gate: Option<Arc<dyn crate::lsp_gate::LspGate>>,
+    /// Kanban worker task scope (dispatcher-spawned agents).
+    pub kanban_task_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -437,6 +439,7 @@ impl ToolContext {
             watch_notification_tx: None,
             mutation_turn: None,
             lsp_gate: None,
+            kanban_task_id: None,
         }
     }
 
@@ -465,6 +468,125 @@ pub struct ToolRegistry {
     dynamic_tool_aliases: HashMap<String, String>,
 }
 
+// ── Schema-aware argument normalization ───────────────────────────────
+// Local models (LM Studio / Qwen) often emit Hermes/OpenAI-inconsistent
+// field names (`file_path` vs `path`). Rename at the harness boundary —
+// deterministic, schema-driven, not failure-count adaptive.
+
+const PATH_FIELD_ALIASES: &[&str] = &["file_path", "filepath", "filename"];
+const CONTENT_FIELD_ALIASES: &[&str] = &["file_content", "text", "body"];
+
+fn rename_missing_canonical_field(
+    map: &mut serde_json::Map<String, serde_json::Value>,
+    canonical: &str,
+    aliases: &[&str],
+) {
+    if map.contains_key(canonical) {
+        return;
+    }
+    for alias in aliases {
+        if let Some(value) = map.remove(*alias) {
+            map.insert(canonical.to_string(), value);
+            return;
+        }
+    }
+}
+
+fn normalize_schema_field_aliases(args: &mut serde_json::Value, schema: &serde_json::Value) {
+    let Some(properties) = schema
+        .get("properties")
+        .and_then(serde_json::Value::as_object)
+    else {
+        return;
+    };
+    let serde_json::Value::Object(map) = args else {
+        return;
+    };
+    if properties.contains_key("path") {
+        rename_missing_canonical_field(map, "path", PATH_FIELD_ALIASES);
+    }
+    if properties.contains_key("content") {
+        rename_missing_canonical_field(map, "content", CONTENT_FIELD_ALIASES);
+    }
+}
+
+fn schema_allows_null(prop_schema: &serde_json::Value) -> bool {
+    match prop_schema.get("type") {
+        Some(serde_json::Value::String(t)) if t == "null" => true,
+        Some(serde_json::Value::Array(types)) if types.iter().any(|t| t.as_str() == Some("null")) => {
+            true
+        }
+        _ => prop_schema.get("nullable").and_then(|v| v.as_bool()) == Some(true),
+    }
+}
+
+fn coerce_string_value(value: &str, expected_type: &str, prop_schema: &serde_json::Value) -> Option<serde_json::Value> {
+    if schema_allows_null(prop_schema) && value.trim().eq_ignore_ascii_case("null") {
+        return Some(serde_json::Value::Null);
+    }
+    match expected_type {
+        "integer" => value
+            .parse::<i64>()
+            .ok()
+            .map(|n| serde_json::Value::Number(n.into())),
+        "number" => value
+            .parse::<f64>()
+            .ok()
+            .and_then(serde_json::Number::from_f64)
+            .map(serde_json::Value::Number),
+        "boolean" => match value {
+            "true" | "1" | "True" => Some(serde_json::Value::Bool(true)),
+            "false" | "0" | "False" => Some(serde_json::Value::Bool(false)),
+            _ => None,
+        },
+        "array" => serde_json::from_str::<Vec<serde_json::Value>>(value)
+            .ok()
+            .map(serde_json::Value::Array),
+        "object" => serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(value)
+            .ok()
+            .map(serde_json::Value::Object),
+        _ => None,
+    }
+}
+
+fn coerce_value_for_schema(value: &mut serde_json::Value, prop_schema: &serde_json::Value) {
+    if let Some(serde_json::Value::Array(types)) = prop_schema.get("type")
+        && let Some(s) = value.as_str()
+    {
+        for t in types {
+            if let Some(t) = t.as_str()
+                && let Some(coerced) = coerce_string_value(s, t, prop_schema)
+            {
+                *value = coerced;
+                return;
+            }
+        }
+        return;
+    }
+
+    let Some(expected_type) = prop_schema.get("type").and_then(|t| t.as_str()) else {
+        return;
+    };
+
+    if let Some(s) = value.as_str()
+        && let Some(coerced) = coerce_string_value(s, expected_type, prop_schema)
+    {
+        *value = coerced;
+        return;
+    }
+
+    match expected_type {
+        "string" if !value.is_string() => {
+            *value = serde_json::Value::String(value.to_string());
+        }
+        "array" if !value.is_array() && value.as_str().is_none() => {
+            let v = value.take();
+            *value = serde_json::Value::Array(vec![v]);
+        }
+        _ => {}
+    }
+}
+
 // ── Schema-aware type coercion ──────────────────────────────────────
 // Silently coerce string↔integer, string↔boolean, etc. when the LLM
 // sends a value in the wrong JSON type but the right semantic value.
@@ -472,6 +594,7 @@ pub struct ToolRegistry {
 //
 // FP2: Make The Right Thing Easy — "42" for an integer field IS the right value.
 fn coerce_tool_args(args: &mut serde_json::Value, schema: &serde_json::Value) {
+    normalize_schema_field_aliases(args, schema);
     let Some(properties) = schema
         .get("properties")
         .and_then(serde_json::Value::as_object)
@@ -485,40 +608,7 @@ fn coerce_tool_args(args: &mut serde_json::Value, schema: &serde_json::Value) {
         let Some(value) = map.get_mut(key) else {
             continue;
         };
-        let Some(expected_type) = prop_schema.get("type").and_then(serde_json::Value::as_str)
-        else {
-            continue;
-        };
-        match expected_type {
-            "integer" if value.is_string() => {
-                if let Some(s) = value.as_str()
-                    && let Ok(n) = s.parse::<i64>()
-                {
-                    *value = serde_json::Value::Number(n.into());
-                }
-            }
-            "number" if value.is_string() => {
-                if let Some(s) = value.as_str()
-                    && let Ok(n) = s.parse::<f64>()
-                    && let Some(n) = serde_json::Number::from_f64(n)
-                {
-                    *value = serde_json::Value::Number(n);
-                }
-            }
-            "boolean" if value.is_string() => match value.as_str() {
-                Some("true" | "1") => *value = serde_json::Value::Bool(true),
-                Some("false" | "0") => *value = serde_json::Value::Bool(false),
-                _ => {}
-            },
-            "string" if !value.is_string() => {
-                *value = serde_json::Value::String(value.to_string());
-            }
-            "array" if !value.is_array() => {
-                let v = value.take();
-                *value = serde_json::Value::Array(vec![v]);
-            }
-            _ => {}
-        }
+        coerce_value_for_schema(value, prop_schema);
     }
 }
 
@@ -723,6 +813,25 @@ impl ToolRegistry {
         schemas
     }
 
+    /// Normalize schema field aliases and coerce JSON types before dispatch.
+    ///
+    /// Call this on parsed tool arguments before suppression keys or `dispatch`.
+    pub fn prepare_tool_arguments(&self, name: &str, args: &mut serde_json::Value) {
+        let static_name = self.tool_aliases.get(name).copied().unwrap_or(name);
+        if let Some(handler) = self.tools.get(static_name) {
+            coerce_tool_args(args, &handler.schema().parameters);
+            return;
+        }
+        let dynamic_name = self
+            .dynamic_tool_aliases
+            .get(name)
+            .map(String::as_str)
+            .unwrap_or(name);
+        if let Some(handler) = self.dynamic_tools.get(dynamic_name) {
+            coerce_tool_args(args, &handler.schema().parameters);
+        }
+    }
+
     /// Dispatch a tool call by name.
     ///
     /// On name mismatch, uses fuzzy matching (Levenshtein distance via strsim)
@@ -737,6 +846,13 @@ impl ToolRegistry {
         mut args: serde_json::Value,
         ctx: &ToolContext,
     ) -> Result<String, ToolError> {
+        let resolved = self.resolve_tool_call_name(name);
+        let name = if resolved.canonical.is_empty() {
+            name
+        } else {
+            resolved.canonical.as_str()
+        };
+
         // Any tool other than read_file / search_files resets the consecutive
         // re-read counter so only truly back-to-back identical reads trigger
         // the loop guard. Mirrors hermes-agent's notify_other_tool_call().
@@ -793,8 +909,8 @@ impl ToolRegistry {
             return handler.execute(args, ctx).await;
         }
 
-        // Fuzzy fallback
-        if let Some(suggestion) = self.fuzzy_match(name) {
+        // Fuzzy fallback — suggest closest registered tool (Hermes difflib parity).
+        if let Some(suggestion) = crate::tool_name_repair::fuzzy_match_tool_name(self, name) {
             Err(ToolError::NotFound(format!(
                 "Unknown tool '{}'. Did you mean '{}'?",
                 name, suggestion
@@ -814,7 +930,7 @@ impl ToolRegistry {
         tool_name: &str,
         error: &ToolError,
     ) -> Option<edgecrab_types::ToolErrorResponse> {
-        if !matches!(error, ToolError::InvalidArgs { .. }) {
+        if !matches!(error.core_error(), ToolError::InvalidArgs { .. }) {
             return None;
         }
         let handler: &dyn ToolHandler = if let Some(h) = self.tools.get(tool_name) {
@@ -891,6 +1007,27 @@ impl ToolRegistry {
         names.extend(self.dynamic_tools.keys().map(|s| s.as_str()));
         names.sort();
         names
+    }
+
+    /// Resolve a wire name to a registered canonical tool name, if known.
+    pub fn lookup_tool_name(&self, name: &str) -> Option<String> {
+        if self.tools.contains_key(name) {
+            return Some(name.to_string());
+        }
+        if let Some(&canonical) = self.tool_aliases.get(name) {
+            return Some(canonical.to_string());
+        }
+        if self.dynamic_tools.contains_key(name) {
+            return Some(name.to_string());
+        }
+        self.dynamic_tool_aliases
+            .get(name)
+            .cloned()
+    }
+
+    /// Normalize a raw model-emitted tool name (pollution strip + Hermes repair).
+    pub fn resolve_tool_call_name(&self, raw: &str) -> crate::tool_name_repair::ResolvedToolName {
+        crate::tool_name_repair::resolve_tool_call_name(self, raw)
     }
 
     /// All toolset names
@@ -1110,51 +1247,6 @@ impl ToolRegistry {
                     .map(String::from)
             })
             .collect()
-    }
-
-    /// Fuzzy match tool name using Levenshtein distance.
-    /// Returns the closest match if distance ≤ 3 (catches common typos).
-    fn fuzzy_match(&self, name: &str) -> Option<&str> {
-        let threshold = 3;
-        let mut best: Option<(&str, usize)> = None;
-
-        for &tool_name in self.tools.keys() {
-            let dist = strsim::levenshtein(name, tool_name);
-            if dist <= threshold
-                && (best.is_none() || dist < best.as_ref().map_or(usize::MAX, |b| b.1))
-            {
-                best = Some((tool_name, dist));
-            }
-        }
-
-        for (&alias, &canonical) in &self.tool_aliases {
-            let dist = strsim::levenshtein(name, alias);
-            if dist <= threshold
-                && (best.is_none() || dist < best.as_ref().map_or(usize::MAX, |b| b.1))
-            {
-                best = Some((canonical, dist));
-            }
-        }
-
-        for tool_name in self.dynamic_tools.keys() {
-            let dist = strsim::levenshtein(name, tool_name);
-            if dist <= threshold
-                && (best.is_none() || dist < best.as_ref().map_or(usize::MAX, |b| b.1))
-            {
-                best = Some((tool_name.as_str(), dist));
-            }
-        }
-
-        for (alias, canonical) in &self.dynamic_tool_aliases {
-            let dist = strsim::levenshtein(name, alias);
-            if dist <= threshold
-                && (best.is_none() || dist < best.as_ref().map_or(usize::MAX, |b| b.1))
-            {
-                best = Some((canonical.as_str(), dist));
-            }
-        }
-
-        best.map(|(name, _)| name)
     }
 }
 
@@ -1447,18 +1539,13 @@ mod tests {
         let registry = make_registry_with_tools();
         let ctx = ToolContext::test_context();
 
-        let err = registry
-            .dispatch("test_tol", json!({}), &ctx) // typo: "tol" vs "tool"
+        // Typo auto-repaired at dispatch boundary (Hermes repair_tool_call parity).
+        let result = registry
+            .dispatch("test_tol", json!({"input": "hello"}), &ctx)
             .await
-            .expect_err("should suggest similar tool name");
+            .expect("fuzzy name repair should dispatch");
 
-        match err {
-            ToolError::NotFound(msg) => {
-                assert!(msg.contains("Did you mean"), "Got: {}", msg);
-                assert!(msg.contains("test_tool"), "Got: {}", msg);
-            }
-            other => panic!("Expected NotFound, got: {:?}", other),
-        }
+        assert_eq!(result, "echo: hello");
     }
 
     #[tokio::test]
@@ -1610,14 +1697,23 @@ mod tests {
     #[test]
     fn fuzzy_match_close_typo() {
         let registry = make_registry_with_tools();
-        assert_eq!(registry.fuzzy_match("test_tol"), Some("test_tool"));
-        assert_eq!(registry.fuzzy_match("tset_tool"), Some("test_tool"));
+        assert_eq!(
+            crate::tool_name_repair::fuzzy_match_tool_name(&registry, "test_tol"),
+            Some("test_tool".into())
+        );
+        assert_eq!(
+            crate::tool_name_repair::fuzzy_match_tool_name(&registry, "tset_tool"),
+            Some("test_tool".into())
+        );
     }
 
     #[test]
     fn fuzzy_match_too_far() {
         let registry = make_registry_with_tools();
-        assert_eq!(registry.fuzzy_match("completely_different"), None);
+        assert_eq!(
+            crate::tool_name_repair::fuzzy_match_tool_name(&registry, "completely_different"),
+            None
+        );
     }
 
     #[test]
@@ -1786,6 +1882,38 @@ mod tests {
         let mut args = serde_json::json!({"line": "42"});
         coerce_tool_args(&mut args, &schema);
         assert_eq!(args["line"], 42);
+    }
+
+    #[test]
+    fn coerce_union_integer_from_string() {
+        let schema = serde_json::json!({
+            "properties": { "line": { "type": ["integer", "string"] } }
+        });
+        let mut args = serde_json::json!({"line": "42"});
+        coerce_tool_args(&mut args, &schema);
+        assert_eq!(args["line"], 42);
+    }
+
+    #[test]
+    fn coerce_null_string_when_nullable() {
+        let schema = serde_json::json!({
+            "properties": { "limit": { "type": ["integer", "null"], "nullable": true } }
+        });
+        let mut args = serde_json::json!({"limit": "null"});
+        coerce_tool_args(&mut args, &schema);
+        assert!(args["limit"].is_null());
+    }
+
+    #[test]
+    fn prepare_tool_arguments_renames_file_path_before_dispatch() {
+        let registry = ToolRegistry::new();
+        let mut args = serde_json::json!({
+            "file_path": "notes.md",
+            "text": "hello"
+        });
+        registry.prepare_tool_arguments("write_file", &mut args);
+        assert_eq!(args["path"], "notes.md");
+        assert_eq!(args["content"], "hello");
     }
 
     #[test]

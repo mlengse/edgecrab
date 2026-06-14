@@ -114,6 +114,7 @@ use crate::tool_display::{
     DisplayWidths, build_subagent_done_line_width, build_subagent_running_line_width,
     build_tool_done_line_width, build_tool_running_line_width,
     build_tool_running_line_width_elapsed, build_tool_verbose_lines_width, extract_tool_preview,
+    extract_streaming_tool_preview,
     tool_signature, tool_status_preview,
 };
 use crate::transcript::{
@@ -4286,6 +4287,15 @@ enum AgentResponse {
     Notice(String),
     /// Ephemeral shelf activity feed (compression, approval, bg process) — not duplicated in transcript.
     ActivityFeed(String),
+    /// Blocking non-streaming LLM wait tick (LM Studio / Ollama).
+    LlmWaitProgress {
+        provider: String,
+        elapsed_secs: u64,
+        has_tools: bool,
+        prompt_tokens_estimated: Option<u64>,
+        context_length: Option<u64>,
+        prefill_pct: Option<f32>,
+    },
     /// Agent-reported count of steering events waiting for injection.
     SteerPending {
         count: usize,
@@ -6122,6 +6132,24 @@ impl App {
         edgecrab_core::AppConfig::persist_skills_write_approval(enabled).map_err(|e| e.to_string())
     }
 
+    fn persist_memory_write_approval(enabled: bool) -> Result<(), String> {
+        edgecrab_core::AppConfig::persist_memory_write_approval(enabled).map_err(|e| e.to_string())
+    }
+
+    fn persist_approvals_mode(mode: edgecrab_tools::ApprovalMode) -> Result<(), String> {
+        edgecrab_core::AppConfig::persist_approvals_mode(mode).map_err(|e| e.to_string())
+    }
+
+    fn apply_approvals_mode_live(&mut self, mode: edgecrab_tools::ApprovalMode) {
+        if let Some(agent) = self.agent.clone() {
+            let mut cfg = edgecrab_core::AppConfig::load().unwrap_or_default();
+            cfg.approvals.mode = mode;
+            self.rt_handle.block_on(async move {
+                agent.set_approvals_config(cfg.approvals.clone()).await;
+            });
+        }
+    }
+
     fn persist_skills_inline_shell(enabled: bool) -> Result<(), String> {
         edgecrab_core::AppConfig::persist_skills_inline_shell(enabled).map_err(|e| e.to_string())
     }
@@ -7145,7 +7173,14 @@ impl App {
         self.remote_skill_browser.loading_query = Some(query.clone());
         let tx = self.response_tx.clone();
         self.rt_handle.spawn(async move {
-            let report = edgecrab_tools::tools::skills_hub::search_hub(&query, None, 12).await;
+            let config = edgecrab_core::AppConfig::load().unwrap_or_default();
+            let report = edgecrab_tools::tools::skills_hub::search_hub(
+                &query,
+                None,
+                12,
+                config.skills.hub_url.as_deref(),
+            )
+            .await;
             let _ = tx.send(AgentResponse::RemoteSkillSearchReady {
                 request_id,
                 query,
@@ -9480,6 +9515,24 @@ impl App {
             }
             CommandResult::ShowSkills(args) => {
                 self.handle_show_skills(args);
+            }
+            CommandResult::ShowMemory(args) => {
+                self.handle_show_memory(args);
+            }
+            CommandResult::ShowSnapshot(args) => {
+                self.push_output(
+                    edgecrab_core::handle_snapshot_slash(&args, None),
+                    OutputRole::System,
+                );
+            }
+            CommandResult::ShowApprovals(args) => {
+                self.handle_show_approvals(args);
+            }
+            CommandResult::ShowKanban(args) => {
+                self.push_output(
+                    edgecrab_core::handle_kanban_slash(&args, None, None),
+                    OutputRole::System,
+                );
             }
             CommandResult::ShowBundles(args) => {
                 let ctx = Self::skills_scan_context();
@@ -14959,6 +15012,39 @@ impl App {
         }
     }
 
+    fn handle_show_memory(&mut self, args: String) {
+        let home = edgecrab_core::edgecrab_home();
+        let config = edgecrab_core::AppConfig::load().unwrap_or_default();
+        if let Some(reply) = edgecrab_tools::skills::handle_memory_pending_subcommand(
+            &home,
+            args.trim(),
+            &edgecrab_tools::skills::MemorySubcommandContext {
+                write_approval: config.memory.write_approval,
+                set_write_approval: Some(&Self::persist_memory_write_approval),
+            },
+        ) {
+            self.push_output(reply, OutputRole::System);
+        }
+    }
+
+    fn handle_show_approvals(&mut self, args: String) {
+        let config = edgecrab_core::AppConfig::load().unwrap_or_default();
+        let before_mode = config.approvals.mode;
+        let reply = edgecrab_tools::handle_approvals_slash(
+            args.trim(),
+            before_mode,
+            config.approvals.smart_model.as_deref(),
+            Some(&Self::persist_approvals_mode),
+        );
+        if args.trim().contains("mode")
+            && let Ok(fresh) = edgecrab_core::AppConfig::load()
+            && fresh.approvals.mode != before_mode
+        {
+            self.apply_approvals_mode_live(fresh.approvals.mode);
+        }
+        self.push_output(reply, OutputRole::System);
+    }
+
     fn handle_show_skills(&mut self, args: String) {
         let home = edgecrab_core::edgecrab_home();
         let config = edgecrab_core::AppConfig::load().unwrap_or_default();
@@ -15038,12 +15124,16 @@ impl App {
             || trimmed.starts_with("remove ")
             || trimmed.starts_with("uninstall ")
             || trimmed.starts_with("rm "))
-            && let Some(reply) =
-                self.rt_handle
-                    .block_on(edgecrab_tools::tools::skills_hub::handle_skills_hub_slash(
+            && let Some(reply) = {
+                let config = edgecrab_core::AppConfig::load().unwrap_or_default();
+                self.rt_handle.block_on(
+                    edgecrab_tools::tools::skills_hub::handle_skills_hub_slash(
                         trimmed,
                         &skills_dir,
-                    ))
+                        config.skills.hub_url.as_deref(),
+                    ),
+                )
+            }
         {
             if edgecrab_tools::tools::skills_hub::hub_slash_mutates_skills(trimmed) {
                 edgecrab_tools::skills::invalidate_discovery_caches();
@@ -16543,6 +16633,7 @@ impl App {
             watch_notification_tx: None,
             mutation_turn: None,
             lsp_gate: None,
+            kanban_task_id: None,
         }
     }
 
@@ -21532,6 +21623,7 @@ kind = "skill"
             0,
             0,
             2,
+            "waiting for first token",
         );
         let long = format_waiting_first_token_status(
             &theme,
@@ -21541,6 +21633,7 @@ kind = "skill"
             0,
             0,
             12,
+            "waiting for first token",
         );
         assert!(early.contains("first token"));
         assert!(long.contains("waiting for first token"));
@@ -21558,6 +21651,7 @@ kind = "skill"
             0,
             0,
             2,
+            "waiting for first token",
         );
         assert!(status.starts_with("| "));
     }

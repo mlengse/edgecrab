@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EdgeCrab Kanban</title>
+  <style>
+    :root { --bg:#0f1117; --card:#1a1d27; --text:#e6e8ef; --muted:#8b90a0; --accent:#5b9fd4; }
+    * { box-sizing: border-box; }
+    body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 1rem; }
+    header { display: flex; gap: 1rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+    h1 { font-size: 1.25rem; margin: 0; }
+    .meta { color: var(--muted); font-size: 0.85rem; }
+    .board { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 0.75rem; }
+    .col { background: var(--card); border-radius: 8px; padding: 0.5rem; min-height: 120px; }
+    .col h2 { font-size: 0.75rem; text-transform: uppercase; letter-spacing: 0.05em; color: var(--muted); margin: 0 0 0.5rem; }
+    .card { background: #252836; border-radius: 6px; padding: 0.5rem 0.6rem; margin-bottom: 0.4rem; font-size: 0.85rem; cursor: pointer; }
+    .card:hover { outline: 1px solid var(--accent); }
+    .card-id { color: var(--muted); font-size: 0.7rem; }
+    #detail { margin-top: 1rem; background: var(--card); border-radius: 8px; padding: 1rem; white-space: pre-wrap; font-size: 0.85rem; display: none; }
+    .live { color: #6bcf7f; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>EdgeCrab Kanban</h1>
+    <span class="meta" id="board-name">loading…</span>
+    <span class="meta live" id="live">● live</span>
+  </header>
+  <div class="board" id="board"></div>
+  <div id="detail"></div>
+  <script>
+    const COLS = ['triage','todo','doing','blocked','done'];
+    let cursor = 0;
+    let ws;
+
+    function colEl(name, tasks) {
+      const el = document.createElement('div');
+      el.className = 'col';
+      el.innerHTML = '<h2>' + name + ' (' + tasks.length + ')</h2>';
+      tasks.forEach(t => {
+        const c = document.createElement('div');
+        c.className = 'card';
+        c.innerHTML = '<div class="card-id">' + t.id + '</div><div>' + escapeHtml(t.title) + '</div>';
+        c.onclick = () => showTask(t.id);
+        el.appendChild(c);
+      });
+      return el;
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
+    }
+
+    async function refreshBoard() {
+      const r = await fetch('/api/kanban/board');
+      if (!r.ok) { document.getElementById('board-name').textContent = 'kanban disabled or error'; return; }
+      const data = await r.json();
+      document.getElementById('board-name').textContent = 'board: ' + data.board;
+      const root = document.getElementById('board');
+      root.innerHTML = '';
+      COLS.forEach(col => {
+        const tasks = (data.columns && data.columns[col]) || [];
+        root.appendChild(colEl(col, tasks));
+      });
+    }
+
+    async function showTask(id) {
+      const r = await fetch('/api/kanban/tasks/' + encodeURIComponent(id));
+      const box = document.getElementById('detail');
+      if (!r.ok) { box.style.display = 'block'; box.textContent = 'Task not found'; return; }
+      const data = await r.json();
+      const t = data.task;
+      box.style.display = 'block';
+      box.textContent = [
+        t.id, t.title, 'status: ' + t.status,
+        t.body || '', t.result ? 'result: ' + t.result : '',
+        'runs: ' + (data.runs || []).length,
+        'comments: ' + (data.comments || []).length
+      ].filter(Boolean).join('\n');
+    }
+
+    function connectWs() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(proto + '//' + location.host + '/api/kanban/events/ws?since=' + cursor);
+      ws.onmessage = (ev) => {
+        try {
+          const msg = JSON.parse(ev.data);
+          if (msg.cursor) cursor = msg.cursor;
+          if (msg.events && msg.events.length) refreshBoard();
+        } catch (_) {}
+      };
+      ws.onclose = () => { document.getElementById('live').textContent = '○ reconnecting'; setTimeout(connectWs, 2000); };
+      ws.onopen = () => { document.getElementById('live').textContent = '● live'; };
+    }
+
+    refreshBoard();
+    connectWs();
+    setInterval(refreshBoard, 30000);
+  </script>
+</body>
+</html>
