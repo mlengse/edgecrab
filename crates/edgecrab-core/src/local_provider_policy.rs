@@ -977,3 +977,57 @@ mod tests {
         assert!(plan.log_line().contains(&format!("max_arg={expected}B")));
     }
 }
+
+/// Whether to canonicalize API message text + tool-call JSON before send.
+///
+/// Local servers (llama.cpp, Ollama) reuse KV on byte-identical prefixes.
+/// Hermes parity: `conversation_loop.py` pre-API normalization pass.
+pub fn should_normalize_api_messages_for_kv(provider_name: &str) -> bool {
+    is_local_inference_provider(provider_name)
+}
+
+/// Strip string content and canonicalize assistant tool-call argument JSON.
+pub fn normalize_api_messages_for_kv(messages: &mut [edgequake_llm::ChatMessage]) {
+    for msg in messages.iter_mut() {
+        msg.content = msg.content.trim().to_string();
+        if let Some(tool_calls) = msg.tool_calls.as_mut() {
+            for tc in tool_calls.iter_mut() {
+                tc.function.arguments =
+                    edgecrab_tools::tool_call_pipeline::repair_tool_call_arguments_for_api(
+                        &tc.function.arguments,
+                        &tc.function.name,
+                    );
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod kv_normalize_tests {
+    use super::*;
+    use edgequake_llm::ChatMessage;
+
+    #[test]
+    fn normalize_strips_content_and_sorts_tool_args() {
+        let mut messages = vec![ChatMessage::assistant_with_tools(
+            "  hello  ",
+            vec![edgequake_llm::ToolCall {
+                id: "c1".into(),
+                call_type: "function".into(),
+                function: edgequake_llm::FunctionCall {
+                    name: "write_file".into(),
+                    arguments: r#"{"b": 2, "a": 1}"#.into(),
+                },
+                thought_signature: None,
+            }],
+        )];
+        normalize_api_messages_for_kv(&mut messages);
+        assert_eq!(messages[0].content.trim(), "hello");
+        assert_eq!(
+            messages[0].tool_calls.as_ref().unwrap()[0]
+                .function
+                .arguments,
+            r#"{"a":1,"b":2}"#
+        );
+    }
+}

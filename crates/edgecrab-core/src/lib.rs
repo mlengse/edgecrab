@@ -13,6 +13,7 @@ pub mod auxiliary_model;
 pub mod completion_assessor;
 pub mod compression;
 pub mod config;
+pub mod context_budget;
 pub mod context_engine;
 pub mod context_references;
 pub mod conversation;
@@ -43,6 +44,7 @@ pub mod multimodal_tool_content;
 pub mod oauth;
 pub mod pricing;
 pub mod prompt_builder;
+pub mod prompt_cache_policy;
 pub mod session_handoff;
 pub mod shadow_judge;
 pub mod state_snapshot;
@@ -62,6 +64,7 @@ pub use config::{
     GoalsConfig, ProxyConfig, ShelfDetailsConfig, SmartRoutingYaml, ToolProgressMode,
     edgecrab_home, ensure_edgecrab_home, gateway_image_cache_dir, gateway_media_dir,
 };
+pub use context_budget::{ContextBudgetBreakdown, estimate_context_budget};
 pub use context_engine::{
     BuiltinCompressorEngine, ContextEngine, ContextEngineSessionCtx, MAX_ENGINE_TOOLS,
     load_context_engine,

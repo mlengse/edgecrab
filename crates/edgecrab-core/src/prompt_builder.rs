@@ -324,20 +324,9 @@ const GOOGLE_MODEL_OPERATIONAL_GUIDANCE: &str = "\
 ///
 /// Injected when BOTH write_file AND any web/search tool are present.
 const RESEARCH_TASK_GUIDANCE: &str = "\
-## Research-to-File Tasks
-
-When a task asks you to research a topic AND save the result to a file path:
-
-1. **Gather**: Use search, fetch, or browse tools to collect the information.
-2. **Compose**: Build the full document content (tables, sections, analysis).
-3. **Write**: Call write_file with the complete content. This step is MANDATORY — \
-composing the content without calling write_file means the task is NOT done.
-4. **Confirm**: Your final response should only say what was written, where, and how \
-many bytes. Do NOT include the full document content in your response text — the file \
-is the authoritative output.
-
-The file path mentioned in the user's request (e.g. './report.md', 'output.txt') is \
-the required OUTPUT TARGET, not a hint about formatting. Always write to that path.";
+## Research-to-File\n\
+Research → compose → write_file with the full content → brief confirmation. \
+The path in the request is the mandatory output target — composing in chat is not delivery.";
 
 /// FP34 — File-output enforcement guidance.
 ///
@@ -350,19 +339,9 @@ the required OUTPUT TARGET, not a hint about formatting. Always write to that pa
 /// Injected whenever write_file is in the tool list (all models, including Anthropic
 /// as a defensive belt-and-suspenders measure).
 const FILE_OUTPUT_ENFORCEMENT_GUIDANCE: &str = "\
-## File Output — Mandatory Rules
-
-When the user's message specifies a file path as the output destination \
-(e.g. 'write X to foo.md', 'save the report to ./bar.txt', 'create a document at baz.md', \
-'make an audit in ./file.md', 'produce X in output.txt'):
-
-- **CALL write_file with that exact path.** This is not optional.
-- **Producing content in your response text is NOT delivery.** \
-The user expects the file to exist on disk, not text in the chat.
-- **The task is NOT complete until write_file has been called** and you have confirmed \
-the write succeeded by checking the return value.
-- After writing, report: the file path, the byte count, and a one-line summary of \
-what was written. Keep your response brief — the file IS the output.";
+## File Output\n\
+When the user names a file path as the output destination, call write_file with that path. \
+Response text is not delivery — confirm path and byte count after a successful write.";
 
 /// FP38 — Generic execution guidance for unknown/unrecognised model families.
 ///
@@ -522,6 +501,22 @@ When the user references something from a past conversation or you suspect relev
 cross-session context exists, use session_search to recall it before asking them to \
 repeat themselves.";
 
+/// Universal task-completion law — Hermes `TASK_COMPLETION_GUIDANCE` parity.
+/// One tight block replaces scattered "don't stop early" prose across feature blocks.
+const TASK_COMPLETION_GUIDANCE: &str = "\
+# Finishing the job\n\
+When the user asks you to build, run, or verify something, the deliverable is \
+a working artifact backed by real tool output — not a description of one. \
+Do not stop after writing a stub, a plan, or a single command. Keep working \
+until you have actually exercised the code or produced the requested result, \
+then report what real execution returned.\n\
+If a tool, install, or network call fails and blocks the real path, say so \
+directly and try an alternative (different package manager, different \
+approach, ask the user). NEVER substitute plausible-looking fabricated \
+output (made-up data, invented file contents, synthesised API responses) \
+for results you couldn't actually produce. Reporting a blocker honestly \
+is always better than inventing a result.";
+
 const TASK_STATUS_GUIDANCE: &str = "\
 Use report_task_status after meaningful milestones or when blocked.\n\
 \n\
@@ -535,51 +530,15 @@ Rules:\n\
 
 const PROGRESSION_GUIDANCE: &str = "\
 ## Progress communication\n\
-For any non-trivial task, keep the user continuously oriented.\n\
-\n\
-Rules:\n\
-  - Briefly say what you are doing before tool-heavy work, long investigations, or file edits.\n\
-  - Communicate advancement after meaningful milestones, not just at the very end.\n\
-  - Do not stop at a plan, partial implementation, or unverified answer when tools can still continue.\n\
-  - If unfinished steps, active tasks, or verification debt remain, keep working.\n\
-  - Only present a completion-style final answer once the request is actually satisfied or explicitly blocked.";
+Briefly orient the user before tool-heavy work and after meaningful milestones. \
+Keep working until the request is satisfied or explicitly blocked.";
 
 const SCHEDULING_GUIDANCE: &str = "\
 Use manage_cron_jobs for ALL cron job operations — never edit ~/.edgecrab/cron/jobs.json \
-directly via terminal.\n\
-\n\
-Action→intent mapping:\n\
-  create — user wants to schedule a new task: 'every morning', 'remind me daily',\n\
-           'check every 2 hours', 'run this each weekday at 9am'.\n\
-  list   — user wants to see scheduled jobs: 'show my cron jobs', 'what's scheduled',\n\
-           'list automations', 'what jobs are running'.\n\
-  pause  — user wants to stop/suppress a job: 'pause the daily briefing',\n\
-           'suppress all cron jobs', 'disable the weather check', 'stop the reminder'.\n\
-  resume — user wants to re-enable a paused job: 'restart', 'resume', 're-enable'.\n\
-  remove — user wants to delete permanently: 'delete', 'remove', 'cancel the job'.\n\
-  status — user wants a summary count / next-run time: 'cron status', 'when does it run'.\n\
-  update — user wants to change schedule/prompt/delivery of an existing job.\n\
-\n\
-Workflow for 'suppress all cron jobs':\n\
-  1. manage_cron_jobs(action='list')  ← get all job_ids\n\
-  2. manage_cron_jobs(action='pause', job_id='<id>')  ← pause each one\n\
-\n\
-The cron prompt must be fully self-contained — include all specifics (URLs, \
-credentials, servers, what to check) since the job runs in a fresh session with \
-no access to chat history.\n\
-\n\
-Delivery — map the user's words to the deliver= parameter:\n\
-  'send me on Telegram' / 'notify via Telegram'    → deliver='telegram'\n\
-  'send to Discord' / 'post in Discord'            → deliver='discord'\n\
-  'notify me on Slack'                             → deliver='slack'\n\
-  'send via WhatsApp'                              → deliver='whatsapp'\n\
-  'email me the results'                           → deliver='email'\n\
-  'send me on Signal'                              → deliver='signal'\n\
-  'notify me here' / 'reply in this chat'          → deliver='origin'\n\
-  'keep local' / no delivery preference mentioned  → deliver='local'\n\
-  'telegram chat -100123456'                        → deliver='telegram:-100123456'\n\
-Default: deliver='local' on CLI unless the user specifies a platform. \
-For delivery back to the user in this chat, use deliver='origin'.";
+directly via terminal. See the tool schema for action→intent mapping \
+(create/list/pause/resume/remove/status/update). \
+Cron prompts must be self-contained (no chat history). \
+Map delivery targets via deliver=; default deliver='local' on CLI unless the user specifies a platform.";
 
 const MESSAGE_DELIVERY_GUIDANCE: &str = "\
 Use send_message only when the user explicitly wants content delivered to a different \
@@ -1068,6 +1027,14 @@ impl PromptBuilder {
         tools.iter().any(|tool| self.has_tool(tool))
     }
 
+    /// True when the agent has at least one tool in its active surface.
+    fn has_tools_loaded(&self) -> bool {
+        match &self.available_tools {
+            None => true,
+            Some(tools) => !tools.is_empty(),
+        }
+    }
+
     /// Set the active model name for model-specific guidance injection.
     ///
     /// WHY: GPT and Gemini model families have distinct failure modes that require
@@ -1202,6 +1169,11 @@ impl PromptBuilder {
         // appear immediately after the generic enforcement directive.
         if let Some(guidance) = Self::model_specific_guidance(model_str) {
             stable.push(Cow::Borrowed(guidance));
+        }
+
+        // 4b. Task completion — universal when any tools are loaded (Hermes parity).
+        if self.has_tools_loaded() {
+            stable.push(Cow::Borrowed(TASK_COMPLETION_GUIDANCE));
         }
 
         // 5. Memory guidance — only when memory_write tool is available.

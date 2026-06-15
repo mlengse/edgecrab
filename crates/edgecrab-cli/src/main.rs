@@ -1450,11 +1450,13 @@ fn run_openclaw_migrate(
 async fn run_acp(args: &CliArgs) -> anyhow::Result<()> {
     use edgecrab_acp::server::AcpServer;
 
-    let runtime = load_runtime(
+    let mut runtime = load_runtime(
         args.config.as_deref(),
         args.model.as_deref(),
         args.toolset.as_deref(),
     )?;
+    runtime.config.tools.enabled_toolsets =
+        Some(vec!["core".to_string(), "lsp".to_string()]);
     let model_str = runtime.config.model.default_model.clone();
     let provider = create_provider_async(&model_str).await?;
     let state_db = open_state_db(&runtime.state_db_path)?;

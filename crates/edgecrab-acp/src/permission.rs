@@ -103,9 +103,9 @@ mod tests {
         assert!(is_acp_tool("browser_select"));
         assert!(is_acp_tool("browser_hover"));
         assert!(is_acp_tool("browser_vision"));
-        // LSP tools are included in ACP (editor context)
-        assert!(is_acp_tool("lsp_goto_definition"));
-        assert!(is_acp_tool("lsp_find_references"));
+        // LSP loads via enabled_toolsets in ACP runtime, not static ACP_TOOLS.
+        assert!(!is_acp_tool("lsp_goto_definition"));
+        assert!(!is_acp_tool("lsp_find_references"));
     }
 
     #[test]

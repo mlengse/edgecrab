@@ -1850,6 +1850,7 @@ impl Agent {
                 &effective_provider,
                 config.model_config.prompt_caching,
                 &config.cache.prompt_prefix,
+                config.model_config.base_url.as_deref(),
             );
             // When cached_stable_prompt is set (built via build_blocks()) AND
             // Anthropic prompt caching is active, use the two-block path so the
@@ -2975,7 +2976,7 @@ fn build_api_chat_messages(
         app_cfg,
         &session.tool_result_image_downgrades,
     );
-    match (session.cached_stable_prompt.as_deref(), cache_cfg) {
+    let mut out = match (session.cached_stable_prompt.as_deref(), cache_cfg) {
         (Some(stable), Some(cfg)) => {
             let combined = session.cached_system_prompt.as_deref().unwrap_or("");
             let dynamic = split_dynamic_from_stable(combined, stable);
@@ -2987,7 +2988,11 @@ fn build_api_chat_messages(
             cache_cfg,
             attach,
         ),
+    };
+    if crate::local_provider_policy::should_normalize_api_messages_for_kv(provider.name()) {
+        crate::local_provider_policy::normalize_api_messages_for_kv(&mut out);
     }
+    out
 }
 
 /// Shared helper: append `messages` as edgequake-llm `ChatMessage`s into `out`.
@@ -3159,18 +3164,19 @@ pub fn build_chat_messages(
     out
 }
 
-fn provider_supports_prompt_caching(provider_name: &str) -> bool {
-    matches!(provider_name, "anthropic")
-}
-
 fn prompt_cache_config_for(
     provider: &Arc<dyn LLMProvider>,
     prompt_caching_enabled: bool,
     prefix_cfg: &crate::config::PromptPrefixCacheConfig,
+    base_url: Option<&str>,
 ) -> Option<CachePromptConfig> {
     if !(prompt_caching_enabled
         && prefix_cfg.enabled
-        && provider_supports_prompt_caching(provider.name()))
+        && crate::prompt_cache_policy::provider_supports_prompt_caching(
+            provider.name(),
+            provider.model(),
+            base_url,
+        ))
     {
         return None;
     }
@@ -7855,10 +7861,14 @@ def register(ctx):
         let provider: Arc<dyn LLMProvider> = Arc::new(edgequake_llm::MockProvider::new());
         let prefix = crate::config::PromptPrefixCacheConfig::default();
         assert!(
-            prompt_cache_config_for(&provider, true, &prefix).is_none(),
+            prompt_cache_config_for(&provider, true, &prefix, None).is_none(),
             "non-Anthropic providers should not receive Anthropic cache markers"
         );
-        assert!(provider_supports_prompt_caching("anthropic"));
+        assert!(crate::prompt_cache_policy::provider_supports_prompt_caching(
+            "anthropic",
+            "claude-sonnet-4",
+            None,
+        ));
     }
 
     #[test]

@@ -35,6 +35,7 @@ use edgecrab_types::{
 use edgequake_llm::LLMProvider;
 
 use crate::config::AppConfig;
+use crate::model_catalog::ModelCatalog;
 
 // ─── Agent ────────────────────────────────────────────────────────────
 
@@ -1314,6 +1315,100 @@ impl Agent {
             budget_remaining: self.budget.remaining(),
             budget_max: self.budget.max(),
         }
+    }
+
+    /// Estimated turn-1 / current-request context mass for `/context budget`.
+    pub async fn context_budget_breakdown(&self) -> crate::context_budget::ContextBudgetBreakdown {
+        let session = self.session.read().await;
+        let config = self.config.read().await;
+        let (provider_name, model_id) = config
+            .model
+            .split_once('/')
+            .map(|(p, m)| (p.to_string(), m.to_string()))
+            .unwrap_or_else(|| (config.model.clone(), String::new()));
+        let context_window = ModelCatalog::context_window(&provider_name, &model_id)
+            .map(|w| w as usize)
+            .unwrap_or(128_000);
+
+        let tool_policy = resolve_tool_policy(&config);
+        let gateway_running = self.gateway_sender.read().await.is_some();
+        let app_config_ref = config.to_app_config_ref(gateway_running, &tool_policy);
+
+        let enabled_filter = if config.enabled_toolsets.is_empty()
+            || edgecrab_tools::toolsets::contains_all_sentinel(&config.enabled_toolsets)
+            || tool_policy.expanded_enabled.is_empty()
+        {
+            None
+        } else {
+            Some(tool_policy.expanded_enabled.as_slice())
+        };
+        let disabled_filter = if tool_policy.expanded_disabled.is_empty() {
+            None
+        } else {
+            Some(tool_policy.expanded_disabled.as_slice())
+        };
+
+        let tool_defs = if let Some(registry) = self.tool_registry.read().await.as_ref() {
+            let ctx = edgecrab_tools::registry::ToolContext {
+                task_id: "context-budget".into(),
+                cwd: std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from(".")),
+                session_id: session
+                    .session_id
+                    .clone()
+                    .unwrap_or_else(|| "context-budget".into()),
+                user_task: None,
+                cancel: CancellationToken::new(),
+                config: app_config_ref,
+                state_db: self.state_db.clone(),
+                platform: config.platform,
+                process_table: Some(self.process_table.clone()),
+                provider: Some(self.provider.read().await.clone()),
+                tool_registry: Some(registry.clone()),
+                delegate_depth: 0,
+                delegate_agent_id: None,
+                delegate_parent_id: None,
+                sub_agent_runner: None,
+                delegation_event_tx: None,
+                clarify_tx: None,
+                approval_tx: None,
+                on_skills_changed: None,
+                gateway_sender: self.gateway_sender.read().await.clone(),
+                origin_chat: config.origin_chat.clone(),
+                session_key: None,
+                todo_store: Some(self.todo_store.clone()),
+                current_tool_call_id: None,
+                current_tool_name: None,
+                injected_messages: None,
+                tool_progress_tx: None,
+                watch_notification_tx: None,
+                mutation_turn: None,
+                lsp_gate: None,
+                kanban_task_id: config.kanban_task_id.clone(),
+            };
+            let schemas = registry.get_definitions(enabled_filter, disabled_filter, &ctx);
+            edgecrab_tools::to_llm_definitions(&schemas)
+        } else {
+            Vec::new()
+        };
+
+        let dynamic_prompt = match (
+            session.cached_stable_prompt.as_deref(),
+            session.cached_system_prompt.as_deref(),
+        ) {
+            (Some(stable), Some(combined)) if combined.starts_with(stable) => {
+                Some(combined[stable.len()..].trim_start_matches('\n').to_string())
+            }
+            _ => None,
+        };
+
+        crate::context_budget::estimate_context_budget(
+            session.cached_stable_prompt.as_deref(),
+            dynamic_prompt.as_deref(),
+            session.cached_system_prompt.as_deref(),
+            &session.messages,
+            &tool_defs,
+            context_window,
+        )
     }
 
     /// Best-effort synchronous snapshot accessor for non-async inspection paths.

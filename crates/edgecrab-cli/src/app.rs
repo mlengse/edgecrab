@@ -9412,6 +9412,9 @@ impl App {
             CommandResult::ShowCost => {
                 self.handle_show_cost();
             }
+            CommandResult::ShowContextBudget => {
+                self.handle_show_context_budget();
+            }
             CommandResult::ShowUsage => {
                 self.handle_show_usage();
             }
@@ -12185,6 +12188,20 @@ impl App {
         if let Some(usd) = cost_result.amount_usd {
             self.session_cost = usd;
         }
+    }
+
+    fn handle_show_context_budget(&mut self) {
+        let Some(agent) = self.require_agent() else {
+            return;
+        };
+        let breakdown = self
+            .rt_handle
+            .block_on(async { agent.context_budget_breakdown().await });
+        self.open_report_overlay(
+            "Context Budget",
+            format!("Model {}", self.model_name),
+            breakdown.format_report(),
+        );
     }
 
     fn handle_show_usage(&mut self) {
