@@ -3,7 +3,6 @@
 use edgecrab_security::url_validation::{UrlValidationError, validate_outbound_url};
 use edgecrab_types::ToolError;
 
-use super::backends::ddgs::{ImpersonateProfile, build_wreq_client, pick_random_profile};
 use super::error::SearchError;
 
 /// Validate outbound URL (SSRF + website blocklist) for any tool.
@@ -55,24 +54,18 @@ pub fn urlencoding_encode(s: &str) -> String {
 }
 
 /// Build Chrome-emulating client for non-DDGS callers (extract/crawl legacy path).
-pub fn build_chrome_client(timeout_secs: u64) -> Result<wreq::Client, SearchError> {
+pub fn build_chrome_client(timeout_secs: u64) -> Result<reqwest::Client, SearchError> {
     build_chrome_client_with_headers(timeout_secs, None, None, None)
 }
 
 /// Legacy Chrome client — shares TLS/UA pool with DDGS [`fingerprint`] module.
 pub fn build_chrome_client_with_headers(
     timeout_secs: u64,
-    referer: Option<&str>,
-    user_agent: Option<&str>,
-    proxy_url: Option<String>,
-) -> Result<wreq::Client, SearchError> {
-    let profile = if user_agent.is_some() {
-        ImpersonateProfile::Chrome131Mac
-    } else {
-        pick_random_profile()
-    };
-    build_wreq_client(timeout_secs, profile, referer, user_agent, proxy_url)
-        .map_err(|e| SearchError::hard("web_search", format!("Failed to build Chrome client: {e}")))
+    _referer: Option<&str>,
+    _user_agent: Option<&str>,
+    _proxy_url: Option<String>,
+) -> Result<reqwest::Client, SearchError> {
+    build_api_client(timeout_secs)
 }
 
 /// Map reqwest errors to SearchError without leaking secrets from URLs.
@@ -95,9 +88,4 @@ pub fn redact_secrets(text: &str, secrets: &[&str]) -> String {
         }
     }
     out
-}
-
-/// Legacy helper for extract/crawl module.
-pub fn validate_url_legacy(url: &str, tool: &str) -> Result<(), ToolError> {
-    validate_url_for_tool(url, tool)
 }

@@ -1,133 +1,124 @@
-//! Structured errors for web search backends and fallback chains.
+//! Web search specific errors.
+
+use std::borrow::Cow;
 
 use edgecrab_types::ToolError;
-use std::fmt;
 
-/// Failure modes that drive fallback policy.
+/// Core error type returned by search backends.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum SearchErrorKind {
-    RateLimit,
-    Timeout,
-    Server(u16),
-    Network,
-    BadRequest(u16),
-    /// Missing API key / endpoint — skip to next backend in chain.
-    NotConfigured,
-    Hard,
-}
-
-/// Error from a single backend or from an exhausted chain.
-#[derive(Debug, Clone)]
 pub struct SearchError {
+    /// The search backend that generated the error.
+    pub backend: Cow<'static, str>,
+    /// The category of error.
     pub kind: SearchErrorKind,
-    pub backend: String,
+    /// A human-readable description of the error.
     pub message: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchErrorKind {
+    /// The backend is properly configured, but the remote server returned an HTTP error
+    /// (e.g. 500 Internal Server Error, 502 Bad Gateway).
+    /// Indicates the service is currently unavailable or broken.
+    ServerError(u16),
+
+    /// The remote server rejected the request due to rate limiting or quote exhaustion
+    /// (e.g. 429 Too Many Requests, or a parsed 403 Forbidden on Bing/DDG).
+    RateLimit,
+
+    /// The client could not connect, TLS failed, or the connection timed out.
+    NetworkError,
+
+    /// The client timed out waiting for a response.
+    Timeout,
+
+    /// The request failed due to missing or invalid credentials (e.g. 401 Unauthorized, 403 Forbidden).
+    AuthError,
+
+    /// The user provided invalid input (e.g. 400 Bad Request), or the backend was misconfigured.
+    HardError,
+}
+
 impl SearchError {
-    pub fn rate_limit(backend: impl Into<String>, message: impl Into<String>) -> Self {
+    pub fn server(backend: impl Into<Cow<'static, str>>, status: u16, message: impl Into<String>) -> Self {
         Self {
+            backend: backend.into(),
+            kind: SearchErrorKind::ServerError(status),
+            message: message.into(),
+        }
+    }
+
+    pub fn rate_limit(backend: impl Into<Cow<'static, str>>, message: impl Into<String>) -> Self {
+        Self {
+            backend: backend.into(),
             kind: SearchErrorKind::RateLimit,
-            backend: backend.into(),
             message: message.into(),
         }
     }
 
-    pub fn timeout(backend: impl Into<String>, message: impl Into<String>) -> Self {
+    pub fn network(backend: impl Into<Cow<'static, str>>, message: impl Into<String>) -> Self {
         Self {
+            backend: backend.into(),
+            kind: SearchErrorKind::NetworkError,
+            message: message.into(),
+        }
+    }
+
+    pub fn timeout(backend: impl Into<Cow<'static, str>>, message: impl Into<String>) -> Self {
+        Self {
+            backend: backend.into(),
             kind: SearchErrorKind::Timeout,
-            backend: backend.into(),
             message: message.into(),
         }
     }
 
-    pub fn server(backend: impl Into<String>, code: u16, message: impl Into<String>) -> Self {
+    pub fn auth(backend: impl Into<Cow<'static, str>>, message: impl Into<String>) -> Self {
         Self {
-            kind: SearchErrorKind::Server(code),
             backend: backend.into(),
+            kind: SearchErrorKind::AuthError,
             message: message.into(),
         }
     }
 
-    pub fn network(backend: impl Into<String>, message: impl Into<String>) -> Self {
+    pub fn hard(backend: impl Into<Cow<'static, str>>, message: impl Into<String>) -> Self {
         Self {
-            kind: SearchErrorKind::Network,
             backend: backend.into(),
+            kind: SearchErrorKind::HardError,
             message: message.into(),
         }
     }
 
-    pub fn bad_request(backend: impl Into<String>, code: u16, message: impl Into<String>) -> Self {
-        Self {
-            kind: SearchErrorKind::BadRequest(code),
-            backend: backend.into(),
-            message: message.into(),
+    /// Whether this error should skip the current backend and try the next one in the chain.
+    pub fn should_fallback(&self) -> bool {
+        match self.kind {
+            SearchErrorKind::ServerError(_)
+            | SearchErrorKind::RateLimit
+            | SearchErrorKind::NetworkError
+            | SearchErrorKind::Timeout => true,
+            SearchErrorKind::AuthError | SearchErrorKind::HardError => false,
         }
     }
+}
 
-    pub fn hard(backend: impl Into<String>, message: impl Into<String>) -> Self {
-        Self {
-            kind: SearchErrorKind::Hard,
-            backend: backend.into(),
-            message: message.into(),
-        }
+impl std::fmt::Display for SearchError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{} error: {}", self.backend, self.message)
     }
+}
 
-    /// Whether the chain should try the next backend.
-    pub fn is_fallback_eligible(&self) -> bool {
-        matches!(
-            self.kind,
-            SearchErrorKind::RateLimit
-                | SearchErrorKind::Timeout
-                | SearchErrorKind::Server(_)
-                | SearchErrorKind::Network
-                | SearchErrorKind::NotConfigured
-        )
-    }
+impl std::error::Error for SearchError {}
 
-    /// Missing credentials for a named backend (uses shared setup message text).
-    pub fn not_configured(backend: impl Into<String>) -> Self {
-        let backend = backend.into();
-        let message = super::backend_settings::not_configured_message(&backend);
-        Self {
-            kind: SearchErrorKind::NotConfigured,
-            backend: backend.clone(),
-            message,
-        }
-    }
-
-    pub fn from_http_status(
-        backend: impl Into<String>,
-        code: u16,
-        message: impl Into<String>,
-    ) -> Self {
-        let backend = backend.into();
-        let message = message.into();
-        match code {
-            429 => Self::rate_limit(backend, message),
-            408 => Self::timeout(backend, message),
-            500..=599 => Self::server(backend, code, message),
-            400..=499 => Self::bad_request(backend, code, message),
-            _ => Self::hard(backend, message),
-        }
-    }
-
-    pub fn into_tool_error(self) -> ToolError {
+impl From<SearchError> for ToolError {
+    fn from(err: SearchError) -> Self {
         ToolError::ExecutionFailed {
             tool: "web_search".into(),
-            message: self.message,
+            message: err.to_string(),
         }
     }
 }
 
-impl fmt::Display for SearchError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "[{}] {}", self.backend, self.message)
-    }
-}
-
-/// Summary when every backend in the chain failed.
-#[derive(Debug, Clone)]
+/// A summary of failures across all backends attempted in a fallback chain.
+#[derive(Debug, Clone, Default)]
 pub struct ChainFailureSummary {
     pub attempts: Vec<(String, String)>,
 }
@@ -139,13 +130,6 @@ impl ChainFailureSummary {
         }
         if self.attempts.len() == 1 {
             let (backend, detail) = &self.attempts[0];
-            if backend == "ddgs" {
-                return format!(
-                    "Web search via ddgs failed: {detail} \
-                     Set DDGS_PROXY or configure SEARXNG_URL, BRAVE_API_KEY, or TAVILY_API_KEY \
-                     in ~/.edgecrab/.env (or run /web setup)."
-                );
-            }
             return format!("Web search via {backend} failed: {detail}");
         }
         let tried = self
@@ -153,7 +137,7 @@ impl ChainFailureSummary {
             .iter()
             .map(|(name, _)| name.as_str())
             .collect::<Vec<_>>()
-            .join(" → ");
+            .join(" -> ");
         let last = self
             .attempts
             .last()

@@ -7,7 +7,7 @@ rust-version.workspace = true
 license.workspace = true
 
 [features]
-default = ["bedrock-model-discovery"]
+default = []
 bedrock-model-discovery = ["dep:aws-config", "dep:aws-sdk-bedrock"]
 
 [dependencies]

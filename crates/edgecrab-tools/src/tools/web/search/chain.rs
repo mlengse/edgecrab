@@ -52,8 +52,8 @@ impl BackendChain {
             backends.push((name.clone(), backend));
         }
         if backends.is_empty() {
-            if let Some(backend) = get_web_search_backend("ddgs") {
-                backends.push(("ddgs".into(), backend));
+            if let Some(backend) = get_web_search_backend("brave") {
+                backends.push(("brave".into(), backend));
             } else {
                 return Err(SearchError::hard(
                     "web_search",
@@ -112,13 +112,6 @@ impl BackendChain {
             }
 
             match backend.search(query, &opts).await {
-                Ok(results) if results.is_empty() && name == "ddgs" && self.backends.len() > 1 => {
-                    attempts.push((name.clone(), "no results".into()));
-                    tracing::debug!(
-                        backend = %name,
-                        "web_search: ddgs returned empty, trying next in chain"
-                    );
-                }
                 Ok(results) => {
                     ToolProgressTail::emit_progress_fn(
                         &on_progress,
@@ -139,7 +132,7 @@ impl BackendChain {
                             "web_search: backend unavailable, trying next in chain"
                         );
                     }
-                    // Only cooldown paid APIs with explicit RPS buckets — not ddgs scrape failures.
+                    // Only cooldown paid APIs with explicit RPS buckets 
                     if matches!(err.kind, super::error::SearchErrorKind::RateLimit)
                         && self.rate_limiter.has_rps_bucket(name)
                     {
@@ -166,11 +159,11 @@ mod tests {
         let summary = ChainFailureSummary {
             attempts: vec![
                 ("searxng".into(), "SEARXNG_URL is not set".into()),
-                ("ddgs".into(), "timeout".into()),
+                ("brave".into(), "timeout".into()),
             ],
         };
         let msg = summary.user_message();
-        assert!(msg.contains("searxng → ddgs"));
+        assert!(msg.contains("searxng → brave"));
         assert!(!msg.contains("All web search backends failed"));
     }
 }

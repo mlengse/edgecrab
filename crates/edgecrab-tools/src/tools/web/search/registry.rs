@@ -40,8 +40,6 @@ impl BackendRegistry {
         register!(super::backends::SearxngBackend);
         #[cfg(feature = "brave")]
         register!(super::backends::BraveBackend);
-        #[cfg(feature = "ddgs")]
-        register!(super::backends::DdgsBackend);
         #[cfg(feature = "firecrawl")]
         register!(super::backends::FirecrawlBackend);
         #[cfg(feature = "tavily")]

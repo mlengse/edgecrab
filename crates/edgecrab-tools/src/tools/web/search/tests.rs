@@ -21,12 +21,12 @@ fn sample_result() -> SearchResult {
 }
 
 #[test]
-fn registry_lists_builtin_ddgs() {
+fn registry_lists_builtin_brave() {
     let _lock = test_registry_lock();
     reset_registry_for_tests();
-    let backend = get_web_search_backend("ddgs");
+    let backend = get_web_search_backend("brave");
     assert!(backend.is_some());
-    assert_eq!(backend.expect("ddgs").name(), "ddgs");
+    assert_eq!(backend.expect("brave").name(), "brave");
 }
 
 #[test]
@@ -92,7 +92,7 @@ async fn chain_fallback_policy_end_to_end() {
     reset_registry_for_tests();
     register_web_search_backend(Arc::new(MockBackend::new("fail-a", MockMode::Network)));
     register_web_search_backend(Arc::new(MockBackend::new("fail-b", MockMode::Server(503))));
-    register_web_search_backend(Arc::new(MockBackend::new("ddgs", MockMode::Network)));
+    register_web_search_backend(Arc::new(MockBackend::new("brave", MockMode::Network)));
     let cfg = WebSearchConfigRef {
         primary: "fail-a".into(),
         fallbacks: vec!["fail-b".into()],
@@ -125,11 +125,11 @@ fn resolved_chain_honors_primary_and_fallbacks() {
     unsafe { std::env::set_var("BRAVE_API_KEY", "test-brave-key") };
     let cfg = WebSearchConfigRef {
         primary: "searxng".into(),
-        fallbacks: vec!["brave".into(), "ddgs".into()],
+        fallbacks: vec!["brave".into(), "brave".into()],
         ..Default::default()
     };
     let resolved = ResolvedChain::resolve(&cfg, None).expect("resolve");
-    assert_eq!(resolved.names, vec!["searxng", "brave", "ddgs"]);
+    assert_eq!(resolved.names, vec!["searxng", "brave", "brave"]);
     unsafe { std::env::remove_var("SEARXNG_URL") };
     unsafe { std::env::remove_var("BRAVE_API_KEY") };
     if let Some(v) = prev_searx {
@@ -152,11 +152,11 @@ fn unconfigured_paid_backends_skipped_in_multi_chain() {
     unsafe { std::env::remove_var("FIRECRAWL_API_KEY") };
     let cfg = WebSearchConfigRef {
         primary: "parallel".into(),
-        fallbacks: vec!["brave".into(), "ddgs".into()],
+        fallbacks: vec!["brave".into(), "brave".into()],
         ..Default::default()
     };
     let resolved = ResolvedChain::resolve(&cfg, None).expect("resolve");
-    assert_eq!(resolved.names, vec!["ddgs"]);
+    assert_eq!(resolved.names, vec!["brave"]);
     if let Some(v) = prev {
         unsafe { std::env::set_var("PARALLEL_API_KEY", v) };
     }
@@ -166,7 +166,7 @@ fn unconfigured_paid_backends_skipped_in_multi_chain() {
 }
 
 #[test]
-fn explicit_unconfigured_single_backend_falls_back_to_ddgs() {
+fn explicit_unconfigured_single_backend_falls_back_to_brave() {
     let _env = EnvBackendGuard::isolate();
     let prev = std::env::var("PARALLEL_API_KEY").ok();
     let prev_fc = std::env::var("FIRECRAWL_API_KEY").ok();
@@ -178,7 +178,7 @@ fn explicit_unconfigured_single_backend_falls_back_to_ddgs() {
         ..Default::default()
     };
     let resolved = ResolvedChain::resolve(&cfg, None).expect("resolve");
-    assert_eq!(resolved.names, vec!["ddgs"]);
+    assert_eq!(resolved.names, vec!["brave"]);
     if let Some(v) = prev {
         unsafe { std::env::set_var("PARALLEL_API_KEY", v) };
     }
@@ -188,7 +188,7 @@ fn explicit_unconfigured_single_backend_falls_back_to_ddgs() {
 }
 
 #[test]
-fn default_config_without_keys_uses_ddgs_only() {
+fn default_config_without_keys_uses_brave_only() {
     let _env = EnvBackendGuard::isolate();
     let prev_searx = std::env::var("SEARXNG_URL").ok();
     let prev_brave = std::env::var("BRAVE_API_KEY").ok();
@@ -199,7 +199,7 @@ fn default_config_without_keys_uses_ddgs_only() {
     unsafe { std::env::remove_var("FIRECRAWL_API_KEY") };
     let cfg = WebSearchConfigRef::default();
     let resolved = ResolvedChain::resolve(&cfg, None).expect("resolve");
-    assert_eq!(resolved.names, vec!["ddgs"]);
+    assert_eq!(resolved.names, vec!["brave"]);
     if let Some(v) = prev_searx {
         unsafe { std::env::set_var("SEARXNG_URL", v) };
     }
@@ -212,7 +212,7 @@ fn default_config_without_keys_uses_ddgs_only() {
 }
 
 #[test]
-fn backend_alias_duckduckgo_maps_to_ddgs() {
+fn backend_alias_duckduckgo_maps_to_brave() {
     let _lock = test_registry_lock();
     reset_registry_for_tests();
     assert!(get_web_search_backend("duckduckgo").is_some());
@@ -254,12 +254,12 @@ async fn empty_results_from_mock_is_success() {
 }
 
 #[tokio::test]
-async fn ddgs_empty_falls_through_to_next_backend() {
+async fn ddgs_empty_falls_through_to_next_backend_renamed() {
     let _lock = test_registry_lock();
     let _env = EnvBackendGuard::isolate();
     reset_registry_for_tests();
     register_web_search_backend(Arc::new(MockBackend::new(
-        "ddgs",
+        "brave",
         MockMode::Success(vec![]),
     )));
     register_web_search_backend(Arc::new(MockBackend::new(
@@ -267,7 +267,7 @@ async fn ddgs_empty_falls_through_to_next_backend() {
         MockMode::Success(vec![sample_result()]),
     )));
     let cfg = WebSearchConfigRef {
-        primary: "ddgs".into(),
+        primary: "brave".into(),
         fallbacks: vec!["ok-mock".into()],
         ..Default::default()
     };
@@ -276,7 +276,7 @@ async fn ddgs_empty_falls_through_to_next_backend() {
     let (results, used) = chain
         .search("Raphaël MANSUY", SearchOptions::default())
         .await
-        .expect("ok-mock after empty ddgs");
+        .expect("ok-mock after empty brave");
     assert_eq!(used, "ok-mock");
     assert_eq!(results.len(), 1);
 }
@@ -315,7 +315,7 @@ fn backend_alias_brave_free_maps_to_brave() {
 }
 
 #[test]
-fn explicit_ddgs_expands_to_configured_chain() {
+fn explicit_brave_expands_to_configured_chain() {
     let _env = EnvBackendGuard::isolate();
     let prev_searx = std::env::var("SEARXNG_URL").ok();
     let prev_brave = std::env::var("BRAVE_API_KEY").ok();
@@ -323,11 +323,11 @@ fn explicit_ddgs_expands_to_configured_chain() {
     unsafe { std::env::set_var("BRAVE_API_KEY", "test-brave-key") };
     let cfg = WebSearchConfigRef {
         primary: "searxng".into(),
-        fallbacks: vec!["brave".into(), "ddgs".into()],
+        fallbacks: vec!["brave".into(), "brave".into()],
         ..Default::default()
     };
-    let resolved = ResolvedChain::resolve(&cfg, Some("ddgs")).expect("resolve");
-    assert_eq!(resolved.names.first().map(String::as_str), Some("ddgs"));
+    let resolved = ResolvedChain::resolve(&cfg, Some("brave")).expect("resolve");
+    assert_eq!(resolved.names.first().map(String::as_str), Some("brave"));
     assert!(resolved.names.iter().any(|n| n == "searxng"));
     assert!(resolved.names.iter().any(|n| n == "brave"));
     unsafe { std::env::remove_var("SEARXNG_URL") };
@@ -341,7 +341,7 @@ fn explicit_ddgs_expands_to_configured_chain() {
 }
 
 #[test]
-fn web_backend_ddgs_does_not_force_single_backend() {
+fn web_backend_brave_does_not_force_single_backend() {
     let _env = EnvBackendGuard::isolate();
     let _lock = web_config_test_lock();
     let prev_searx = std::env::var("SEARXNG_URL").ok();
@@ -349,21 +349,21 @@ fn web_backend_ddgs_does_not_force_single_backend() {
     let _home = EdgecrabHomeGuard::isolated(Some(
         r#"
 web:
-  backend: ddgs
+  backend: brave
 web_search:
   primary: searxng
-  fallbacks: [brave, ddgs]
+  fallbacks: [brave, brave]
 "#,
     ));
     let cfg = WebSearchConfigRef {
         primary: "searxng".into(),
-        fallbacks: vec!["brave".into(), "ddgs".into()],
+        fallbacks: vec!["brave".into(), "brave".into()],
         ..Default::default()
     };
     let resolved = ResolvedChain::resolve(&cfg, None).expect("resolve");
     assert!(
         resolved.names.first().map(String::as_str) == Some("searxng"),
-        "web.backend=ddgs must not skip configured chain: {:?}",
+        "web.backend=brave must not skip configured chain: {:?}",
         resolved.names
     );
     unsafe { std::env::remove_var("SEARXNG_URL") };
@@ -437,7 +437,7 @@ fn unknown_backend_in_chain_returns_error() {
 }
 
 #[tokio::test]
-async fn explicit_unconfigured_backend_falls_back_to_ddgs() {
+async fn explicit_unconfigured_backend_falls_back_to_brave() {
     let _lock = test_registry_lock();
     let _env = EnvBackendGuard::isolate();
     reset_registry_for_tests();
@@ -455,8 +455,8 @@ async fn explicit_unconfigured_backend_falls_back_to_ddgs() {
         resolved.names
     );
     assert!(
-        resolved.names.iter().any(|n| n == "ddgs"),
-        "expected ddgs fallback in chain: {:?}",
+        resolved.names.iter().any(|n| n == "brave"),
+        "expected brave fallback in chain: {:?}",
         resolved.names
     );
     unsafe { std::env::remove_var("SEARXNG_URL") };
@@ -533,7 +533,7 @@ fn each_builtin_has_setup_schema() {
     );
     for (name, schema) in &schemas {
         assert!(!schema.name.is_empty(), "{name} schema.name");
-        // free providers may have empty env_vars (ddgs); paid ones must document keys
+        // free providers may have empty env_vars (brave); paid ones must document keys
         if matches!(
             name.as_str(),
             "firecrawl" | "tavily" | "exa" | "parallel" | "brave" | "xai"
@@ -548,7 +548,7 @@ fn each_builtin_has_setup_schema() {
     for required in [
         "searxng",
         "brave",
-        "ddgs",
+        "brave",
         "firecrawl",
         "tavily",
         "exa",

@@ -12,7 +12,7 @@ name = "edgecrab"
 path = "src/main.rs"
 
 [features]
-default = ["bedrock-model-discovery"]
+default = []
 bedrock-model-discovery = ["edgecrab-core/bedrock-model-discovery"]
 termux = []
 
@@ -56,7 +56,6 @@ url = { workspace = true }
 base64 = { workspace = true }
 sha2 = { workspace = true }
 rand = { workspace = true }
-arboard = "3"
 unicode-width = { workspace = true }
 similar = { workspace = true }
 which = { workspace = true }
@@ -64,6 +63,9 @@ libc = { workspace = true }
 flate2 = { workspace = true }
 tar = { workspace = true }
 tempfile = { workspace = true }
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
+arboard = "3"
 
 [dev-dependencies]
 tokio = { workspace = true }

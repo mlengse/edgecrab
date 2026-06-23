@@ -70,7 +70,7 @@ regex = "1"
 url = "2"
 
 # LLM backend — crates.io pin (v0.6.25: LM Studio metadata + tool-turn reasoning_effort).
-edgequake-llm = { version = "0.6.25", features = ["bedrock"] }
+edgequake-llm = "0.6.25"
 
 # Image processing (vision tool: resize/compress before base64 encoding)
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
@@ -88,11 +88,6 @@ unicode-width = "0.2"
 
 # HTTP
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "multipart", "socks"] }
-# Browser-emulating HTTP client (BoringSSL TLS + HTTP/2 fingerprint spoofing).
-# Used by DuckDuckGo search backend to bypass JA3/JA4 bot-detection.
-# Apache-2.0 only — Chrome TLS config set manually inline (no wreq-util GPL-3.0 dep).
-# NOTE: incompatible with openssl-sys; safe here because reqwest uses rustls-tls.
-wreq = { version = "5", default-features = false, features = ["json", "gzip", "brotli", "deflate", "socks", "cookies"] }
 axum = { version = "0.7", features = ["ws"] }
 tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
 

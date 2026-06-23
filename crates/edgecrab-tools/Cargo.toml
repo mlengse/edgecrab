@@ -8,10 +8,9 @@ license.workspace = true
 build = "build.rs"
 
 [features]
-default = ["searxng", "brave", "ddgs", "firecrawl", "tavily", "exa", "parallel", "xai"]
+default = ["searxng", "brave", "firecrawl", "tavily", "exa", "parallel", "xai"]
 searxng = []
 brave = []
-ddgs = []
 firecrawl = []
 tavily = []
 exa = []
@@ -38,7 +37,6 @@ shellexpand = { workspace = true }
 dashmap = { workspace = true }
 regex = { workspace = true }
 reqwest = { workspace = true }
-wreq = { workspace = true }
 tokio-tungstenite = { workspace = true }
 futures = { workspace = true }
 strip-ansi-escapes = { workspace = true }

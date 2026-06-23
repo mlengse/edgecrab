@@ -74,29 +74,6 @@ pub fn setup_schema_for_backend(name: &str) -> SetupSchema {
             )],
             post_setup: None,
         },
-        "ddgs" => SetupSchema {
-            name: "DuckDuckGo (ddgs)".into(),
-            badge: "free · no key · search only".into(),
-            tag: "Native Rust metasearch (Bing). Env: DDGS_REGION, DDGS_PROXY, DDGS_IMPERSONATE, DDGS_IMPERSONATE_OS.".into(),
-            env_vars: vec![
-                SetupEnvVar::new(
-                    "DDGS_REGION",
-                    "Locale/region — e.g. us-en, fr-fr, de-de",
-                    None,
-                ),
-                SetupEnvVar::new(
-                    "DDGS_PROXY",
-                    "Proxy for metasearch (optional; HTTPS_PROXY also works)",
-                    None,
-                ),
-                SetupEnvVar::new(
-                    "DDGS_BACKEND",
-                    "Engine: auto (default), bing, html, or lite",
-                    None,
-                ),
-            ],
-            post_setup: None,
-        },
         "firecrawl" => SetupSchema {
             name: "Firecrawl".into(),
             badge: "paid · search + extract + crawl".into(),
@@ -163,7 +140,6 @@ mod tests {
     const BUILTIN: &[&str] = &[
         "searxng",
         "brave",
-        "ddgs",
         "firecrawl",
         "tavily",
         "exa",
@@ -180,22 +156,12 @@ mod tests {
                 schema.name.len() >= 2,
                 "{name} should have human-readable name"
             );
-            // Hermes contract: env_vars key always present (may be empty for ddgs).
+            // Hermes contract: env_vars key always present .
             let _ = &schema.env_vars;
         }
     }
 
     #[test]
-    fn ddgs_documents_optional_env_and_brave_has_key() {
-        let ddgs = setup_schema_for_backend("ddgs");
-        assert!(ddgs.env_vars.len() >= 2);
-        assert!(ddgs.env_vars.iter().any(|e| e.key == "DDGS_REGION"));
-        assert!(ddgs.post_setup.is_none());
-        assert_eq!(
-            setup_schema_for_backend("brave").env_vars[0].key,
-            "BRAVE_SEARCH_API_KEY"
-        );
-    }
 
     #[test]
     fn schema_serializes_to_json_object() {

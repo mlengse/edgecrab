@@ -40,7 +40,6 @@ pub fn search_only_error_message(name: &str, tool: &str) -> String {
     let name = normalize_backend_name(name);
     let label = match name.as_str() {
         "brave" => "Brave Search",
-        "ddgs" => "DuckDuckGo",
         "searxng" => "SearXNG",
         "xai" => "xAI",
         other => other,
@@ -70,7 +69,7 @@ mod tests {
     fn free_search_providers_are_search_only() {
         let _lock = test_registry_lock();
         reset_registry_for_tests();
-        for name in ["searxng", "brave", "ddgs", "xai"] {
+        for name in ["searxng", "brave", "xai"] {
             assert!(supports_search(name), "{name} search");
             assert!(!supports_extract(name), "{name} extract");
             assert!(is_search_only(name));
@@ -92,7 +91,7 @@ mod tests {
         for name in ["firecrawl", "tavily"] {
             assert!(supports_crawl(name), "{name} crawl");
         }
-        for name in ["searxng", "brave", "ddgs", "xai", "exa", "parallel"] {
+        for name in ["searxng", "brave", "xai", "exa", "parallel"] {
             assert!(!supports_crawl(name), "{name} crawl");
         }
     }
@@ -101,7 +100,6 @@ mod tests {
     fn registry_ddgs_display_name_is_human_readable() {
         let _lock = super::super::registry::test_registry_lock();
         super::super::registry::reset_registry_for_tests();
-        let backend = super::super::registry::get_web_search_backend("ddgs").expect("ddgs");
         assert_eq!(backend.display_name(), "DuckDuckGo (ddgs)");
     }
 }

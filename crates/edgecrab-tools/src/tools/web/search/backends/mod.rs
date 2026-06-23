@@ -4,8 +4,6 @@ pub mod mock;
 
 #[cfg(feature = "brave")]
 pub mod brave;
-#[cfg(feature = "ddgs")]
-pub mod ddgs;
 #[cfg(feature = "exa")]
 pub mod exa;
 #[cfg(feature = "firecrawl")]
@@ -21,8 +19,6 @@ pub mod xai;
 
 #[cfg(feature = "brave")]
 pub use brave::BraveBackend;
-#[cfg(feature = "ddgs")]
-pub use ddgs::DdgsBackend;
 #[cfg(feature = "exa")]
 pub use exa::ExaBackend;
 #[cfg(feature = "firecrawl")]

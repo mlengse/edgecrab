@@ -1662,7 +1662,7 @@ impl ToolHandler for WebCrawlTool {
 
                     let content_type = response
                         .headers()
-                        .get(wreq::header::CONTENT_TYPE)
+                        .get(reqwest::header::CONTENT_TYPE)
                         .and_then(|value| value.to_str().ok())
                         .unwrap_or("")
                         .to_string();
@@ -1783,8 +1783,8 @@ fn validate_url(url: &str, tool: &str) -> Result<(), ToolError> {
 ///
 /// Delegates to the shared DDGS [`crate::tools::web::search::http::build_chrome_client`] /
 /// [`crate::tools::web::search::backends::ddgs::fingerprint`] pool (Apache-2.0, no GPL wreq-util).
-fn build_chrome_client(tool: &str) -> Result<wreq::Client, ToolError> {
-    crate::tools::web::search::http::build_chrome_client(15).map_err(|e| {
+fn build_chrome_client(tool: &str) -> Result<reqwest::Client, ToolError> {
+    crate::tools::web::search::http::build_api_client(15).map_err(|e| {
         ToolError::ExecutionFailed {
             tool: tool.into(),
             message: e.message,
