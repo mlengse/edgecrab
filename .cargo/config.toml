@@ -1,15 +1,2 @@
-# EdgeCrab build acceleration (local, committed).
-# See `make help` → Build section for dev vs release targets.
-
-[build]
-# Incremental defaults: dev = on (fast rebuilds), release = off (set in Cargo.toml
-# [profile.release] incremental = false — required because LTO + incremental are
-# incompatible and the combination silently degrades link time).
-incremental = true
-
-# Uncomment after `brew install sccache` (optional, ~2-5× on clean rebuilds):
-# [build]
-# rustc-wrapper = "sccache"
-
-[term]
-progress.when = "auto"
+[target.x86_64-pc-windows-gnu]
+linker = "x86_64-w64-mingw32-gcc"

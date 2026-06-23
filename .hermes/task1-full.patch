@@ -1,0 +1,4444 @@
+diff --git a/Cargo.lock b/Cargo.lock
+index f749e9a..88c562e 100644
+--- a/Cargo.lock
++++ b/Cargo.lock
+@@ -60,21 +60,6 @@ dependencies = [
+  "equator",
+ ]
+ 
+-[[package]]
+-name = "alloc-no-stdlib"
+-version = "2.0.4"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "cc7bb162ec39d46ab1ca8c77bf72e890535becd1751bb45f64c597edb4c8c6b3"
+-
+-[[package]]
+-name = "alloc-stdlib"
+-version = "0.2.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "94fb8275041c72129eb51b7d0322c29b8387a0386127718b096429201a5d6ece"
+-dependencies = [
+- "alloc-no-stdlib",
+-]
+-
+ [[package]]
+ name = "allocator-api2"
+ version = "0.2.21"
+@@ -140,12 +125,6 @@ dependencies = [
+  "windows-sys 0.61.2",
+ ]
+ 
+-[[package]]
+-name = "antidote"
+-version = "1.0.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "34fde25430d87a9388dadbe6e34d7f72a462c8b43ac8d309b42b0a8505d7e2a5"
+-
+ [[package]]
+ name = "anyhow"
+ version = "1.0.102"
+@@ -181,15 +160,6 @@ dependencies = [
+  "x11rb",
+ ]
+ 
+-[[package]]
+-name = "arc-swap"
+-version = "1.9.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "6a3a1fd6f75306b68087b831f025c712524bcb19aad54e557b1129cfa0a2b207"
+-dependencies = [
+- "rustversion",
+-]
+-
+ [[package]]
+ name = "arg_enum_proc_macro"
+ version = "0.3.4"
+@@ -216,18 +186,6 @@ dependencies = [
+  "stable_deref_trait",
+ ]
+ 
+-[[package]]
+-name = "async-compression"
+-version = "0.4.41"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d0f9ee0f6e02ffd7ad5816e9464499fba7b3effd01123b515c41d1697c43dad1"
+-dependencies = [
+- "compression-codecs",
+- "compression-core",
+- "pin-project-lite",
+- "tokio",
+-]
+-
+ [[package]]
+ name = "async-lsp"
+ version = "0.2.3"
+@@ -921,24 +879,6 @@ dependencies = [
+  "vsimd",
+ ]
+ 
+-[[package]]
+-name = "bindgen"
+-version = "0.72.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "993776b509cfb49c750f11b8f07a46fa23e0a1386ffc01fb1e7d343efc387895"
+-dependencies = [
+- "bitflags 2.11.1",
+- "cexpr",
+- "clang-sys",
+- "itertools 0.13.0",
+- "proc-macro2",
+- "quote",
+- "regex",
+- "rustc-hash 2.1.2",
+- "shlex",
+- "syn 2.0.117",
+-]
+-
+ [[package]]
+ name = "bit-set"
+ version = "0.5.3"
+@@ -1073,56 +1013,6 @@ dependencies = [
+  "serde_with",
+ ]
+ 
+-[[package]]
+-name = "boring-sys2"
+-version = "4.15.15"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "ab6c876a958d17057d9d3a31075bb9609237413a1fe665432782c31ef596eb6b"
+-dependencies = [
+- "autocfg",
+- "bindgen",
+- "cmake",
+- "fs_extra",
+- "fslock",
+-]
+-
+-[[package]]
+-name = "boring2"
+-version = "4.15.15"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e4470e96bd94533c2f88c08be95a8e6d2d37a3b497a773b0a46273a376978f00"
+-dependencies = [
+- "bitflags 2.11.1",
+- "boring-sys2",
+- "brotli",
+- "flate2",
+- "foreign-types",
+- "libc",
+- "openssl-macros",
+- "zstd",
+-]
+-
+-[[package]]
+-name = "brotli"
+-version = "8.0.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "4bd8b9603c7aa97359dbd97ecf258968c95f3adddd6db2f7e7a5bef101c84560"
+-dependencies = [
+- "alloc-no-stdlib",
+- "alloc-stdlib",
+- "brotli-decompressor",
+-]
+-
+-[[package]]
+-name = "brotli-decompressor"
+-version = "5.0.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "874bb8112abecc98cbd6d81ea4fa7e94fb9449648c93cc89aa40c81c24d7de03"
+-dependencies = [
+- "alloc-no-stdlib",
+- "alloc-stdlib",
+-]
+-
+ [[package]]
+ name = "bstr"
+ version = "1.12.1"
+@@ -1216,15 +1106,6 @@ dependencies = [
+  "shlex",
+ ]
+ 
+-[[package]]
+-name = "cexpr"
+-version = "0.6.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "6fac387a98bb7c37292057cffc56d62ecb629900026402633ae9160df93a8766"
+-dependencies = [
+- "nom 7.1.3",
+-]
+-
+ [[package]]
+ name = "cfg-if"
+ version = "1.0.4"
+@@ -1254,7 +1135,7 @@ dependencies = [
+  "num-traits",
+  "serde",
+  "wasm-bindgen",
+- "windows-link 0.2.1",
++ "windows-link",
+ ]
+ 
+ [[package]]
+@@ -1277,17 +1158,6 @@ dependencies = [
+  "inout",
+ ]
+ 
+-[[package]]
+-name = "clang-sys"
+-version = "1.8.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "0b023947811758c97c59bf9d1c188fd619ad4718dcaa767947df1cadb14f39f4"
+-dependencies = [
+- "glob",
+- "libc",
+- "libloading 0.8.9",
+-]
+-
+ [[package]]
+ name = "clap"
+ version = "4.6.1"
+@@ -1378,24 +1248,6 @@ dependencies = [
+  "static_assertions",
+ ]
+ 
+-[[package]]
+-name = "compression-codecs"
+-version = "0.4.37"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "eb7b51a7d9c967fc26773061ba86150f19c50c0d65c887cb1fbe295fd16619b7"
+-dependencies = [
+- "brotli",
+- "compression-core",
+- "flate2",
+- "memchr",
+-]
+-
+-[[package]]
+-name = "compression-core"
+-version = "0.4.31"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "75984efb6ed102a0d42db99afb6c1948f0380d1d91808d5529916e6c08b49d8d"
+-
+ [[package]]
+ name = "console"
+ version = "0.16.3"
+@@ -1452,35 +1304,6 @@ dependencies = [
+  "unicode-segmentation",
+ ]
+ 
+-[[package]]
+-name = "cookie"
+-version = "0.18.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "4ddef33a339a91ea89fb53151bd0a4689cfce27055c291dfa69945475d22c747"
+-dependencies = [
+- "percent-encoding",
+- "time",
+- "version_check",
+-]
+-
+-[[package]]
+-name = "cookie_store"
+-version = "0.21.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "2eac901828f88a5241ee0600950ab981148a18f2f756900ffba1b125ca6a3ef9"
+-dependencies = [
+- "cookie",
+- "document-features",
+- "idna",
+- "log",
+- "publicsuffix",
+- "serde",
+- "serde_derive",
+- "serde_json",
+- "time",
+- "url",
+-]
+-
+ [[package]]
+ name = "core-foundation"
+ version = "0.10.1"
+@@ -2427,7 +2250,6 @@ dependencies = [
+  "url",
+  "uuid",
+  "which",
+- "wreq",
+  "zip",
+ ]
+ 
+@@ -2772,33 +2594,6 @@ version = "0.2.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
+ 
+-[[package]]
+-name = "foreign-types"
+-version = "0.5.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d737d9aa519fb7b749cbc3b962edcf310a8dd1f4b67c91c4f83975dbdd17d965"
+-dependencies = [
+- "foreign-types-macros",
+- "foreign-types-shared",
+-]
+-
+-[[package]]
+-name = "foreign-types-macros"
+-version = "0.2.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1a5c6c585bc94aaf2c7b51dd4c2ba22680844aba4c687be581871a6f518c5742"
+-dependencies = [
+- "proc-macro2",
+- "quote",
+- "syn 2.0.117",
+-]
+-
+-[[package]]
+-name = "foreign-types-shared"
+-version = "0.3.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "aa9a19cbb55df58761df49b23516a86d432839add4af60fc256da840f66ed35b"
+-
+ [[package]]
+ name = "form_urlencoded"
+ version = "1.2.2"
+@@ -2823,16 +2618,6 @@ version = "1.3.0"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "42703706b716c37f96a77aea830392ad231f44c9e9a67872fa5548707e11b11c"
+ 
+-[[package]]
+-name = "fslock"
+-version = "0.2.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "04412b8935272e3a9bae6f48c7bfff74c2911f60525404edfdd28e49884c3bfb"
+-dependencies = [
+- "libc",
+- "winapi",
+-]
+-
+ [[package]]
+ name = "futures"
+ version = "0.3.32"
+@@ -2944,7 +2729,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "1bd49230192a3797a9a4d6abe9b3eed6f7fa4c8a8a4947977c6f80025f92cbd8"
+ dependencies = [
+  "rustix",
+- "windows-link 0.2.1",
++ "windows-link",
+ ]
+ 
+ [[package]]
+@@ -3149,7 +2934,7 @@ checksum = "617aaa3557aef3810a6369d0a99fac8a080891b68bd9f9812a1eeda0c0730cbd"
+ dependencies = [
+  "cfg-if",
+  "libc",
+- "windows-link 0.2.1",
++ "windows-link",
+ ]
+ 
+ [[package]]
+@@ -3207,24 +2992,6 @@ dependencies = [
+  "pin-project-lite",
+ ]
+ 
+-[[package]]
+-name = "http2"
+-version = "0.4.21"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "a6e23815f8ec982e1452e1d0fda921ec20a9187fb610ad003c90cc5abd65b2c4"
+-dependencies = [
+- "atomic-waker",
+- "bytes",
+- "fnv",
+- "futures-core",
+- "futures-sink",
+- "http 1.4.0",
+- "indexmap 2.14.0",
+- "slab",
+- "tokio",
+- "tokio-util",
+-]
+-
+ [[package]]
+ name = "httparse"
+ version = "1.10.1"
+@@ -3362,26 +3129,6 @@ dependencies = [
+  "tracing",
+ ]
+ 
+-[[package]]
+-name = "hyper2"
+-version = "1.5.5"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d1a1bb25e0cbdbe7b21f8ef6c3c4785f147d79e7ded438b5ee2b70e380183294"
+-dependencies = [
+- "bytes",
+- "futures-channel",
+- "futures-util",
+- "http 1.4.0",
+- "http-body 1.0.1",
+- "http2",
+- "httparse",
+- "itoa",
+- "pin-project-lite",
+- "smallvec",
+- "tokio",
+- "want",
+-]
+-
+ [[package]]
+ name = "hyperlocal"
+ version = "0.9.1"
+@@ -3694,15 +3441,6 @@ version = "1.70.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "a6cb138bb79a146c1bd460005623e142ef0181e3d0219cb493e02f7d08a35695"
+ 
+-[[package]]
+-name = "itertools"
+-version = "0.13.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "413ee7dfc52ee1a4949ceeb7dbc8a33f2d6c088194d9f922fb8318faf1f01186"
+-dependencies = [
+- "either",
+-]
+-
+ [[package]]
+ name = "itertools"
+ version = "0.14.0"
+@@ -3857,16 +3595,6 @@ dependencies = [
+  "cc",
+ ]
+ 
+-[[package]]
+-name = "libloading"
+-version = "0.8.9"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "d7c4b02199fee7c5d21a5ae7d8cfa79a6ef5bb2fc834d6e9058e89c825efdc55"
+-dependencies = [
+- "cfg-if",
+- "windows-link 0.2.1",
+-]
+-
+ [[package]]
+ name = "libloading"
+ version = "0.9.0"
+@@ -3874,7 +3602,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "754ca22de805bb5744484a5b151a9e1a8e837d5dc232c2d7d8c2e3492edc8b60"
+ dependencies = [
+  "cfg-if",
+- "windows-link 0.2.1",
++ "windows-link",
+ ]
+ 
+ [[package]]
+@@ -3909,21 +3637,6 @@ dependencies = [
+  "bitflags 2.11.1",
+ ]
+ 
+-[[package]]
+-name = "linked-hash-map"
+-version = "0.5.6"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "0717cef1bc8b636c6e1c1bbdefc09e6322da8a9321966e8928ef80d20f7f770f"
+-
+-[[package]]
+-name = "linked_hash_set"
+-version = "0.1.6"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "984fb35d06508d1e69fc91050cceba9c0b748f983e6739fa2c7a9237154c52c8"
+-dependencies = [
+- "linked-hash-map",
+-]
+-
+ [[package]]
+ name = "linux-raw-sys"
+ version = "0.12.1"
+@@ -3966,12 +3679,6 @@ dependencies = [
+  "imgref",
+ ]
+ 
+-[[package]]
+-name = "lru"
+-version = "0.13.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "227748d55f2f0ab4735d87fd623798cb6b664512fe979705f829c9f81c934465"
+-
+ [[package]]
+ name = "lru"
+ version = "0.16.4"
+@@ -4222,7 +3929,7 @@ version = "3.2.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "8eb602b84d7c1edae45e50bbf1374696548f36ae179dfa667f577e384bb90c2b"
+ dependencies = [
+- "libloading 0.9.0",
++ "libloading",
+ ]
+ 
+ [[package]]
+@@ -4517,7 +4224,7 @@ dependencies = [
+  "ssh_format",
+  "tokio",
+  "tokio-io-utility",
+- "typed-builder 0.23.2",
++ "typed-builder",
+ ]
+ 
+ [[package]]
+@@ -4530,17 +4237,6 @@ dependencies = [
+  "thiserror 2.0.18",
+ ]
+ 
+-[[package]]
+-name = "openssl-macros"
+-version = "0.1.1"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "a948666b637a0f465e8564c73e89d4dde00d72d4d473cc972f390fc3dcee7d9c"
+-dependencies = [
+- "proc-macro2",
+- "quote",
+- "syn 2.0.117",
+-]
+-
+ [[package]]
+ name = "openssl-probe"
+ version = "0.2.1"
+@@ -4621,7 +4317,7 @@ dependencies = [
+  "libc",
+  "redox_syscall 0.5.18",
+  "smallvec",
+- "windows-link 0.2.1",
++ "windows-link",
+ ]
+ 
+ [[package]]
+@@ -4967,22 +4663,6 @@ dependencies = [
+  "unarray",
+ ]
+ 
+-[[package]]
+-name = "psl-types"
+-version = "2.0.11"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "33cb294fe86a74cbcf50d4445b37da762029549ebeea341421c7c70370f86cac"
+-
+-[[package]]
+-name = "publicsuffix"
+-version = "2.3.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "6f42ea446cab60335f76979ec15e12619a2165b5ae2c12166bef27d283a9fadf"
+-dependencies = [
+- "idna",
+- "psl-types",
+-]
+-
+ [[package]]
+ name = "pxfm"
+ version = "0.1.29"
+@@ -5255,9 +4935,9 @@ dependencies = [
+  "compact_str",
+  "hashbrown 0.16.1",
+  "indoc",
+- "itertools 0.14.0",
++ "itertools",
+  "kasuari",
+- "lru 0.16.4",
++ "lru",
+  "strum",
+  "thiserror 2.0.18",
+  "unicode-segmentation",
+@@ -5307,7 +4987,7 @@ dependencies = [
+  "hashbrown 0.16.1",
+  "indoc",
+  "instability",
+- "itertools 0.14.0",
++ "itertools",
+  "line-clipping",
+  "ratatui-core",
+  "strum",
+@@ -5332,7 +5012,7 @@ dependencies = [
+  "built",
+  "cfg-if",
+  "interpolate_name",
+- "itertools 0.14.0",
++ "itertools",
+  "libc",
+  "libfuzzer-sys",
+  "log",
+@@ -6608,17 +6288,6 @@ dependencies = [
+  "windows-sys 0.61.2",
+ ]
+ 
+-[[package]]
+-name = "tokio-boring2"
+-version = "4.15.15"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "3866209c48e3d69e709a9d6105d7e2aa34e4374bc5dcaec32e0f8e53a28db14a"
+-dependencies = [
+- "boring-sys2",
+- "boring2",
+- "tokio",
+-]
+-
+ [[package]]
+ name = "tokio-io-utility"
+ version = "0.7.6"
+@@ -6659,18 +6328,6 @@ dependencies = [
+  "tokio",
+ ]
+ 
+-[[package]]
+-name = "tokio-socks"
+-version = "0.5.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "0d4770b8024672c1101b3f6733eab95b18007dbe0847a8afe341fcf79e06043f"
+-dependencies = [
+- "either",
+- "futures-util",
+- "thiserror 1.0.69",
+- "tokio",
+-]
+-
+ [[package]]
+ name = "tokio-stream"
+ version = "0.1.18"
+@@ -6938,33 +6595,13 @@ dependencies = [
+  "utf-8",
+ ]
+ 
+-[[package]]
+-name = "typed-builder"
+-version = "0.21.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "fef81aec2ca29576f9f6ae8755108640d0a86dd3161b2e8bca6cfa554e98f77d"
+-dependencies = [
+- "typed-builder-macro 0.21.2",
+-]
+-
+ [[package]]
+ name = "typed-builder"
+ version = "0.23.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "31aa81521b70f94402501d848ccc0ecaa8f93c8eb6999eb9747e72287757ffda"
+ dependencies = [
+- "typed-builder-macro 0.23.2",
+-]
+-
+-[[package]]
+-name = "typed-builder-macro"
+-version = "0.21.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "1ecb9ecf7799210407c14a8cfdfe0173365780968dc57973ed082211958e0b18"
+-dependencies = [
+- "proc-macro2",
+- "quote",
+- "syn 2.0.117",
++ "typed-builder-macro",
+ ]
+ 
+ [[package]]
+@@ -7041,7 +6678,7 @@ version = "2.0.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "16b380a1238663e5f8a691f9039c73e1cdae598a30e9855f541d29b08b53e9a5"
+ dependencies = [
+- "itertools 0.14.0",
++ "itertools",
+  "unicode-segmentation",
+  "unicode-width",
+ ]
+@@ -7490,9 +7127,9 @@ checksum = "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb"
+ dependencies = [
+  "windows-implement",
+  "windows-interface",
+- "windows-link 0.2.1",
+- "windows-result 0.4.1",
+- "windows-strings 0.5.1",
++ "windows-link",
++ "windows-result",
++ "windows-strings",
+ ]
+ 
+ [[package]]
+@@ -7517,54 +7154,19 @@ dependencies = [
+  "syn 2.0.117",
+ ]
+ 
+-[[package]]
+-name = "windows-link"
+-version = "0.1.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "5e6ad25900d524eaabdbbb96d20b4311e1e7ae1699af4fb28c17ae66c80d798a"
+-
+ [[package]]
+ name = "windows-link"
+ version = "0.2.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "f0805222e57f7521d6a62e36fa9163bc891acd422f971defe97d64e70d0a4fe5"
+ 
+-[[package]]
+-name = "windows-registry"
+-version = "0.5.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "5b8a9ed28765efc97bbc954883f4e6796c33a06546ebafacbabee9696967499e"
+-dependencies = [
+- "windows-link 0.1.3",
+- "windows-result 0.3.4",
+- "windows-strings 0.4.2",
+-]
+-
+-[[package]]
+-name = "windows-result"
+-version = "0.3.4"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "56f42bd332cc6c8eac5af113fc0c1fd6a8fd2aa08a0119358686e5160d0586c6"
+-dependencies = [
+- "windows-link 0.1.3",
+-]
+-
+ [[package]]
+ name = "windows-result"
+ version = "0.4.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "7781fa89eaf60850ac3d2da7af8e5242a5ea78d1a11c49bf2910bb5a73853eb5"
+ dependencies = [
+- "windows-link 0.2.1",
+-]
+-
+-[[package]]
+-name = "windows-strings"
+-version = "0.4.2"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "56e6c93f3a0c3b36176cb1327a4958a0353d5d166c2a35cb268ace15e91d3b57"
+-dependencies = [
+- "windows-link 0.1.3",
++ "windows-link",
+ ]
+ 
+ [[package]]
+@@ -7573,7 +7175,7 @@ version = "0.5.1"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "7837d08f69c77cf6b07689544538e017c1bfcf57e34b4c0ff58e6c2cd3b37091"
+ dependencies = [
+- "windows-link 0.2.1",
++ "windows-link",
+ ]
+ 
+ [[package]]
+@@ -7609,7 +7211,7 @@ version = "0.61.2"
+ source = "registry+https://github.com/rust-lang/crates.io-index"
+ checksum = "ae137229bcbd6cdf0f7b80a31df61766145077ddf49416a728b02cb3921ff3fc"
+ dependencies = [
+- "windows-link 0.2.1",
++ "windows-link",
+ ]
+ 
+ [[package]]
+@@ -7851,48 +7453,6 @@ dependencies = [
+  "wasmparser",
+ ]
+ 
+-[[package]]
+-name = "wreq"
+-version = "5.3.0"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "137ed11c4c418fb3dc41db7323ebc49aa9b6fe6a24ce152e6b2de9d6fadd9c8f"
+-dependencies = [
+- "antidote",
+- "arc-swap",
+- "async-compression",
+- "base64 0.22.1",
+- "boring2",
+- "bytes",
+- "cookie",
+- "cookie_store",
+- "futures-util",
+- "http 1.4.0",
+- "http-body 1.0.1",
+- "http-body-util",
+- "hyper2",
+- "ipnet",
+- "linked_hash_set",
+- "log",
+- "lru 0.13.0",
+- "mime",
+- "percent-encoding",
+- "pin-project-lite",
+- "serde",
+- "serde_json",
+- "serde_urlencoded",
+- "socket2 0.5.10",
+- "sync_wrapper",
+- "tokio",
+- "tokio-boring2",
+- "tokio-socks",
+- "tokio-util",
+- "tower",
+- "tower-service",
+- "typed-builder 0.21.2",
+- "url",
+- "windows-registry",
+-]
+-
+ [[package]]
+ name = "writeable"
+ version = "0.6.3"
+@@ -8076,34 +7636,6 @@ dependencies = [
+  "simd-adler32",
+ ]
+ 
+-[[package]]
+-name = "zstd"
+-version = "0.13.3"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "e91ee311a569c327171651566e07972200e76fcfe2242a4fa446149a3881c08a"
+-dependencies = [
+- "zstd-safe",
+-]
+-
+-[[package]]
+-name = "zstd-safe"
+-version = "7.2.4"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "8f49c4d5f0abb602a93fb8736af2a4f4dd9512e36f7f570d66e65ff867ed3b9d"
+-dependencies = [
+- "zstd-sys",
+-]
+-
+-[[package]]
+-name = "zstd-sys"
+-version = "2.0.16+zstd.1.5.7"
+-source = "registry+https://github.com/rust-lang/crates.io-index"
+-checksum = "91e19ebc2adc8f83e43039e79776e3fda8ca919132d68a1fed6a5faca2683748"
+-dependencies = [
+- "cc",
+- "pkg-config",
+-]
+-
+ [[package]]
+ name = "zune-core"
+ version = "0.5.1"
+diff --git a/Cargo.toml b/Cargo.toml
+index 9458159..b41512b 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -88,11 +88,6 @@ unicode-width = "0.2"
+ 
+ # HTTP
+ reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream", "multipart", "socks"] }
+-# Browser-emulating HTTP client (BoringSSL TLS + HTTP/2 fingerprint spoofing).
+-# Used by DuckDuckGo search backend to bypass JA3/JA4 bot-detection.
+-# Apache-2.0 only — Chrome TLS config set manually inline (no wreq-util GPL-3.0 dep).
+-# NOTE: incompatible with openssl-sys; safe here because reqwest uses rustls-tls.
+-wreq = { version = "5", default-features = false, features = ["json", "gzip", "brotli", "deflate", "socks", "cookies"] }
+ axum = { version = "0.7", features = ["ws"] }
+ tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+ 
+diff --git a/crates/edgecrab-tools/Cargo.toml b/crates/edgecrab-tools/Cargo.toml
+index f62106f..e0d2ca1 100644
+--- a/crates/edgecrab-tools/Cargo.toml
++++ b/crates/edgecrab-tools/Cargo.toml
+@@ -8,10 +8,9 @@ license.workspace = true
+ build = "build.rs"
+ 
+ [features]
+-default = ["searxng", "brave", "ddgs", "firecrawl", "tavily", "exa", "parallel", "xai"]
++default = ["searxng", "brave", "firecrawl", "tavily", "exa", "parallel", "xai"]
+ searxng = []
+ brave = []
+-ddgs = []
+ firecrawl = []
+ tavily = []
+ exa = []
+@@ -38,7 +37,6 @@ shellexpand = { workspace = true }
+ dashmap = { workspace = true }
+ regex = { workspace = true }
+ reqwest = { workspace = true }
+-wreq = { workspace = true }
+ tokio-tungstenite = { workspace = true }
+ futures = { workspace = true }
+ strip-ansi-escapes = { workspace = true }
+diff --git a/crates/edgecrab-tools/src/tools/web/extract_crawl.rs b/crates/edgecrab-tools/src/tools/web/extract_crawl.rs
+index b17a81c..f0f6435 100644
+--- a/crates/edgecrab-tools/src/tools/web/extract_crawl.rs
++++ b/crates/edgecrab-tools/src/tools/web/extract_crawl.rs
+@@ -1662,7 +1662,7 @@ impl ToolHandler for WebCrawlTool {
+ 
+                     let content_type = response
+                         .headers()
+-                        .get(wreq::header::CONTENT_TYPE)
++                        .get(reqwest::header::CONTENT_TYPE)
+                         .and_then(|value| value.to_str().ok())
+                         .unwrap_or("")
+                         .to_string();
+@@ -1783,8 +1783,8 @@ fn validate_url(url: &str, tool: &str) -> Result<(), ToolError> {
+ ///
+ /// Delegates to the shared DDGS [`crate::tools::web::search::http::build_chrome_client`] /
+ /// [`crate::tools::web::search::backends::ddgs::fingerprint`] pool (Apache-2.0, no GPL wreq-util).
+-fn build_chrome_client(tool: &str) -> Result<wreq::Client, ToolError> {
+-    crate::tools::web::search::http::build_chrome_client(15).map_err(|e| {
++fn build_chrome_client(tool: &str) -> Result<reqwest::Client, ToolError> {
++    crate::tools::web::search::http::build_api_client(15).map_err(|e| {
+         ToolError::ExecutionFailed {
+             tool: tool.into(),
+             message: e.message,
+diff --git a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/detect.rs b/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/detect.rs
+deleted file mode 100644
+index a40405a..0000000
+--- a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/detect.rs
++++ /dev/null
+@@ -1,63 +0,0 @@
+-//! Bot-challenge HTML detection — **diagnostics only** (not used in metasearch hot path).
+-//!
+-//! Python `ddgs` gates on HTTP status (`200` → parse, `403/429/…` → raise). It does not
+-//! inspect HTML for CAPTCHA strings. Metasearch follows that contract; these helpers remain
+-//! for tests, `/doctor`, and future observability.
+-
+-/// True when the response looks like a DDG CAPTCHA interstitial (diagnostic).
+-pub fn is_bot_challenge(html: &str) -> bool {
+-    let lower = html.to_ascii_lowercase();
+-    lower.contains("anomaly-modal")
+-        || lower.contains("bots use duckduckgo")
+-        || lower.contains("sorry, you have been blocked")
+-        || lower.contains("if this error persists") && lower.contains("duckduckgo.com")
+-}
+-
+-/// True when HTML looks blocked **and** contains no parseable SERP markers (diagnostic).
+-pub fn is_engine_blocked(html: &str) -> bool {
+-    if html.contains("b_algo") || html.contains("result__a") {
+-        return false;
+-    }
+-    if is_bot_challenge(html) {
+-        return true;
+-    }
+-    let lower = html.to_ascii_lowercase();
+-    lower.contains("captchachallenge")
+-        || lower.contains("turnstile")
+-        || (lower.contains("captcha") && lower.contains("bing.com"))
+-        || (lower.contains("challenge") && lower.contains("verify you are human"))
+-}
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+-
+-    #[test]
+-    fn detects_anomaly_modal() {
+-        assert!(is_bot_challenge(
+-            r#"<div class="anomaly-modal__title">...</div>"#
+-        ));
+-    }
+-
+-    #[test]
+-    fn real_results_page_is_not_challenge() {
+-        let html = r#"<a class="result__a" href="https://example.com">Example</a>"#;
+-        assert!(!is_bot_challenge(html));
+-    }
+-
+-    #[test]
+-    fn detects_bing_captcha_page_without_serp() {
+-        assert!(is_engine_blocked(
+-            r#"<html><body>captcha challenge from bing.com</body></html>"#
+-        ));
+-    }
+-
+-    #[test]
+-    fn bing_serp_with_turnstile_js_is_not_blocked() {
+-        let html = r#"
+-            <script>turnstile challenge widget</script>
+-            <li class="b_algo"><h2><a href="https://example.com">Example</a></h2><p>snippet</p></li>
+-        "#;
+-        assert!(!is_engine_blocked(html));
+-    }
+-}
+diff --git a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/engines.rs b/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/engines.rs
+deleted file mode 100644
+index 95fddfe..0000000
+--- a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/engines.rs
++++ /dev/null
+@@ -1,275 +0,0 @@
+-//! Metasearch engines — Bing, DDG HTML, DDG lite (Open/Closed: add engines here).
+-
+-use std::collections::HashMap;
+-
+-use super::parse;
+-use super::settings::{DdgsEngine, DdgsSettings};
+-use super::transport::DdgsSession;
+-use crate::tools::web::search::backend::SearchResult;
+-use crate::tools::web::search::error::SearchError;
+-
+-const DDG_HTML_URL: &str = "https://html.duckduckgo.com/html";
+-const DDG_LITE_URL: &str = "https://lite.duckduckgo.com/lite/";
+-const BING_SEARCH_URL: &str = "https://www.bing.com/search";
+-const MAX_PAGES: usize = 5;
+-
+-struct FormEngineQuery<'a> {
+-    engine: DdgsEngine,
+-    url: &'a str,
+-    referer: &'a str,
+-    query: &'a str,
+-    settings: &'a DdgsSettings,
+-    max: usize,
+-    backend: &'a str,
+-}
+-
+-/// Run one metasearch engine to completion (pagination included).
+-pub async fn run_engine(
+-    session: &mut DdgsSession,
+-    engine: DdgsEngine,
+-    query: &str,
+-    settings: &DdgsSettings,
+-    max: usize,
+-    backend: &str,
+-) -> Result<Vec<SearchResult>, SearchError> {
+-    match engine {
+-        DdgsEngine::Bing => search_bing(session, query, settings, max, backend).await,
+-        DdgsEngine::Html => search_ddg_html(session, query, settings, max, backend).await,
+-        DdgsEngine::Lite => search_ddg_lite(session, query, settings, max, backend).await,
+-    }
+-}
+-
+-fn bing_region_cookie(settings: &DdgsSettings) -> Option<String> {
+-    settings
+-        .region()
+-        .map(|region| format!("_EDGE_CD=u={region}&m={region}; _EDGE_S=ui={region}&mkt={region}"))
+-}
+-
+-async fn search_bing(
+-    session: &mut DdgsSession,
+-    query: &str,
+-    settings: &DdgsSettings,
+-    max: usize,
+-    backend: &str,
+-) -> Result<Vec<SearchResult>, SearchError> {
+-    let cookie = bing_region_cookie(settings);
+-    let mut results = Vec::new();
+-    let mut payload: HashMap<&str, String> = HashMap::from([("q", query.to_string())]);
+-
+-    for page in 0..MAX_PAGES {
+-        let params: Vec<(&str, &str)> = payload.iter().map(|(k, v)| (*k, v.as_str())).collect();
+-
+-        let html = session
+-            .get(
+-                DdgsEngine::Bing,
+-                backend,
+-                BING_SEARCH_URL,
+-                &params,
+-                cookie.as_deref(),
+-            )
+-            .await?;
+-
+-        if parse::bing_page_reports_no_results(&html) {
+-            break;
+-        }
+-
+-        if let Some(batch) = process_page(
+-            DdgsEngine::Bing,
+-            &html,
+-            max.saturating_sub(results.len()),
+-            backend,
+-        )? {
+-            let n = batch.len();
+-            results.extend(batch);
+-            if results.len() >= max || n == 0 {
+-                break;
+-            }
+-        } else {
+-            break;
+-        }
+-
+-        if results.len() >= max {
+-            break;
+-        }
+-
+-        if max == 0 {
+-            break;
+-        }
+-
+-        // Python `_text_bing`: replace `first`/`FORM` keys each page (not accumulate).
+-        let first = ((page + 1) * 10 + 1).to_string();
+-        let form = if page > 0 {
+-            format!("PERE{page}")
+-        } else {
+-            "PERE".into()
+-        };
+-        payload.insert("first", first);
+-        payload.insert("FORM", form);
+-    }
+-    Ok(truncate(results, max))
+-}
+-
+-async fn search_ddg_form_engine(
+-    session: &mut DdgsSession,
+-    req: FormEngineQuery<'_>,
+-) -> Result<Vec<SearchResult>, SearchError> {
+-    let FormEngineQuery {
+-        engine,
+-        url,
+-        referer,
+-        query,
+-        settings,
+-        max,
+-        backend,
+-    } = req;
+-    let mut payload: HashMap<String, String> =
+-        HashMap::from([("q".into(), query.to_string()), ("b".into(), String::new())]);
+-    if let Some(region) = settings.region() {
+-        payload.insert("kl".into(), region.to_string());
+-    }
+-    let mut results = Vec::new();
+-
+-    for _ in 0..MAX_PAGES {
+-        let form: Vec<(&str, &str)> = payload
+-            .iter()
+-            .map(|(k, v)| (k.as_str(), v.as_str()))
+-            .collect();
+-
+-        let html = session
+-            .post_form(engine, backend, url, referer, &form)
+-            .await?;
+-
+-        if let Some(batch) =
+-            process_page(engine, &html, max.saturating_sub(results.len()), backend)?
+-        {
+-            let n = batch.len();
+-            results.extend(batch);
+-            if results.len() >= max || n == 0 {
+-                break;
+-            }
+-            let next = match engine {
+-                DdgsEngine::Html => parse::extract_ddg_html_next_payload(&html),
+-                DdgsEngine::Lite => parse::extract_ddg_lite_next_payload(&html),
+-                DdgsEngine::Bing => None,
+-            };
+-            if let Some(p) = next {
+-                payload = p;
+-            } else {
+-                break;
+-            }
+-        } else {
+-            break;
+-        }
+-    }
+-    Ok(truncate(results, max))
+-}
+-
+-async fn search_ddg_html(
+-    session: &mut DdgsSession,
+-    query: &str,
+-    settings: &DdgsSettings,
+-    max: usize,
+-    backend: &str,
+-) -> Result<Vec<SearchResult>, SearchError> {
+-    search_ddg_form_engine(
+-        session,
+-        FormEngineQuery {
+-            engine: DdgsEngine::Html,
+-            url: DDG_HTML_URL,
+-            referer: "https://html.duckduckgo.com/",
+-            query,
+-            settings,
+-            max,
+-            backend,
+-        },
+-    )
+-    .await
+-}
+-
+-async fn search_ddg_lite(
+-    session: &mut DdgsSession,
+-    query: &str,
+-    settings: &DdgsSettings,
+-    max: usize,
+-    backend: &str,
+-) -> Result<Vec<SearchResult>, SearchError> {
+-    search_ddg_form_engine(
+-        session,
+-        FormEngineQuery {
+-            engine: DdgsEngine::Lite,
+-            url: DDG_LITE_URL,
+-            referer: "https://lite.duckduckgo.com/",
+-            query,
+-            settings,
+-            max,
+-            backend,
+-        },
+-    )
+-    .await
+-}
+-
+-/// Parse one page; `None` = stop pagination. Python parity: HTTP status gates errors, not HTML heuristics.
+-fn process_page(
+-    engine: DdgsEngine,
+-    html: &str,
+-    max: usize,
+-    backend: &str,
+-) -> Result<Option<Vec<SearchResult>>, SearchError> {
+-    if parse::engine_reports_no_results(engine, html) {
+-        return Ok(Some(Vec::new()));
+-    }
+-    let batch = parse::parse_engine_html(engine, html, max, backend)?;
+-    Ok(Some(batch))
+-}
+-
+-fn truncate(mut results: Vec<SearchResult>, max: usize) -> Vec<SearchResult> {
+-    if max > 0 {
+-        results.truncate(max);
+-    }
+-    results
+-}
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+-
+-    #[test]
+-    fn bing_cookie_only_when_region_set() {
+-        assert!(bing_region_cookie(&DdgsSettings::default()).is_none());
+-        let s = DdgsSettings {
+-            region: "fr-fr".into(),
+-            ..Default::default()
+-        };
+-        assert!(bing_region_cookie(&s).unwrap().contains("fr-fr"));
+-    }
+-
+-    #[test]
+-    fn bing_pagination_replaces_first_and_form_keys() {
+-        let mut payload: HashMap<&str, String> = HashMap::from([("q", "rust".into())]);
+-        for page in 0..3 {
+-            let first = ((page + 1) * 10 + 1).to_string();
+-            let form = if page > 0 {
+-                format!("PERE{page}")
+-            } else {
+-                "PERE".into()
+-            };
+-            payload.insert("first", first.clone());
+-            payload.insert("FORM", form.clone());
+-            assert_eq!(payload.len(), 3);
+-            assert_eq!(payload.get("first").unwrap(), &first);
+-            assert_eq!(payload.get("FORM").unwrap(), &form);
+-        }
+-    }
+-
+-    #[test]
+-    fn captcha_html_without_serp_returns_empty_like_python() {
+-        let html = r#"<html><body>captcha challenge verify you are human bing.com</body></html>"#;
+-        let batch = process_page(DdgsEngine::Bing, html, 5, "ddgs")
+-            .expect("parse")
+-            .expect("some");
+-        assert!(
+-            batch.is_empty(),
+-            "Python returns [] on HTTP 200 + no b_algo"
+-        );
+-    }
+-}
+diff --git a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/error.rs b/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/error.rs
+deleted file mode 100644
+index b415fcd..0000000
+--- a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/error.rs
++++ /dev/null
+@@ -1,74 +0,0 @@
+-//! DDGS error mapping — scrape failures must not trigger chain API rate-limit cooldown.
+-
+-use super::settings::DdgsEngine;
+-use crate::tools::web::search::error::SearchError;
+-
+-/// Map HTTP status from a metasearch engine (never expose raw URLs to users).
+-pub fn map_engine_http_status(backend: &str, engine: DdgsEngine, code: u16) -> SearchError {
+-    let label = engine.label();
+-    match code {
+-        429 => SearchError::server(
+-            backend,
+-            503,
+-            format!("{label} rate-limited this request — try another engine or set DDGS_PROXY."),
+-        ),
+-        403 | 418 => SearchError::server(
+-            backend,
+-            503,
+-            format!("{label} blocked this request (bot challenge or forbidden)."),
+-        ),
+-        202 | 301 | 400 => SearchError::server(
+-            backend,
+-            503,
+-            format!("{label} temporarily unavailable (HTTP {code})."),
+-        ),
+-        408 => SearchError::timeout(backend, format!("{label} request timed out.")),
+-        500..=599 => SearchError::server(
+-            backend,
+-            code,
+-            format!("{label} server error (HTTP {code})."),
+-        ),
+-        400..=499 => SearchError::bad_request(
+-            backend,
+-            code,
+-            format!("{label} rejected request (HTTP {code})."),
+-        ),
+-        _ => SearchError::hard(backend, format!("{label} unexpected HTTP {code}.")),
+-    }
+-}
+-
+-/// Network/transport failure — safe user-facing text (no URLs).
+-pub fn map_transport_error(backend: &str, engine: DdgsEngine, err: &str) -> SearchError {
+-    let lower = err.to_ascii_lowercase();
+-    if lower.contains("time") {
+-        SearchError::timeout(backend, format!("{} request timed out.", engine.label()))
+-    } else {
+-        SearchError::network(backend, format!("{} network error.", engine.label()))
+-    }
+-}
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+-    use crate::tools::web::search::error::SearchErrorKind;
+-
+-    #[test]
+-    fn scrape_403_is_server_not_chain_rate_limit() {
+-        let err = map_engine_http_status("ddgs", DdgsEngine::Html, 403);
+-        assert!(matches!(err.kind, SearchErrorKind::Server(503)));
+-        assert!(!err.message.contains("duckduckgo.com"));
+-    }
+-
+-    #[test]
+-    fn http_202_is_not_mapped_at_transport_when_body_parsed() {
+-        // Transport accepts 202 and lets detect/parse decide; 301 still maps here.
+-        let err = map_engine_http_status("ddgs", DdgsEngine::Lite, 301);
+-        assert!(matches!(err.kind, SearchErrorKind::Server(503)));
+-    }
+-
+-    #[test]
+-    fn api_429_from_engine_is_server_not_rate_limit_kind() {
+-        let err = map_engine_http_status("ddgs", DdgsEngine::Bing, 429);
+-        assert!(matches!(err.kind, SearchErrorKind::Server(503)));
+-    }
+-}
+diff --git a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/fingerprint.rs b/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/fingerprint.rs
+deleted file mode 100644
+index b0c1fc3..0000000
+--- a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/fingerprint.rs
++++ /dev/null
+@@ -1,511 +0,0 @@
+-//! Browser TLS/UA profiles — Python `primp.Client(impersonate="random", impersonate_os="random")` parity.
+-//!
+-//! primp uses curl-impersonate presets (Chrome / Edge / Firefox / Safari × OS). We mirror that
+-//! with wreq `EmulationProvider` (Apache-2.0 — no GPL `wreq-util`).
+-
+-use wreq::{
+-    Client, EmulationProvider, SslCurve,
+-    header::{ACCEPT, ACCEPT_ENCODING, ACCEPT_LANGUAGE, HeaderMap, HeaderValue, USER_AGENT},
+-    tls::{AlpnProtos, AlpsProtos, TlsConfig, TlsVersion},
+-};
+-
+-/// primp `IMPERSONATE_OS` — browser OS dimension (independent of browser id).
+-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+-pub enum ImpersonateOs {
+-    Macos,
+-    Windows,
+-    Linux,
+-}
+-
+-impl ImpersonateOs {
+-    fn parse(raw: &str) -> Option<Self> {
+-        match raw.trim().to_ascii_lowercase().as_str() {
+-            "macos" | "mac" => Some(Self::Macos),
+-            "windows" | "win" => Some(Self::Windows),
+-            "linux" => Some(Self::Linux),
+-            "random" | "" => None,
+-            _ => None,
+-        }
+-    }
+-}
+-
+-/// primp `IMPERSONATE` subset — browser × OS variants in the random pool.
+-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+-pub enum ImpersonateProfile {
+-    Chrome131Mac,
+-    Chrome131Win,
+-    Chrome131Linux,
+-    Chrome133Mac,
+-    Chrome133Win,
+-    Chrome128Mac,
+-    Chrome124Win,
+-    Edge131Win,
+-    Edge127Mac,
+-    Firefox135Mac,
+-    Firefox135Linux,
+-    Firefox133Mac,
+-    Firefox128Win,
+-    Safari18Mac,
+-    Safari17Mac,
+-}
+-
+-impl ImpersonateProfile {
+-    pub fn id(self) -> &'static str {
+-        match self {
+-            Self::Chrome131Mac | Self::Chrome131Win | Self::Chrome131Linux => "chrome_131",
+-            Self::Chrome133Mac | Self::Chrome133Win => "chrome_133",
+-            Self::Chrome128Mac => "chrome_128",
+-            Self::Chrome124Win => "chrome_124",
+-            Self::Edge131Win => "edge_131",
+-            Self::Edge127Mac => "edge_127",
+-            Self::Firefox135Mac | Self::Firefox135Linux => "firefox_135",
+-            Self::Firefox133Mac => "firefox_133",
+-            Self::Firefox128Win => "firefox_128",
+-            Self::Safari18Mac => "safari_18",
+-            Self::Safari17Mac => "safari_17",
+-        }
+-    }
+-
+-    pub fn user_agent(self) -> &'static str {
+-        match self {
+-            Self::Chrome131Mac => {
+-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+-            }
+-            Self::Chrome131Win => {
+-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+-            }
+-            Self::Chrome131Linux => {
+-                "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+-            }
+-            Self::Chrome133Mac => {
+-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+-            }
+-            Self::Chrome133Win => {
+-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36"
+-            }
+-            Self::Chrome128Mac => {
+-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
+-            }
+-            Self::Chrome124Win => {
+-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+-            }
+-            Self::Edge131Win => {
+-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36 Edg/131.0.0.0"
+-            }
+-            Self::Edge127Mac => {
+-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/127.0.0.0 Safari/537.36 Edg/127.0.0.0"
+-            }
+-            Self::Firefox135Mac => {
+-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:135.0) Gecko/20100101 Firefox/135.0"
+-            }
+-            Self::Firefox135Linux => {
+-                "Mozilla/5.0 (X11; Linux x86_64; rv:135.0) Gecko/20100101 Firefox/135.0"
+-            }
+-            Self::Firefox133Mac => {
+-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10.15; rv:133.0) Gecko/20100101 Firefox/133.0"
+-            }
+-            Self::Firefox128Win => {
+-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:128.0) Gecko/20100101 Firefox/128.0"
+-            }
+-            Self::Safari18Mac => {
+-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/18.0 Safari/605.1.15"
+-            }
+-            Self::Safari17Mac => {
+-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15"
+-            }
+-        }
+-    }
+-
+-    fn tls_family(self) -> TlsFamily {
+-        match self {
+-            Self::Firefox135Mac
+-            | Self::Firefox135Linux
+-            | Self::Firefox133Mac
+-            | Self::Firefox128Win => TlsFamily::Firefox,
+-            Self::Safari18Mac | Self::Safari17Mac => TlsFamily::Safari,
+-            _ => TlsFamily::Chromium,
+-        }
+-    }
+-
+-    fn is_chromium_branded(self) -> bool {
+-        matches!(
+-            self,
+-            Self::Chrome131Mac
+-                | Self::Chrome131Win
+-                | Self::Chrome131Linux
+-                | Self::Chrome133Mac
+-                | Self::Chrome133Win
+-                | Self::Chrome128Mac
+-                | Self::Chrome124Win
+-        )
+-    }
+-
+-    fn is_edge(self) -> bool {
+-        matches!(self, Self::Edge131Win | Self::Edge127Mac)
+-    }
+-
+-    pub fn impersonate_os(self) -> ImpersonateOs {
+-        match self {
+-            Self::Chrome131Win
+-            | Self::Chrome133Win
+-            | Self::Chrome124Win
+-            | Self::Edge131Win
+-            | Self::Firefox128Win => ImpersonateOs::Windows,
+-            Self::Chrome131Linux | Self::Firefox135Linux => ImpersonateOs::Linux,
+-            _ => ImpersonateOs::Macos,
+-        }
+-    }
+-
+-    fn accept_header(self) -> &'static str {
+-        match self.tls_family() {
+-            TlsFamily::Firefox => {
+-                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8"
+-            }
+-            TlsFamily::Safari => "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+-            TlsFamily::Chromium => {
+-                "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7"
+-            }
+-        }
+-    }
+-
+-    /// Chromium `sec-ch-ua` — omitted for Firefox/Safari (Python primp curl-impersonate contract).
+-    fn sec_ch_ua(self) -> Option<&'static str> {
+-        if self.is_chromium_branded() {
+-            let v = match self {
+-                Self::Chrome133Mac | Self::Chrome133Win => "133",
+-                Self::Chrome128Mac => "128",
+-                Self::Chrome124Win => "124",
+-                _ => "131",
+-            };
+-            return Some(match v {
+-                "133" => r#""Google Chrome";v="133", "Chromium";v="133", "Not_A Brand";v="24""#,
+-                "128" => r#""Google Chrome";v="128", "Chromium";v="128", "Not_A Brand";v="24""#,
+-                "124" => r#""Google Chrome";v="124", "Chromium";v="124", "Not_A Brand";v="99""#,
+-                _ => r#""Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24""#,
+-            });
+-        }
+-        if self.is_edge() {
+-            let v = if matches!(self, Self::Edge127Mac) {
+-                "127"
+-            } else {
+-                "131"
+-            };
+-            return Some(match v {
+-                "127" => r#""Microsoft Edge";v="127", "Chromium";v="127", "Not_A Brand";v="24""#,
+-                _ => r#""Microsoft Edge";v="131", "Chromium";v="131", "Not_A Brand";v="24""#,
+-            });
+-        }
+-        None
+-    }
+-
+-    fn sec_ch_ua_platform(self) -> Option<&'static str> {
+-        if !self.is_chromium_branded() && !self.is_edge() {
+-            return None;
+-        }
+-        Some(match self {
+-            Self::Chrome131Win
+-            | Self::Chrome133Win
+-            | Self::Chrome124Win
+-            | Self::Edge131Win
+-            | Self::Firefox128Win => "\"Windows\"",
+-            Self::Chrome131Linux | Self::Firefox135Linux => "\"Linux\"",
+-            _ => "\"macOS\"",
+-        })
+-    }
+-}
+-
+-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+-enum TlsFamily {
+-    Chromium,
+-    Firefox,
+-    Safari,
+-}
+-
+-const PRIMP_RANDOM_POOL: &[ImpersonateProfile] = &[
+-    ImpersonateProfile::Chrome131Mac,
+-    ImpersonateProfile::Chrome131Win,
+-    ImpersonateProfile::Chrome131Linux,
+-    ImpersonateProfile::Chrome133Mac,
+-    ImpersonateProfile::Chrome133Win,
+-    ImpersonateProfile::Chrome128Mac,
+-    ImpersonateProfile::Chrome124Win,
+-    ImpersonateProfile::Edge131Win,
+-    ImpersonateProfile::Edge127Mac,
+-    ImpersonateProfile::Firefox135Mac,
+-    ImpersonateProfile::Firefox135Linux,
+-    ImpersonateProfile::Firefox133Mac,
+-    ImpersonateProfile::Firefox128Win,
+-    ImpersonateProfile::Safari18Mac,
+-    ImpersonateProfile::Safari17Mac,
+-];
+-
+-fn pick_random_from(candidates: &[ImpersonateProfile]) -> ImpersonateProfile {
+-    if candidates.is_empty() {
+-        return pick_random_profile();
+-    }
+-    use rand::Rng;
+-    candidates[rand::rng().random_range(0..candidates.len())]
+-}
+-
+-fn pool_candidates(browser_id: Option<&str>, os: Option<ImpersonateOs>) -> Vec<ImpersonateProfile> {
+-    PRIMP_RANDOM_POOL
+-        .iter()
+-        .copied()
+-        .filter(|p| browser_id.is_none_or(|id| p.id() == id))
+-        .filter(|p| os.is_none_or(|o| p.impersonate_os() == o))
+-        .collect()
+-}
+-
+-fn pick_random_matching_id(id: &str, os: Option<ImpersonateOs>) -> ImpersonateProfile {
+-    pick_random_from(&pool_candidates(Some(id), os))
+-}
+-
+-/// Resolve profile from env — `DDGS_IMPERSONATE`, `DDGS_IMPERSONATE_OS` (primp parity).
+-pub fn resolve_profile_from_env() -> ImpersonateProfile {
+-    let browser = std::env::var("DDGS_IMPERSONATE").ok();
+-    let os = std::env::var("DDGS_IMPERSONATE_OS")
+-        .ok()
+-        .and_then(|s| ImpersonateOs::parse(&s));
+-    resolve_profile_with(browser.as_deref(), os)
+-}
+-
+-/// Resolve profile — browser pin + optional OS filter; default = primp `random`.
+-pub fn resolve_profile(env_override: Option<&str>) -> ImpersonateProfile {
+-    resolve_profile_with(env_override, None)
+-}
+-
+-pub fn resolve_profile_with(
+-    browser_override: Option<&str>,
+-    os_override: Option<ImpersonateOs>,
+-) -> ImpersonateProfile {
+-    if let Some(raw) = browser_override.map(str::trim).filter(|s| !s.is_empty()) {
+-        let key = raw.to_ascii_lowercase().replace('-', "_");
+-        if PRIMP_RANDOM_POOL.iter().any(|p| p.id() == key) {
+-            return pick_random_matching_id(&key, os_override);
+-        }
+-        if key.starts_with("chrome_") {
+-            return pick_random_matching_id("chrome_131", os_override);
+-        }
+-        if key.starts_with("edge_") {
+-            return pick_random_matching_id("edge_131", os_override);
+-        }
+-        if key.starts_with("firefox_") {
+-            return pick_random_matching_id("firefox_135", os_override);
+-        }
+-        if key.starts_with("safari_") {
+-            return pick_random_matching_id("safari_18", os_override);
+-        }
+-    }
+-    pick_random_from(&pool_candidates(None, os_override))
+-}
+-
+-pub fn pick_random_profile() -> ImpersonateProfile {
+-    pick_random_from(&pool_candidates(None, None))
+-}
+-
+-fn chromium_tls() -> TlsConfig {
+-    TlsConfig::builder()
+-        .min_tls_version(TlsVersion::TLS_1_2)
+-        .max_tls_version(TlsVersion::TLS_1_3)
+-        .cipher_list(
+-            "TLS_AES_128_GCM_SHA256:TLS_AES_256_GCM_SHA384:TLS_CHACHA20_POLY1305_SHA256:\
+-             TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:\
+-             TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:\
+-             TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:\
+-             TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:\
+-             TLS_RSA_WITH_AES_128_GCM_SHA256:TLS_RSA_WITH_AES_256_GCM_SHA384:\
+-             TLS_RSA_WITH_AES_128_CBC_SHA:TLS_RSA_WITH_AES_256_CBC_SHA",
+-        )
+-        .sigalgs_list(
+-            "ecdsa_secp256r1_sha256:rsa_pss_rsae_sha256:rsa_pkcs1_sha256:\
+-             ecdsa_secp384r1_sha384:rsa_pss_rsae_sha384:rsa_pkcs1_sha384:\
+-             rsa_pss_rsae_sha512:rsa_pkcs1_sha512",
+-        )
+-        .curves(vec![
+-            SslCurve::X25519,
+-            SslCurve::SECP256R1,
+-            SslCurve::SECP384R1,
+-        ])
+-        .alpn_protos(AlpnProtos::ALL)
+-        .alps_protos(AlpsProtos::HTTP2)
+-        .grease_enabled(true)
+-        .permute_extensions(true)
+-        .enable_ech_grease(true)
+-        .pre_shared_key(true)
+-        .enable_ocsp_stapling(true)
+-        .build()
+-}
+-
+-fn firefox_tls() -> TlsConfig {
+-    TlsConfig::builder()
+-        .min_tls_version(TlsVersion::TLS_1_2)
+-        .max_tls_version(TlsVersion::TLS_1_3)
+-        .cipher_list(
+-            "TLS_AES_128_GCM_SHA256:TLS_CHACHA20_POLY1305_SHA256:TLS_AES_256_GCM_SHA384:\
+-             TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256:TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256:\
+-             TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256:TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256:\
+-             TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384:TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384:\
+-             TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA:TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA:\
+-             TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA:TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA:\
+-             TLS_RSA_WITH_AES_128_GCM_SHA256:TLS_RSA_WITH_AES_256_GCM_SHA384:\
+-             TLS_RSA_WITH_AES_128_CBC_SHA:TLS_RSA_WITH_AES_256_CBC_SHA",
+-        )
+-        .sigalgs_list(
+-            "ecdsa_secp256r1_sha256:ecdsa_secp384r1_sha384:ecdsa_secp521r1_sha512:\
+-             rsa_pss_rsae_sha256:rsa_pss_rsae_sha384:rsa_pss_rsae_sha512:\
+-             rsa_pkcs1_sha256:rsa_pkcs1_sha384:rsa_pkcs1_sha512:ecdsa_sha1:rsa_pkcs1_sha1",
+-        )
+-        .alpn_protos(AlpnProtos::ALL)
+-        .alps_protos(AlpsProtos::HTTP2)
+-        .grease_enabled(true)
+-        .permute_extensions(true)
+-        .enable_ech_grease(true)
+-        .pre_shared_key(true)
+-        .build()
+-}
+-
+-fn safari_tls() -> TlsConfig {
+-    chromium_tls()
+-}
+-
+-fn tls_for(family: TlsFamily) -> TlsConfig {
+-    match family {
+-        TlsFamily::Chromium => chromium_tls(),
+-        TlsFamily::Firefox => firefox_tls(),
+-        TlsFamily::Safari => safari_tls(),
+-    }
+-}
+-
+-fn default_headers(profile: ImpersonateProfile) -> HeaderMap {
+-    let mut headers = HeaderMap::new();
+-    headers.insert(USER_AGENT, HeaderValue::from_static(profile.user_agent()));
+-    headers.insert(ACCEPT, HeaderValue::from_static(profile.accept_header()));
+-    headers.insert(ACCEPT_LANGUAGE, HeaderValue::from_static("en-US,en;q=0.9"));
+-    headers.insert(
+-        ACCEPT_ENCODING,
+-        HeaderValue::from_static("gzip, deflate, br"),
+-    );
+-    if let Some(ua) = profile.sec_ch_ua() {
+-        headers.insert("sec-ch-ua", HeaderValue::from_static(ua));
+-        headers.insert("sec-ch-ua-mobile", HeaderValue::from_static("?0"));
+-        if let Some(platform) = profile.sec_ch_ua_platform() {
+-            headers.insert("sec-ch-ua-platform", HeaderValue::from_static(platform));
+-        }
+-    }
+-    headers
+-}
+-
+-/// Build wreq client with optional Referer / UA overrides (extract/crawl legacy path).
+-pub fn build_wreq_client(
+-    timeout_secs: u64,
+-    profile: ImpersonateProfile,
+-    referer: Option<&str>,
+-    user_agent: Option<&str>,
+-    proxy_url: Option<String>,
+-) -> Result<Client, String> {
+-    use wreq::header::{HeaderValue, REFERER, USER_AGENT};
+-
+-    let mut headers = default_headers(profile);
+-    if let Some(ua) = user_agent {
+-        headers.insert(
+-            USER_AGENT,
+-            HeaderValue::from_str(ua).map_err(|e| format!("Invalid User-Agent: {e}"))?,
+-        );
+-    }
+-    if let Some(r) = referer {
+-        headers.insert(
+-            REFERER,
+-            HeaderValue::from_str(r).map_err(|e| format!("Invalid Referer: {e}"))?,
+-        );
+-        headers.insert("Sec-Fetch-User", HeaderValue::from_static("?1"));
+-    }
+-
+-    let provider = EmulationProvider::builder()
+-        .tls_config(tls_for(profile.tls_family()))
+-        .default_headers(headers)
+-        .build();
+-
+-    let mut builder = Client::builder()
+-        .emulation(provider)
+-        .cookie_store(true)
+-        .redirect(wreq::redirect::Policy::none())
+-        .timeout(std::time::Duration::from_secs(timeout_secs.max(1)));
+-
+-    if let Some(proxy_url) = proxy_url.or_else(|| edgecrab_security::proxy::resolve_proxy_url(None))
+-        && let Ok(proxy) = wreq::Proxy::all(&proxy_url)
+-    {
+-        builder = builder.proxy(proxy);
+-    }
+-
+-    builder.build().map_err(|e| e.to_string())
+-}
+-
+-/// Build DDGS HTTP client — random primp profile per session, cookie jar, no redirects.
+-pub fn build_ddgs_client(
+-    timeout_secs: u64,
+-    proxy_url: Option<String>,
+-    profile: ImpersonateProfile,
+-) -> Result<Client, String> {
+-    build_wreq_client(timeout_secs, profile, None, None, proxy_url)
+-}
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+-    use std::collections::HashSet;
+-
+-    #[test]
+-    fn primp_pool_has_chromium_firefox_safari_edge() {
+-        let ids: HashSet<_> = PRIMP_RANDOM_POOL.iter().map(|p| p.id()).collect();
+-        assert!(ids.contains("chrome_131"));
+-        assert!(ids.contains("chrome_133"));
+-        assert!(ids.contains("edge_131"));
+-        assert!(ids.contains("firefox_135"));
+-        assert!(ids.contains("firefox_133"));
+-        assert!(ids.contains("safari_18"));
+-    }
+-
+-    #[test]
+-    fn random_profile_varies_over_samples() {
+-        let mut seen = HashSet::new();
+-        for _ in 0..40 {
+-            seen.insert(format!("{:?}", pick_random_profile()));
+-        }
+-        assert!(seen.len() >= 4, "random pool should vary: {seen:?}");
+-    }
+-
+-    #[test]
+-    fn env_override_pins_chrome_131_random_os() {
+-        let mut seen = HashSet::new();
+-        for _ in 0..30 {
+-            seen.insert(format!("{:?}", resolve_profile(Some("chrome_131"))));
+-        }
+-        assert!(seen.len() >= 2, "chrome_131 should vary OS: {seen:?}");
+-    }
+-
+-    #[test]
+-    fn chromium_profiles_emit_sec_ch_ua() {
+-        let p = ImpersonateProfile::Chrome131Win;
+-        assert!(p.sec_ch_ua().is_some());
+-        assert_eq!(p.sec_ch_ua_platform(), Some("\"Windows\""));
+-    }
+-
+-    #[test]
+-    fn firefox_profiles_omit_sec_ch_ua() {
+-        assert!(ImpersonateProfile::Firefox135Mac.sec_ch_ua().is_none());
+-    }
+-
+-    #[test]
+-    fn impersonate_os_env_filters_windows_profiles() {
+-        let p = resolve_profile_with(Some("chrome_131"), Some(ImpersonateOs::Windows));
+-        assert_eq!(p.impersonate_os(), ImpersonateOs::Windows);
+-        assert_eq!(p.id(), "chrome_131");
+-    }
+-
+-    #[test]
+-    fn builds_client_for_each_tls_family() {
+-        for p in PRIMP_RANDOM_POOL {
+-            build_ddgs_client(5, None, *p).expect("client build");
+-        }
+-    }
+-}
+diff --git a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/metasearch.rs b/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/metasearch.rs
+deleted file mode 100644
+index a375369..0000000
+--- a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/metasearch.rs
++++ /dev/null
+@@ -1,141 +0,0 @@
+-//! Metasearch orchestration — Python `DDGS.text()` parity (9.0.0: Bing-only `auto`).
+-
+-use std::time::{Duration, Instant};
+-
+-use super::engines;
+-use super::selection;
+-use super::settings::{DdgsEngine, DdgsSettings};
+-use super::transport::DdgsSession;
+-use crate::tools::web::search::backend::SearchResult;
+-use crate::tools::web::search::config::SearchOptions;
+-use crate::tools::web::search::error::SearchError;
+-
+-/// Wall-clock budget — Python uses `self.timeout` per HTTP call; cap total probe time the same way.
+-pub fn metasearch_budget(timeout_secs: u64) -> Duration {
+-    Duration::from_secs(timeout_secs.max(3))
+-}
+-
+-fn budget_exhausted(start: Instant, budget: Duration) -> bool {
+-    start.elapsed() >= budget
+-}
+-
+-fn aggregate_engine_failures(failures: &[(DdgsEngine, SearchError)]) -> SearchError {
+-    if failures.is_empty() {
+-        return SearchError::hard(
+-            "ddgs",
+-            "All metasearch engines failed. Set DDGS_PROXY or configure a paid backend via /web.",
+-        );
+-    }
+-    if failures.len() == 1 {
+-        return failures[0].1.clone();
+-    }
+-    let summary = failures
+-        .iter()
+-        .map(|(engine, err)| format!("{}: {}", engine.label(), err.message))
+-        .collect::<Vec<_>>()
+-        .join("; ");
+-    SearchError::server("ddgs", 503, summary)
+-}
+-
+-/// Run metasearch — Python contract: try engines in order, **return on first success** (even empty).
+-pub async fn search_text(
+-    query: &str,
+-    opts: &SearchOptions,
+-    settings: &DdgsSettings,
+-    backend: &str,
+-) -> Result<Vec<SearchResult>, SearchError> {
+-    let query = query.trim();
+-    if query.is_empty() {
+-        return Ok(Vec::new());
+-    }
+-
+-    let max = opts.max_results();
+-    let engines_list = settings.engine_order();
+-    let mut hard_failures: Vec<(DdgsEngine, SearchError)> = Vec::new();
+-
+-    let budget = metasearch_budget(opts.timeout_secs);
+-    let started = Instant::now();
+-    let mut session = DdgsSession::new(opts.timeout_secs)?;
+-
+-    for (idx, engine) in engines_list.iter().copied().enumerate() {
+-        if budget_exhausted(started, budget) {
+-            tracing::debug!(backend, "ddgs metasearch budget exhausted");
+-            break;
+-        }
+-        if idx > 0 {
+-            tokio::time::sleep(Duration::from_millis(750)).await;
+-        }
+-
+-        let mut attempts = settings.max_retries.saturating_add(1);
+-        while attempts > 0 {
+-            attempts -= 1;
+-            if attempts < settings.max_retries {
+-                tokio::time::sleep(Duration::from_millis(500)).await;
+-                session = DdgsSession::refresh(opts.timeout_secs)?;
+-            }
+-
+-            match engines::run_engine(&mut session, engine, query, settings, max, backend).await {
+-                Ok(results) => {
+-                    let selected =
+-                        selection::select_results(settings.selection_mode, query, results, max);
+-                    tracing::debug!(backend, count = selected.len(), "ddgs metasearch finished");
+-                    return Ok(selected);
+-                }
+-                Err(err) if err.is_fallback_eligible() => {
+-                    tracing::debug!(
+-                        backend,
+-                        engine = engine.label(),
+-                        error = %err,
+-                        "ddgs engine failed"
+-                    );
+-                    if attempts > 0 {
+-                        continue;
+-                    }
+-                    hard_failures.push((engine, err));
+-                    break;
+-                }
+-                Err(err) => return Err(err),
+-            }
+-        }
+-    }
+-
+-    if hard_failures.is_empty() {
+-        tracing::debug!(backend, "ddgs metasearch finished with empty pool");
+-        return Ok(Vec::new());
+-    }
+-    Err(aggregate_engine_failures(&hard_failures))
+-}
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+-    use crate::tools::web::search::error::SearchErrorKind;
+-
+-    #[test]
+-    fn aggregate_engine_failures_lists_all_engines() {
+-        let failures = vec![
+-            (
+-                DdgsEngine::Bing,
+-                SearchError::server("ddgs", 503, "Bing blocked this request (bot challenge)."),
+-            ),
+-            (
+-                DdgsEngine::Html,
+-                SearchError::server(
+-                    "ddgs",
+-                    503,
+-                    "DuckDuckGo HTML blocked this request (bot challenge).",
+-                ),
+-            ),
+-        ];
+-        let err = aggregate_engine_failures(&failures);
+-        assert!(matches!(err.kind, SearchErrorKind::Server(503)));
+-        assert!(err.message.contains("Bing:"));
+-        assert!(err.message.contains("DuckDuckGo HTML:"));
+-    }
+-
+-    #[test]
+-    fn metasearch_budget_uses_full_timeout() {
+-        assert_eq!(metasearch_budget(10).as_secs(), 10);
+-        assert_eq!(metasearch_budget(2).as_secs(), 3);
+-    }
+-}
+diff --git a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/mod.rs b/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/mod.rs
+deleted file mode 100644
+index 7d90c9d..0000000
+--- a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/mod.rs
++++ /dev/null
+@@ -1,166 +0,0 @@
+-//! DuckDuckGo search — native Rust reimplementation of the Python `ddgs` 9.0 package.
+-//!
+-//! Layers (SOLID):
+-//! - `transport`  — primp random TLS/UA fingerprint + pacing
+-//! - `engines`    — Bing / DDG HTML / DDG lite parsers+pagination
+-//! - `parse`      — HTML → SearchResult (Python xpath/regex parity)
+-//! - `text`       — Python `_normalize` / `_normalize_url`
+-//! - `query`      — query tokens (opt-in ranked mode only)
+-//! - `selection`  — cap + optional reorder (raw = Python contract)
+-//! - `metasearch` — orchestration (Bing-only `auto`, return-on-first-success)
+-//! - `detect`     — diagnostics only (not metasearch hot path)
+-//! - `error` / `settings`
+-
+-mod detect;
+-mod engines;
+-mod error;
+-mod fingerprint;
+-mod metasearch;
+-mod parse;
+-mod query;
+-mod selection;
+-mod settings;
+-mod text;
+-mod transport;
+-
+-pub use detect::{is_bot_challenge, is_engine_blocked};
+-pub use fingerprint::{
+-    ImpersonateOs, ImpersonateProfile, build_wreq_client, pick_random_profile, resolve_profile,
+-    resolve_profile_from_env, resolve_profile_with,
+-};
+-pub use metasearch::{metasearch_budget, search_text as metasearch_text};
+-pub use parse::{
+-    bing_html_has_algo_rows, bing_page_reports_no_results, engine_reports_no_results,
+-    normalize_bing_url, normalize_ddg_url, parse_bing_html, parse_ddg_html, parse_ddg_lite,
+-    parse_engine_html,
+-};
+-pub use query::query_tokens;
+-pub use selection::{extend_pool, is_deliverable, select_ranked, select_raw, select_results};
+-pub use settings::{DdgsEngine, DdgsSelectionMode, DdgsSettings};
+-pub use text::fold_for_search;
+-
+-use async_trait::async_trait;
+-
+-use crate::tools::web::search::backend::{SearchResult, WebSearchBackend};
+-use crate::tools::web::search::config::SearchOptions;
+-use crate::tools::web::search::error::SearchError;
+-
+-pub struct DdgsBackend;
+-
+-#[async_trait]
+-impl WebSearchBackend for DdgsBackend {
+-    fn name(&self) -> &str {
+-        "ddgs"
+-    }
+-
+-    fn display_name(&self) -> &str {
+-        "DuckDuckGo (ddgs)"
+-    }
+-
+-    fn is_available(&self) -> bool {
+-        true
+-    }
+-
+-    async fn search(
+-        &self,
+-        query: &str,
+-        opts: &SearchOptions,
+-    ) -> Result<Vec<SearchResult>, SearchError> {
+-        let settings = DdgsSettings::resolve(&opts.backend_config);
+-        metasearch::search_text(query, opts, &settings, self.name()).await
+-    }
+-}
+-
+-/// Opt-in ranked selection (`DDGS_SELECTION=ranked`).
+-pub fn rank_and_select(query: &str, pool: Vec<SearchResult>, max: usize) -> Vec<SearchResult> {
+-    selection::select_ranked(query, pool, max)
+-}
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::detect;
+-    use super::parse;
+-
+-    #[test]
+-    fn module_parse_reexported() {
+-        let html = r#"<a class="result__a" href="https://example.com">Ex</a>"#;
+-        assert_eq!(parse::parse_ddg_html(html, 3, "ddgs").expect("ok").len(), 1);
+-    }
+-
+-    #[test]
+-    fn detect_exported_for_chain_tests() {
+-        assert!(detect::is_bot_challenge("anomaly-modal"));
+-    }
+-}
+-
+-#[cfg(test)]
+-mod live_engine_tests {
+-    use super::settings::DdgsSettings;
+-    use super::transport::DdgsSession;
+-
+-    #[tokio::test]
+-    #[ignore = "live network diagnostic"]
+-    async fn bing_wreq_diagnostic() {
+-        let settings = DdgsSettings::default();
+-        assert!(settings.region().is_none());
+-        let mut session = DdgsSession::new(15).expect("session");
+-        let html = session
+-            .get(
+-                super::settings::DdgsEngine::Bing,
+-                "ddgs",
+-                "https://www.bing.com/search",
+-                &[("q", "Rust programming language")],
+-                None,
+-            )
+-            .await
+-            .expect("bing get");
+-        eprintln!(
+-            "bing html len={} b_algo={} captcha={}",
+-            html.len(),
+-            html.matches("b_algo").count(),
+-            html.to_ascii_lowercase().contains("captcha")
+-        );
+-        let parsed = super::parse::parse_bing_html(&html, 5, "ddgs").expect("parse");
+-        eprintln!("parsed results={}", parsed.len());
+-        if let Some(first) = parsed.first() {
+-            eprintln!("first url={}", first.url);
+-            assert!(
+-                !first.url.contains("bing.com/ck/a"),
+-                "bing ck redirect should be decoded: {}",
+-                first.url
+-            );
+-        }
+-    }
+-}
+-
+-#[cfg(test)]
+-mod live_tests {
+-    use super::metasearch;
+-    use super::settings::DdgsSettings;
+-    use crate::config_ref::WebSearchBackendConfigRef;
+-    use crate::tools::web::search::config::SearchOptions;
+-
+-    #[tokio::test]
+-    #[ignore = "live network — run with --ignored"]
+-    async fn metasearch_finds_public_results() {
+-        let settings = DdgsSettings::resolve(&WebSearchBackendConfigRef::default());
+-        let opts = SearchOptions {
+-            max_results: 3,
+-            timeout_secs: 15,
+-            ..Default::default()
+-        };
+-        let results =
+-            metasearch::search_text("Rust programming language", &opts, &settings, "ddgs")
+-                .await
+-                .unwrap_or_else(|e| {
+-                    if e.message.contains("bot challenge") || e.message.contains("blocked") {
+-                        eprintln!("Skipping live ddgs: {e}");
+-                        return Vec::new();
+-                    }
+-                    panic!("metasearch should succeed: {e:?}");
+-                });
+-        if !results.is_empty() {
+-            assert!(results[0].url.starts_with("http"));
+-        }
+-    }
+-}
+diff --git a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/parse.rs b/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/parse.rs
+deleted file mode 100644
+index 03654fc..0000000
+--- a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/parse.rs
++++ /dev/null
+@@ -1,618 +0,0 @@
+-//! DuckDuckGo / Bing HTML → normalized [`SearchResult`] rows (Python `ddgs` parsers).
+-
+-use std::collections::HashMap;
+-use std::sync::OnceLock;
+-
+-use base64::Engine as _;
+-use regex::Regex;
+-
+-use super::settings::DdgsEngine;
+-use super::text;
+-use crate::tools::web::search::backend::SearchResult;
+-use crate::tools::web::search::error::SearchError;
+-
+-static DDG_DIV_H2_RE: OnceLock<Regex> = OnceLock::new();
+-static DDG_RESULT_RE: OnceLock<Regex> = OnceLock::new();
+-static DDG_SNIPPET_RE: OnceLock<Regex> = OnceLock::new();
+-static DDG_ALT_LINK_RE: OnceLock<Regex> = OnceLock::new();
+-static DDG_NAV_LINK_RE: OnceLock<Regex> = OnceLock::new();
+-static DDG_HIDDEN_INPUT_RE: OnceLock<Regex> = OnceLock::new();
+-static DDG_LITE_FORM_RE: OnceLock<Regex> = OnceLock::new();
+-static DDG_LITE_TR_RE: OnceLock<Regex> = OnceLock::new();
+-static BING_ALGO_RE: OnceLock<Regex> = OnceLock::new();
+-static BING_ALGO_ALT_RE: OnceLock<Regex> = OnceLock::new();
+-
+-/// Route HTML to the correct parser for the metasearch engine.
+-pub fn parse_engine_html(
+-    engine: DdgsEngine,
+-    html: &str,
+-    max: usize,
+-    source: &str,
+-) -> Result<Vec<SearchResult>, SearchError> {
+-    match engine {
+-        DdgsEngine::Html => parse_ddg_html(html, max, source),
+-        DdgsEngine::Lite => parse_ddg_lite(html, max, source),
+-        DdgsEngine::Bing => parse_bing_html(html, max, source),
+-    }
+-}
+-
+-/// True when the engine HTML explicitly states zero hits (distinct from parse failure).
+-pub fn engine_reports_no_results(engine: DdgsEngine, html: &str) -> bool {
+-    match engine {
+-        DdgsEngine::Html => html.contains("No  results."),
+-        DdgsEngine::Lite => html.contains("No more results."),
+-        DdgsEngine::Bing => false,
+-    }
+-}
+-
+-/// XPath-equivalent: `//li[contains(@class, 'b_algo')]`.
+-pub fn bing_html_has_algo_rows(html: &str) -> bool {
+-    html.contains("b_algo")
+-        && (html.contains("class=\"b_algo")
+-            || html.contains("class='b_algo")
+-            || html.contains(" b_algo\"")
+-            || html.contains(" b_algo'"))
+-}
+-
+-/// Stop paging when Python's `"There are no results for"` marker appears **and** xpath finds no rows.
+-///
+-/// Python 9.0 `_text_bing` uses substring-only (false-positives in `<script>` when `b_algo` exists).
+-/// We require both conditions — first principles aligned with the xpath parse path.
+-pub fn bing_page_reports_no_results(html: &str) -> bool {
+-    html.contains("There are no results for") && !bing_html_has_algo_rows(html)
+-}
+-
+-/// Decode Bing redirect URLs (`/ck/a?u=a...` base64) to the target href.
+-pub fn normalize_bing_url(raw: &str) -> Option<String> {
+-    let raw = text::decode_html_entities(raw.trim());
+-    if raw.is_empty() {
+-        return None;
+-    }
+-
+-    if (raw.starts_with("https://www.bing.com/ck/a?")
+-        || raw.starts_with("http://www.bing.com/ck/a?"))
+-        && let Some(decoded) = decode_bing_ck_target(&raw)
+-    {
+-        return Some(decoded);
+-    }
+-
+-    Some(raw.replace('\u{00a0}', " "))
+-}
+-
+-fn decode_bing_ck_target(raw: &str) -> Option<String> {
+-    if let Ok(parsed) = url::Url::parse(raw) {
+-        for (key, value) in parsed.query_pairs() {
+-            if key == "u"
+-                && let Some(decoded) = decode_bing_u_param(value.as_ref())
+-            {
+-                return Some(decoded);
+-            }
+-        }
+-    }
+-
+-    // Fallback when `url::Url` rejects Bing's `?!&&` query shape.
+-    static U_PARAM: OnceLock<Regex> = OnceLock::new();
+-    let re = U_PARAM.get_or_init(|| Regex::new(r"[?&]u=([^&]+)").expect("bing u param regex"));
+-    re.captures(raw)
+-        .and_then(|cap| cap.get(1))
+-        .and_then(|m| decode_bing_u_param(m.as_str()))
+-}
+-
+-fn decode_bing_u_param(encoded: &str) -> Option<String> {
+-    let payload = encoded.get(2..).unwrap_or(encoded);
+-    let pad = (4 - payload.len() % 4) % 4;
+-    let padded = format!("{payload}{}", "=".repeat(pad));
+-    let decoded = base64::engine::general_purpose::URL_SAFE
+-        .decode(padded.as_bytes())
+-        .ok()?;
+-    String::from_utf8(decoded)
+-        .ok()
+-        .map(|url| url.replace('\u{00a0}', " "))
+-}
+-
+-/// Decode DDG redirect URLs (`/l/?uddg=…`) to the target href (Hermes uses package-normalized URLs).
+-pub fn normalize_ddg_url(raw: &str) -> Option<String> {
+-    let raw = raw.trim();
+-    if raw.is_empty() {
+-        return None;
+-    }
+-
+-    if (raw.contains("duckduckgo.com/l/") || raw.contains("duckduckgo.com/l/?"))
+-        && let Some(target) = extract_uddg_param(raw)
+-    {
+-        return decode_percent_encoding(target);
+-    }
+-
+-    if raw.starts_with("//") {
+-        return Some(format!("https:{}", raw));
+-    }
+-
+-    Some(raw.to_string())
+-}
+-
+-fn extract_uddg_param(url: &str) -> Option<&str> {
+-    let lower = url.to_ascii_lowercase();
+-    let idx = lower.find("uddg=")?;
+-    let rest = &url[idx + 5..];
+-    let end = rest.find('&').unwrap_or(rest.len());
+-    Some(&rest[..end])
+-}
+-
+-fn decode_percent_encoding(input: &str) -> Option<String> {
+-    let mut bytes = Vec::new();
+-    let b = input.as_bytes();
+-    let mut i = 0;
+-    while i < b.len() {
+-        if b[i] == b'%' && i + 2 < b.len() {
+-            let hex = std::str::from_utf8(&b[i + 1..i + 3]).ok()?;
+-            bytes.push(u8::from_str_radix(hex, 16).ok()?);
+-            i += 3;
+-        } else if b[i] == b'+' {
+-            bytes.push(b' ');
+-            i += 1;
+-        } else {
+-            bytes.push(b[i]);
+-            i += 1;
+-        }
+-    }
+-    Some(String::from_utf8_lossy(&bytes).into_owned())
+-}
+-
+-/// Extract next-page form payload from DDG HTML (`nav-link` hidden inputs).
+-pub fn extract_ddg_html_next_payload(html: &str) -> Option<HashMap<String, String>> {
+-    let nav_re = DDG_NAV_LINK_RE.get_or_init(|| {
+-        Regex::new(r#"(?s)<div[^>]*class="nav-link"[^>]*>(.*?)</div>"#).expect("nav-link regex")
+-    });
+-    let hidden_re = DDG_HIDDEN_INPUT_RE.get_or_init(|| {
+-        Regex::new(r#"<input[^>]*type="hidden"[^>]*name="([^"]+)"[^>]*value="([^"]*)""#)
+-            .expect("hidden input regex")
+-    });
+-    let nav = nav_re.captures_iter(html).last()?.get(1)?.as_str();
+-    let mut payload = HashMap::new();
+-    for cap in hidden_re.captures_iter(nav) {
+-        payload.insert(cap[1].to_string(), cap[2].to_string());
+-    }
+-    if payload.is_empty() {
+-        None
+-    } else {
+-        Some(payload)
+-    }
+-}
+-
+-/// Extract next-page form payload from DDG lite (`form` with `ext` submit).
+-pub fn extract_ddg_lite_next_payload(html: &str) -> Option<HashMap<String, String>> {
+-    let form_re = DDG_LITE_FORM_RE.get_or_init(|| {
+-        Regex::new(r#"(?s)<form[^>]*>.*?value="[^"]*ext[^"]*".*?</form>"#).expect("lite form regex")
+-    });
+-    let hidden_re = DDG_HIDDEN_INPUT_RE.get_or_init(|| {
+-        Regex::new(r#"<input[^>]*type="hidden"[^>]*name="([^"]+)"[^>]*value="([^"]*)""#)
+-            .expect("hidden input regex")
+-    });
+-    let form = form_re.captures_iter(html).last()?.get(0)?.as_str();
+-    let mut payload = HashMap::new();
+-    for cap in hidden_re.captures_iter(form) {
+-        payload.insert(cap[1].to_string(), cap[2].to_string());
+-    }
+-    if payload.is_empty() {
+-        None
+-    } else {
+-        Some(payload)
+-    }
+-}
+-
+-/// Rows Python skips on HTML/Lite backends only (Bing `_text_bing` does not filter these).
+-pub fn is_non_result_url(url: &str) -> bool {
+-    url.starts_with("http://www.google.com/search?q=")
+-        || url.starts_with("https://www.google.com/search?q=")
+-        || url.contains("duckduckgo.com/y.js?ad_domain")
+-}
+-
+-pub fn is_ddg_ad_url(url: &str) -> bool {
+-    is_non_result_url(url)
+-}
+-
+-/// Parse DDG HTML — Python xpath `//div[h2]` primary, `result__a` fallback.
+-pub fn parse_ddg_html(
+-    html: &str,
+-    max: usize,
+-    source: &str,
+-) -> Result<Vec<SearchResult>, SearchError> {
+-    if let Some(results) = parse_ddg_html_div_h2(html, max, source)
+-        && !results.is_empty()
+-    {
+-        return Ok(results);
+-    }
+-
+-    let result_re = DDG_RESULT_RE.get_or_init(|| {
+-        Regex::new(r#"class="result__a"[^>]*href="([^"]+)"[^>]*>([^<]+)"#)
+-            .expect("valid DDG result regex")
+-    });
+-    let snippet_re = DDG_SNIPPET_RE.get_or_init(|| {
+-        Regex::new(r#"class="result__snippet"[^>]*>([\s\S]*?)</a>"#)
+-            .expect("valid DDG snippet regex")
+-    });
+-    let alt_re = DDG_ALT_LINK_RE.get_or_init(|| {
+-        Regex::new(r#"class="result__url"[^>]*href="([^"]+)"#).expect("valid DDG alt url regex")
+-    });
+-
+-    let mut pairs: Vec<(String, String)> = result_re
+-        .captures_iter(html)
+-        .filter_map(|c| {
+-            let url = normalize_ddg_url(&c[1])?;
+-            let title = c[2].trim().to_string();
+-            if title.is_empty() {
+-                return None;
+-            }
+-            Some((url, title))
+-        })
+-        .collect();
+-
+-    if pairs.is_empty() {
+-        pairs = alt_re
+-            .captures_iter(html)
+-            .filter_map(|c| {
+-                let url = normalize_ddg_url(&c[1])?;
+-                Some((url, String::new()))
+-            })
+-            .collect();
+-    }
+-
+-    let snippets: Vec<String> = snippet_re
+-        .captures_iter(html)
+-        .map(|c| text::clean_snippet(&c[1]))
+-        .collect();
+-
+-    finish_ddg_pairs(pairs, snippets, max, source)
+-}
+-
+-/// Python `_text_duckduckgo_html`: `//div[h2]` blocks.
+-fn parse_ddg_html_div_h2(html: &str, max: usize, source: &str) -> Option<Vec<SearchResult>> {
+-    let div_h2_re = DDG_DIV_H2_RE.get_or_init(|| {
+-        Regex::new(
+-            r#"(?s)<div[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>.*?<h2>\s*<a[^>]*>([^<]*)</a>\s*</h2>.*?<a[^>]*>([\s\S]*?)</a>"#,
+-        )
+-        .expect("valid DDG div[h2] regex")
+-    });
+-
+-    let mut out = Vec::new();
+-    for cap in div_h2_re.captures_iter(html).take(max) {
+-        let url = normalize_ddg_url(&cap[1])?;
+-        if is_ddg_ad_url(&url) {
+-            continue;
+-        }
+-        let title = text::clean_title(cap[2].trim());
+-        let snippet = text::clean_snippet(cap.get(3).map(|m| m.as_str()).unwrap_or(""));
+-        let title = if title.is_empty() { url.clone() } else { title };
+-        let url = text::normalize_url_field(&url);
+-        out.push(SearchResult::new(
+-            out.len() + 1,
+-            title,
+-            url,
+-            snippet,
+-            source,
+-        ));
+-    }
+-    Some(out)
+-}
+-
+-fn finish_ddg_pairs(
+-    pairs: Vec<(String, String)>,
+-    snippets: Vec<String>,
+-    max: usize,
+-    source: &str,
+-) -> Result<Vec<SearchResult>, SearchError> {
+-    let mut out = Vec::new();
+-    for (i, (url, title)) in pairs.into_iter().take(max).enumerate() {
+-        let snippet = snippets.get(i).cloned().unwrap_or_default();
+-        let title = if title.is_empty() {
+-            url.clone()
+-        } else {
+-            text::clean_title(&title)
+-        };
+-        let url = text::normalize_url_field(&url);
+-        out.push(SearchResult::new(i + 1, title, url, snippet, source));
+-    }
+-    Ok(out)
+-}
+-
+-/// Parse DDG lite — Python `//table[last()]//tr` row groups (link row + snippet row).
+-pub fn parse_ddg_lite(
+-    html: &str,
+-    max: usize,
+-    source: &str,
+-) -> Result<Vec<SearchResult>, SearchError> {
+-    if html.contains("No more results.") {
+-        return Ok(Vec::new());
+-    }
+-
+-    let tr_re = DDG_LITE_TR_RE
+-        .get_or_init(|| Regex::new(r"(?s)<tr[^>]*>(.*?)</tr>").expect("lite tr regex"));
+-    let href_re = Regex::new(r#"<a[^>]*href="([^"]+)""#).expect("href regex");
+-    let title_re = Regex::new(r#"<a[^>]*>([^<]*)</a>"#).expect("title regex");
+-    let snippet_re = Regex::new(r#"class='result-snippet'[^>]*>([\s\S]*?)</td>"#).expect("snippet");
+-
+-    let rows: Vec<&str> = tr_re
+-        .captures_iter(html)
+-        .filter_map(|c| c.get(1).map(|m| m.as_str()))
+-        .collect();
+-
+-    let mut out = Vec::new();
+-    let mut i = 0;
+-    while i + 1 < rows.len() && out.len() < max {
+-        let link_row = rows[i];
+-        let snippet_row = rows[i + 1];
+-
+-        if let Some(href_cap) = href_re.captures(link_row)
+-            && let Some(url) = normalize_ddg_url(&href_cap[1])
+-            && !is_ddg_ad_url(&url)
+-        {
+-            let title = title_re
+-                .captures(link_row)
+-                .map(|c| text::clean_title(c[1].trim()))
+-                .unwrap_or_default();
+-            let snippet = snippet_re
+-                .captures(snippet_row)
+-                .map(|c| text::clean_snippet(&c[1]))
+-                .unwrap_or_default();
+-            let title = if title.is_empty() { url.clone() } else { title };
+-            let url = text::normalize_url_field(&url);
+-            out.push(SearchResult::new(
+-                out.len() + 1,
+-                title,
+-                url,
+-                snippet,
+-                source,
+-            ));
+-            i += 2;
+-            continue;
+-        }
+-        i += 1;
+-    }
+-
+-    Ok(out)
+-}
+-
+-/// Parse Bing HTML search results (`www.bing.com/search`).
+-pub fn parse_bing_html(
+-    html: &str,
+-    max: usize,
+-    source: &str,
+-) -> Result<Vec<SearchResult>, SearchError> {
+-    let algo_re = BING_ALGO_RE.get_or_init(|| {
+-        Regex::new(
+-            r#"(?s)<li[^>]*class="[^"]*b_algo[^"]*"[^>]*>.*?<h2[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>([\s\S]*?)</a>\s*</h2>.*?<p[^>]*>([\s\S]*?)</p>"#,
+-        )
+-        .expect("valid Bing b_algo regex")
+-    });
+-    let algo_alt_re = BING_ALGO_ALT_RE.get_or_init(|| {
+-        Regex::new(
+-            r#"(?s)<li[^>]*class="[^"]*b_algo[^"]*"[^>]*>.*?<div[^>]*class="[^"]*header[^"]*"[^>]*>\s*<a[^>]*href="([^"]+)"[^>]*>.*?<h2[^>]*>([\s\S]*?)</h2>"#,
+-        )
+-        .expect("valid Bing b_algo alt regex")
+-    });
+-
+-    let mut out = Vec::new();
+-    let mut seen = std::collections::HashSet::new();
+-
+-    for cap in algo_re.captures_iter(html) {
+-        if out.len() >= max {
+-            break;
+-        }
+-        push_bing_result(&mut out, &mut seen, &cap, source, true);
+-    }
+-    if out.len() < max {
+-        for cap in algo_alt_re.captures_iter(html) {
+-            if out.len() >= max {
+-                break;
+-            }
+-            push_bing_result(&mut out, &mut seen, &cap, source, false);
+-        }
+-    }
+-    Ok(out)
+-}
+-
+-fn push_bing_result(
+-    out: &mut Vec<SearchResult>,
+-    seen: &mut std::collections::HashSet<String>,
+-    cap: &regex::Captures,
+-    source: &str,
+-    with_snippet: bool,
+-) {
+-    let raw_url = cap.get(1).map(|m| m.as_str()).unwrap_or("");
+-    let Some(url) = normalize_bing_url(raw_url) else {
+-        return;
+-    };
+-    if url.is_empty() || !seen.insert(url.clone()) {
+-        return;
+-    }
+-    let title = cap
+-        .get(2)
+-        .map(|m| text::clean_title(m.as_str()))
+-        .unwrap_or_default();
+-    let snippet = if with_snippet {
+-        cap.get(3)
+-            .map(|m| text::clean_snippet(m.as_str()))
+-            .unwrap_or_default()
+-    } else {
+-        String::new()
+-    };
+-    let title = if title.is_empty() { url.clone() } else { title };
+-    let url = text::normalize_url_field(&url);
+-    out.push(SearchResult::new(
+-        out.len() + 1,
+-        title,
+-        url,
+-        snippet,
+-        source,
+-    ));
+-}
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+-    use crate::tools::web::search::backends::ddgs::settings::DdgsEngine;
+-
+-    #[test]
+-    fn parse_classic_result_and_snippet() {
+-        let html = r#"
+-            <a class="result__a" href="https://rust-lang.org">Rust</a>
+-            <a class="result__snippet">Systems programming language</a>
+-        "#;
+-        let results = parse_ddg_html(html, 5, "ddgs").expect("parse");
+-        assert_eq!(results.len(), 1);
+-        assert_eq!(results[0].title, "Rust");
+-        assert_eq!(results[0].url, "https://rust-lang.org");
+-        assert!(results[0].snippet.contains("Systems"));
+-    }
+-
+-    #[test]
+-    fn parse_empty_html_is_success() {
+-        assert!(
+-            parse_ddg_html("<html></html>", 5, "ddgs")
+-                .expect("parse")
+-                .is_empty()
+-        );
+-    }
+-
+-    #[test]
+-    fn decode_ddg_redirect_url() {
+-        let raw = "https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpage";
+-        let url = normalize_ddg_url(raw).expect("decode");
+-        assert_eq!(url, "https://example.com/page");
+-    }
+-
+-    #[test]
+-    fn protocol_relative_urls_normalized() {
+-        assert_eq!(
+-            normalize_ddg_url("//example.com/x").as_deref(),
+-            Some("https://example.com/x")
+-        );
+-    }
+-
+-    #[test]
+-    fn href_or_url_style_passthrough() {
+-        assert_eq!(
+-            normalize_ddg_url("https://direct.example").as_deref(),
+-            Some("https://direct.example")
+-        );
+-    }
+-
+-    #[test]
+-    fn bing_page_no_results_string_like_python() {
+-        assert!(bing_page_reports_no_results(
+-            r#"<html>There are no results for "foo"</html>"#
+-        ));
+-    }
+-
+-    #[test]
+-    fn bing_script_no_results_string_does_not_gate_when_algo_present() {
+-        let html = r#"
+-            <script>"There are no results for this question, please check your spelling"</script>
+-            <li class="b_algo">
+-                <h2><a href="https://rust-lang.org">Rust Programming Language</a></h2>
+-                <p>A systems programming language.</p>
+-            </li>
+-        "#;
+-        assert!(bing_html_has_algo_rows(html));
+-        assert!(
+-            !bing_page_reports_no_results(html),
+-            "script substring must not gate when b_algo rows exist"
+-        );
+-        let results = parse_bing_html(html, 5, "ddgs").expect("parse");
+-        assert_eq!(results.len(), 1);
+-    }
+-
+-    #[test]
+-    fn engine_reports_no_results_bing_deferred_to_search_layer() {
+-        assert!(!engine_reports_no_results(
+-            DdgsEngine::Bing,
+-            r#"<div class="b_noResults">No results</div>"#
+-        ));
+-    }
+-
+-    #[test]
+-    fn parse_bing_algo_with_h2_attributes() {
+-        let html = r#"
+-            <li class="b_algo" data-id="">
+-                <h2 class=""><a href="https://www.rust-lang.org/"><strong>Rust Programming Language</strong></a></h2>
+-                <div class="b_caption"><p class="b_lineclamp2">Blazingly fast systems language.</p></div>
+-            </li>
+-        "#;
+-        let results = parse_bing_html(html, 5, "ddgs").expect("parse");
+-        assert_eq!(results.len(), 1);
+-        assert_eq!(results[0].title, "Rust Programming Language");
+-        assert!(results[0].snippet.contains("Blazingly"));
+-    }
+-
+-    #[test]
+-    fn parse_bing_algo_block() {
+-        let html = r#"
+-            <li class="b_algo">
+-                <h2><a href="https://example.com/page">Example Site</a></h2>
+-                <p>A useful snippet about the page.</p>
+-            </li>
+-        "#;
+-        let results = parse_bing_html(html, 5, "ddgs").expect("parse");
+-        assert_eq!(results.len(), 1);
+-        assert_eq!(results[0].title, "Example Site");
+-        assert_eq!(results[0].url, "https://example.com/page");
+-        assert!(results[0].snippet.contains("useful snippet"));
+-    }
+-
+-    #[test]
+-    fn parse_bing_algo_html_with_ck_amp_href() {
+-        let html = r#"
+-            <li class="b_algo" data-id="">
+-                <h2 class=""><a href="https://www.bing.com/ck/a?!&amp;&amp;p=abc&amp;u=a1aHR0cHM6Ly9leGFtcGxlLmNvbS8&amp;ntb=1"><strong>Example</strong></a></h2>
+-                <div class="b_caption"><p class="b_lineclamp2">Snippet text.</p></div>
+-            </li>
+-        "#;
+-        let results = parse_bing_html(html, 5, "ddgs").expect("parse");
+-        assert_eq!(results.len(), 1);
+-        assert_eq!(results[0].url, "https://example.com/");
+-    }
+-
+-    #[test]
+-    fn parse_bing_live_ck_redirect_with_amp_entities() {
+-        let raw = "https://www.bing.com/ck/a?!&amp;&amp;p=abc&amp;u=a1aHR0cHM6Ly9ydXN0LWxhbmcub3JnLw&amp;ntb=1";
+-        let url = normalize_bing_url(raw).expect("decode live bing ck url");
+-        assert_eq!(url, "https://rust-lang.org/");
+-    }
+-
+-    #[test]
+-    fn parse_bing_live_ck_redirect_modern_query_shape() {
+-        let raw = "https://www.bing.com/ck/a?!&&p=abc&u=a1aHR0cHM6Ly9ydXN0LWxhbmcub3JnLw&ntb=1";
+-        let url = normalize_bing_url(raw).expect("decode modern bing ck url");
+-        assert_eq!(url, "https://rust-lang.org/");
+-    }
+-
+-    #[test]
+-    fn parse_bing_ck_redirect() {
+-        let inner = "https://decoded.example/path";
+-        let encoded = base64::engine::general_purpose::URL_SAFE.encode(inner.as_bytes());
+-        let u_param = format!("xx{encoded}");
+-        let html = format!(
+-            r#"<li class="b_algo"><h2><a href="https://www.bing.com/ck/a?u={u_param}">T</a></h2><p>body</p></li>"#
+-        );
+-        let results = parse_bing_html(&html, 5, "ddgs").expect("parse");
+-        assert_eq!(results[0].url, inner);
+-    }
+-
+-    #[test]
+-    fn parse_engine_routes_to_bing() {
+-        let html = r#"<li class="b_algo"><h2><a href="https://x.com">X</a></h2><p>s</p></li>"#;
+-        let results = parse_engine_html(DdgsEngine::Bing, html, 3, "ddgs").expect("parse");
+-        assert_eq!(results.len(), 1);
+-    }
+-
+-    #[test]
+-    fn parse_ddg_lite_table_rows() {
+-        let html = r#"
+-            <table><tr><td><a href="https://example.org">Example Org</a></td></tr>
+-            <tr><td class='result-snippet'>Snippet for example org</td></tr></table>
+-        "#;
+-        let results = parse_ddg_lite(html, 5, "ddgs").expect("parse");
+-        assert_eq!(results.len(), 1);
+-        assert_eq!(results[0].url, "https://example.org");
+-    }
+-}
+diff --git a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/query.rs b/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/query.rs
+deleted file mode 100644
+index c7ce986..0000000
+--- a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/query.rs
++++ /dev/null
+@@ -1,61 +0,0 @@
+-//! Query tokenization for opt-in ranked reorder (`DDGS_SELECTION=ranked` only).
+-
+-use crate::tools::web::search::backend::SearchResult;
+-
+-use super::text;
+-
+-/// Whitespace-delimited tokens (NFKD-folded, length ≥ 3).
+-pub fn query_tokens(query: &str) -> Vec<String> {
+-    query
+-        .split_whitespace()
+-        .map(text::fold_for_search)
+-        .filter(|t| t.len() >= 3)
+-        .collect()
+-}
+-
+-/// Count query tokens matched in title/snippet (word boundaries) or URL slug segments.
+-pub fn overlap_score(tokens: &[String], result: &SearchResult) -> u32 {
+-    if tokens.is_empty() {
+-        return 0;
+-    }
+-    let hay = text::fold_for_search(&format!("{} {}", result.title, result.snippet));
+-    tokens
+-        .iter()
+-        .filter(|t| token_in_text(&hay, t) || token_in_url(&result.url, t))
+-        .count() as u32
+-}
+-
+-pub fn token_in_text(hay: &str, token: &str) -> bool {
+-    if token.is_empty() {
+-        return false;
+-    }
+-    hay.split(|c: char| !c.is_alphanumeric())
+-        .any(|word| word == token)
+-}
+-
+-pub fn token_in_url(url: &str, token: &str) -> bool {
+-    if token.len() < 4 {
+-        return false;
+-    }
+-    text::fold_for_search(url)
+-        .split(|c: char| !c.is_alphanumeric())
+-        .filter(|s| !s.is_empty())
+-        .any(|seg| seg == token || seg.starts_with(token) || seg.ends_with(token))
+-}
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+-
+-    #[test]
+-    fn tokens_from_accented_name() {
+-        let t = query_tokens("Raphaël MANSUY");
+-        assert!(t.contains(&"raphael".to_string()));
+-        assert!(t.contains(&"mansuy".to_string()));
+-    }
+-
+-    #[test]
+-    fn word_boundary_not_substring() {
+-        assert!(!token_in_text("smart contracts", "art"));
+-    }
+-}
+diff --git a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/selection.rs b/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/selection.rs
+deleted file mode 100644
+index 95846d4..0000000
+--- a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/selection.rs
++++ /dev/null
+@@ -1,204 +0,0 @@
+-//! Result selection — Python `ddgs` raw contract + optional overlap reorder (no row drops).
+-
+-use std::collections::HashMap;
+-
+-use crate::tools::web::search::backend::SearchResult;
+-
+-use super::parse;
+-use super::query;
+-use super::settings::DdgsSelectionMode;
+-use super::text;
+-
+-/// Merge batches — dedupe by URL (Python `cache` set), preserve first-seen SERP order.
+-pub fn extend_pool(pool: &mut Vec<SearchResult>, batch: Vec<SearchResult>) {
+-    let mut index_by_url: HashMap<String, usize> = HashMap::new();
+-
+-    for (i, r) in pool.iter().enumerate() {
+-        index_by_url.insert(normalize_url_key(&r.url), i);
+-    }
+-
+-    for r in pool.iter_mut() {
+-        *r = sanitize_result(r.clone());
+-    }
+-
+-    for r in batch {
+-        let cleaned = sanitize_result(r);
+-        let key = normalize_url_key(&cleaned.url);
+-        if let Some(&idx) = index_by_url.get(&key) {
+-            merge_richer(&mut pool[idx], cleaned);
+-        } else {
+-            index_by_url.insert(key, pool.len());
+-            pool.push(cleaned);
+-        }
+-    }
+-}
+-
+-/// Apply selection policy after metasearch (mode from [`DdgsSelectionMode`]).
+-pub fn select_results(
+-    mode: DdgsSelectionMode,
+-    query: &str,
+-    pool: Vec<SearchResult>,
+-    max: usize,
+-) -> Vec<SearchResult> {
+-    match mode {
+-        DdgsSelectionMode::Raw => select_raw(pool, max),
+-        DdgsSelectionMode::Ranked => select_ranked(query, pool, max),
+-    }
+-}
+-
+-/// Python `DDGS.text()` contract: keep SERP order, cap at `max` (filtering done per-engine at parse).
+-pub fn select_raw(pool: Vec<SearchResult>, max: usize) -> Vec<SearchResult> {
+-    deliverable_indexed(pool, false)
+-        .into_iter()
+-        .take(max)
+-        .enumerate()
+-        .map(|(i, (_, r))| SearchResult::new(i + 1, r.title, r.url, r.snippet, r.source))
+-        .collect()
+-}
+-
+-/// Opt-in EdgeCrab mode: same deliverability filter, reorder by query-token overlap — never drop rows.
+-pub fn select_ranked(query: &str, pool: Vec<SearchResult>, max: usize) -> Vec<SearchResult> {
+-    let tokens = query::query_tokens(query);
+-    let mut indexed = deliverable_indexed(pool, true);
+-
+-    if !tokens.is_empty() {
+-        indexed.sort_by(|(ia, a), (ib, b)| {
+-            query::overlap_score(&tokens, b)
+-                .cmp(&query::overlap_score(&tokens, a))
+-                .then_with(|| ia.cmp(ib))
+-        });
+-    }
+-
+-    indexed
+-        .into_iter()
+-        .take(max)
+-        .enumerate()
+-        .map(|(i, (_, r))| SearchResult::new(i + 1, r.title, r.url, r.snippet, r.source))
+-        .collect()
+-}
+-
+-fn deliverable_indexed(pool: Vec<SearchResult>, ranked: bool) -> Vec<(usize, SearchResult)> {
+-    pool.into_iter()
+-        .enumerate()
+-        .map(|(i, r)| (i, sanitize_result(r)))
+-        .filter(|(_, r)| is_deliverable_row(r, ranked))
+-        .collect()
+-}
+-
+-fn merge_richer(existing: &mut SearchResult, incoming: SearchResult) {
+-    if incoming.snippet.len() > existing.snippet.len() {
+-        existing.snippet = incoming.snippet;
+-    }
+-    if incoming.title.len() > existing.title.len() {
+-        existing.title = incoming.title;
+-    }
+-}
+-
+-/// Python raw mode: non-empty URL only. Ranked mode also drops HTML/Lite ad rows if they leaked in.
+-pub fn is_deliverable(r: &SearchResult) -> bool {
+-    is_deliverable_row(r, false)
+-}
+-
+-fn is_deliverable_row(r: &SearchResult, ranked: bool) -> bool {
+-    if r.url.trim().is_empty() {
+-        return false;
+-    }
+-    if ranked && parse::is_non_result_url(&r.url) {
+-        return false;
+-    }
+-    true
+-}
+-
+-fn sanitize_result(mut r: SearchResult) -> SearchResult {
+-    r.title = text::normalize_field(&r.title);
+-    r.snippet = text::normalize_field(&r.snippet);
+-    r.url = text::normalize_url_field(&r.url);
+-    r
+-}
+-
+-fn normalize_url_key(url: &str) -> String {
+-    url::Url::parse(url)
+-        .ok()
+-        .map(|mut u| {
+-            u.set_fragment(None);
+-            let host = u.host_str().unwrap_or("").to_ascii_lowercase();
+-            let path = u.path().trim_end_matches('/').to_ascii_lowercase();
+-            format!("{host}{path}")
+-        })
+-        .unwrap_or_else(|| url.trim().to_ascii_lowercase())
+-}
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+-    use crate::tools::web::search::backend::SearchResult;
+-    use crate::tools::web::search::backends::ddgs::settings::DdgsSelectionMode;
+-
+-    fn hit(title: &str, snippet: &str, url: &str) -> SearchResult {
+-        SearchResult::new(1, title, url, snippet, "ddgs")
+-    }
+-
+-    #[test]
+-    fn raw_matches_python_serp_order() {
+-        let pool = vec![
+-            hit("Ad", "buy", "https://duckduckgo.com/y.js?ad_domain=x"),
+-            hit("Rust", "lang", "https://rust-lang.org/"),
+-            hit("Book", "learn", "https://doc.rust-lang.org/book/"),
+-        ];
+-        let out = select_raw(pool, 5);
+-        assert_eq!(out.len(), 3);
+-        assert_eq!(out[0].url, "https://duckduckgo.com/y.js?ad_domain=x");
+-        assert_eq!(out[1].url, "https://rust-lang.org/");
+-    }
+-
+-    #[test]
+-    fn raw_returns_poison_serp_like_python() {
+-        let pool = vec![
+-            hit("Dexsport", "a", "https://dexsport.io/"),
+-            hit("Dexsport 2", "b", "https://example.com/dex"),
+-        ];
+-        assert_eq!(select_raw(pool, 5).len(), 2);
+-    }
+-
+-    #[test]
+-    fn ranked_reorders_without_dropping_unrelated() {
+-        let pool = vec![
+-            hit("Dexsport", "a", "https://dexsport.io/"),
+-            hit(
+-                "Raphaël MANSUY",
+-                "profile",
+-                "https://linkedin.com/in/raphaelmansuy",
+-            ),
+-        ];
+-        let out = select_ranked("Raphaël MANSUY", pool, 2);
+-        assert_eq!(out.len(), 2);
+-        assert!(out[0].url.contains("linkedin.com"));
+-    }
+-
+-    #[test]
+-    fn merge_preserves_serp_order() {
+-        let mut pool = vec![hit("A", "a", "https://a.example/")];
+-        extend_pool(
+-            &mut pool,
+-            vec![
+-                hit("B", "b", "https://b.example/"),
+-                hit("A2", "aa", "https://a.example/"),
+-            ],
+-        );
+-        assert_eq!(pool[0].url, "https://a.example/");
+-        assert_eq!(pool[1].url, "https://b.example/");
+-    }
+-
+-    #[test]
+-    fn select_results_dispatches_mode() {
+-        let pool = vec![hit("X", "s", "https://x.example/")];
+-        assert_eq!(
+-            select_results(DdgsSelectionMode::Raw, "", pool.clone(), 1).len(),
+-            1
+-        );
+-        assert_eq!(
+-            select_results(DdgsSelectionMode::Ranked, "x", pool, 1).len(),
+-            1
+-        );
+-    }
+-}
+diff --git a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/settings.rs b/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/settings.rs
+deleted file mode 100644
+index 38ab409..0000000
+--- a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/settings.rs
++++ /dev/null
+@@ -1,216 +0,0 @@
+-//! DDGS runtime settings — env overrides with sensible defaults (no API key).
+-
+-use crate::config_ref::WebSearchBackendConfigRef;
+-
+-/// Metasearch engine (reverse-engineered from Python `ddgs` package).
+-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+-pub enum DdgsEngine {
+-    Bing,
+-    Html,
+-    Lite,
+-}
+-
+-impl DdgsEngine {
+-    pub fn label(self) -> &'static str {
+-        match self {
+-            Self::Bing => "Bing",
+-            Self::Html => "DuckDuckGo HTML",
+-            Self::Lite => "DuckDuckGo Lite",
+-        }
+-    }
+-}
+-
+-/// Which engine(s) to use — Python `backend=` arg (`auto` → Bing-only in 9.0.0).
+-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+-pub enum DdgsBackendMode {
+-    #[default]
+-    Auto,
+-    Bing,
+-    Html,
+-    Lite,
+-}
+-
+-/// Post-parse selection — Python raw (default) vs optional ranked reorder.
+-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+-pub enum DdgsSelectionMode {
+-    /// Python `DDGS.text()` parity: SERP order, ad URLs only filtered on HTML/Lite parsers.
+-    #[default]
+-    Raw,
+-    /// Opt-in EdgeCrab: reorder by query-token overlap; never drop parseable rows.
+-    Ranked,
+-}
+-
+-/// DuckDuckGo HTML search tunables (Python `text(region=None)` — region optional).
+-#[derive(Debug, Clone, PartialEq, Eq)]
+-pub struct DdgsSettings {
+-    /// `kl` / Bing `_EDGE_*` cookies — only sent when non-empty (Python `region=` arg).
+-    pub region: String,
+-    /// `kp` form field — `-1` strict, `-2` moderate (default), `1` off (HTML backend only).
+-    pub safe_search: String,
+-    /// Transient-error retries per engine before trying the next metasearch backend.
+-    pub max_retries: u32,
+-    /// Metasearch mode (`DDGS_BACKEND=auto|bing|html|lite`).
+-    pub backend_mode: DdgsBackendMode,
+-    /// Post-parse selection (`DDGS_SELECTION=raw|ranked`).
+-    pub selection_mode: DdgsSelectionMode,
+-}
+-
+-impl Default for DdgsSettings {
+-    fn default() -> Self {
+-        Self {
+-            region: String::new(),
+-            safe_search: "-2".into(),
+-            max_retries: 0,
+-            backend_mode: DdgsBackendMode::Auto,
+-            selection_mode: DdgsSelectionMode::Raw,
+-        }
+-    }
+-}
+-
+-impl DdgsSettings {
+-    /// Resolve from `web_search.backends.ddgs` + env (`DDGS_REGION`, `DDGS_SAFESEARCH`, `DDGS_MAX_RETRIES`, `DDGS_BACKEND`).
+-    pub fn resolve(cfg: &WebSearchBackendConfigRef) -> Self {
+-        let mut settings = Self::default();
+-
+-        if let Some(region) = cfg
+-            .endpoint
+-            .as_deref()
+-            .map(str::trim)
+-            .filter(|v| !v.is_empty())
+-        {
+-            settings.region = region.to_ascii_lowercase();
+-        }
+-        if let Some(region) = std::env::var("DDGS_REGION")
+-            .ok()
+-            .map(|r| r.trim().to_ascii_lowercase())
+-            .filter(|r| !r.is_empty())
+-        {
+-            settings.region = region;
+-        }
+-
+-        if let Ok(kp) = std::env::var("DDGS_SAFESEARCH") {
+-            let kp = kp.trim();
+-            if matches!(kp, "-1" | "-2" | "1") {
+-                settings.safe_search = kp.to_string();
+-            }
+-        }
+-
+-        if let Ok(n) = std::env::var("DDGS_MAX_RETRIES")
+-            && let Ok(parsed) = n.trim().parse::<u32>()
+-        {
+-            settings.max_retries = parsed.min(5);
+-        }
+-
+-        if let Ok(mode) = std::env::var("DDGS_BACKEND") {
+-            settings.backend_mode = match mode.trim().to_ascii_lowercase().as_str() {
+-                "bing" => DdgsBackendMode::Bing,
+-                "html" => DdgsBackendMode::Html,
+-                "lite" => DdgsBackendMode::Lite,
+-                "auto" => DdgsBackendMode::Auto,
+-                _ => settings.backend_mode,
+-            };
+-        }
+-
+-        if let Ok(sel) = std::env::var("DDGS_SELECTION") {
+-            settings.selection_mode = match sel.trim().to_ascii_lowercase().as_str() {
+-                "raw" => DdgsSelectionMode::Raw,
+-                "ranked" => DdgsSelectionMode::Ranked,
+-                _ => settings.selection_mode,
+-            };
+-        }
+-
+-        settings
+-    }
+-
+-    /// Python `region=` — omitted from HTTP when unset.
+-    pub fn region(&self) -> Option<&str> {
+-        let r = self.region.trim();
+-        if r.is_empty() { None } else { Some(r) }
+-    }
+-
+-    /// Engine try-order for this configuration (Python `ddgs.text(..., backend=...)` parity).
+-    pub fn engine_order(&self) -> Vec<DdgsEngine> {
+-        match self.backend_mode {
+-            DdgsBackendMode::Bing => vec![DdgsEngine::Bing],
+-            DdgsBackendMode::Html => vec![DdgsEngine::Html],
+-            DdgsBackendMode::Lite => vec![DdgsEngine::Lite],
+-            DdgsBackendMode::Auto => {
+-                // Python 9.0.0 `auto`: `backends = ["bing"]` (HTML/Lite temporarily disabled).
+-                vec![DdgsEngine::Bing]
+-            }
+-        }
+-    }
+-}
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+-    use crate::tools::web::search::test_isolation::web_config_test_lock;
+-
+-    #[test]
+-    fn defaults_match_ddg_html_form() {
+-        let _lock = web_config_test_lock();
+-        let s = DdgsSettings::default();
+-        assert!(s.region().is_none());
+-        assert_eq!(s.safe_search, "-2");
+-        assert_eq!(s.max_retries, 0);
+-        assert_eq!(s.backend_mode, DdgsBackendMode::Auto);
+-        assert_eq!(s.selection_mode, DdgsSelectionMode::Raw);
+-    }
+-
+-    #[test]
+-    fn env_overrides_region_and_retries() {
+-        let _lock = web_config_test_lock();
+-        let prev_r = std::env::var("DDGS_REGION").ok();
+-        let prev_n = std::env::var("DDGS_MAX_RETRIES").ok();
+-        unsafe { std::env::set_var("DDGS_REGION", "fr-fr") };
+-        unsafe { std::env::set_var("DDGS_MAX_RETRIES", "4") };
+-        let s = DdgsSettings::resolve(&WebSearchBackendConfigRef::default());
+-        assert_eq!(s.region(), Some("fr-fr"));
+-        assert_eq!(s.max_retries, 4);
+-        unsafe { std::env::remove_var("DDGS_REGION") };
+-        unsafe { std::env::remove_var("DDGS_MAX_RETRIES") };
+-        if let Some(v) = prev_r {
+-            unsafe { std::env::set_var("DDGS_REGION", v) };
+-        }
+-        if let Some(v) = prev_n {
+-            unsafe { std::env::set_var("DDGS_MAX_RETRIES", v) };
+-        }
+-    }
+-
+-    #[test]
+-    fn config_endpoint_sets_region_when_env_unset() {
+-        let _lock = web_config_test_lock();
+-        let prev = std::env::var("DDGS_REGION").ok();
+-        unsafe { std::env::remove_var("DDGS_REGION") };
+-        let s = DdgsSettings::resolve(&WebSearchBackendConfigRef {
+-            endpoint: Some("de-de".into()),
+-            ..Default::default()
+-        });
+-        assert_eq!(s.region(), Some("de-de"));
+-        unsafe { std::env::remove_var("DDGS_REGION") };
+-        if let Some(v) = prev {
+-            unsafe { std::env::set_var("DDGS_REGION", v) };
+-        }
+-    }
+-
+-    #[test]
+-    fn auto_engine_order_is_bing_only_like_python_9() {
+-        let _lock = web_config_test_lock();
+-        let order = DdgsSettings::default().engine_order();
+-        assert_eq!(order, vec![DdgsEngine::Bing]);
+-    }
+-
+-    #[test]
+-    fn backend_mode_env_selects_single_engine() {
+-        let _lock = web_config_test_lock();
+-        let prev = std::env::var("DDGS_BACKEND").ok();
+-        unsafe { std::env::set_var("DDGS_BACKEND", "html") };
+-        let s = DdgsSettings::resolve(&WebSearchBackendConfigRef::default());
+-        assert_eq!(s.engine_order(), vec![DdgsEngine::Html]);
+-        unsafe { std::env::remove_var("DDGS_BACKEND") };
+-        if let Some(v) = prev {
+-            unsafe { std::env::set_var("DDGS_BACKEND", v) };
+-        }
+-    }
+-}
+diff --git a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/text.rs b/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/text.rs
+deleted file mode 100644
+index c7754ea..0000000
+--- a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/text.rs
++++ /dev/null
+@@ -1,137 +0,0 @@
+-//! Shared SERP text normalization — Python `ddgs.utils._normalize` / `_normalize_url` parity.
+-
+-use std::sync::OnceLock;
+-
+-use regex::Regex;
+-use unicode_normalization::UnicodeNormalization;
+-
+-/// Decode common HTML entities (including numeric `&#235;`).
+-pub fn decode_html_entities(input: &str) -> String {
+-    let mut out = input
+-        .replace("&amp;", "&")
+-        .replace("&quot;", "\"")
+-        .replace("&#39;", "'")
+-        .replace("&lt;", "<")
+-        .replace("&gt;", ">")
+-        .replace("&nbsp;", " ");
+-
+-    static DEC: OnceLock<Regex> = OnceLock::new();
+-    static HEX: OnceLock<Regex> = OnceLock::new();
+-    let dec = DEC.get_or_init(|| Regex::new(r"&#(\d+);").expect("dec entity"));
+-    let hex = HEX.get_or_init(|| Regex::new(r"&#x([0-9a-fA-F]+);").expect("hex entity"));
+-
+-    out = dec
+-        .replace_all(&out, |caps: &regex::Captures| {
+-            caps.get(1)
+-                .and_then(|m| m.as_str().parse::<u32>().ok())
+-                .and_then(char::from_u32)
+-                .map(|c| c.to_string())
+-                .unwrap_or_default()
+-        })
+-        .into_owned();
+-    out = hex
+-        .replace_all(&out, |caps: &regex::Captures| {
+-            caps.get(1)
+-                .and_then(|m| u32::from_str_radix(m.as_str(), 16).ok())
+-                .and_then(char::from_u32)
+-                .map(|c| c.to_string())
+-                .unwrap_or_default()
+-        })
+-        .into_owned();
+-    out
+-}
+-
+-/// Remove HTML tags — Python `REGEX_STRIP_TAGS.sub("", raw_html)`.
+-pub fn strip_html_tags(html: &str) -> String {
+-    static TAG: OnceLock<Regex> = OnceLock::new();
+-    let re = TAG.get_or_init(|| Regex::new(r"<[^>]+>").expect("tag regex"));
+-    re.replace_all(html, "").into_owned()
+-}
+-
+-/// Python `_normalize`: unescape + strip tags (no truncation, no CSS heuristics).
+-pub fn normalize_field(raw: &str) -> String {
+-    if raw.is_empty() {
+-        return String::new();
+-    }
+-    let decoded = decode_html_entities(raw);
+-    strip_html_tags(&decoded).replace('\u{00a0}', " ")
+-}
+-
+-/// Python `_normalize_url`: unquote + replace spaces with `+`.
+-pub fn normalize_url_field(url: &str) -> String {
+-    if url.is_empty() {
+-        return String::new();
+-    }
+-    percent_unquote(url).replace(' ', "+")
+-}
+-
+-fn percent_unquote(input: &str) -> String {
+-    let mut bytes = Vec::new();
+-    let b = input.as_bytes();
+-    let mut i = 0;
+-    while i < b.len() {
+-        if b[i] == b'%' && i + 2 < b.len() {
+-            if let Ok(hex) = std::str::from_utf8(&b[i + 1..i + 3])
+-                && let Ok(byte) = u8::from_str_radix(hex, 16)
+-            {
+-                bytes.push(byte);
+-                i += 3;
+-                continue;
+-            }
+-        } else if b[i] == b'+' {
+-            bytes.push(b' ');
+-            i += 1;
+-            continue;
+-        }
+-        bytes.push(b[i]);
+-        i += 1;
+-    }
+-    String::from_utf8_lossy(&bytes).into_owned()
+-}
+-
+-/// Back-compat aliases used by parsers.
+-pub fn clean_title(raw: &str) -> String {
+-    normalize_field(raw).trim().to_string()
+-}
+-
+-pub fn clean_snippet(raw: &str) -> String {
+-    normalize_field(raw).trim().to_string()
+-}
+-
+-/// Accent-insensitive case fold (Unicode NFKD) — ranked mode only.
+-pub fn fold_for_search(s: &str) -> String {
+-    decode_html_entities(s)
+-        .nfkd()
+-        .filter(|c| !unicode_normalization::char::is_combining_mark(*c))
+-        .collect::<String>()
+-        .to_lowercase()
+-}
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+-
+-    #[test]
+-    fn fold_strips_accents() {
+-        assert_eq!(fold_for_search("Raphaël"), "raphael");
+-        assert_eq!(fold_for_search("café"), "cafe");
+-    }
+-
+-    #[test]
+-    fn decodes_numeric_entity_in_title() {
+-        assert_eq!(normalize_field("Rapha&#235;l MANSUY"), "Raphaël MANSUY");
+-    }
+-
+-    #[test]
+-    fn normalize_field_strips_tags_like_python() {
+-        assert_eq!(normalize_field("<strong>Rust</strong> lang"), "Rust lang");
+-    }
+-
+-    #[test]
+-    fn normalize_url_replaces_spaces() {
+-        assert_eq!(
+-            normalize_url_field("https://example.com/a%20b"),
+-            "https://example.com/a+b"
+-        );
+-    }
+-}
+diff --git a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/transport.rs b/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/transport.rs
+deleted file mode 100644
+index 8a82b5b..0000000
+--- a/crates/edgecrab-tools/src/tools/web/search/backends/ddgs/transport.rs
++++ /dev/null
+@@ -1,245 +0,0 @@
+-//! HTTP transport — primp random impersonation, referer chain, pacing, DDGS_PROXY (Python parity).
+-
+-use std::time::{Duration, Instant};
+-
+-use super::error::{map_engine_http_status, map_transport_error};
+-use super::fingerprint;
+-use super::settings::DdgsEngine;
+-use crate::tools::web::search::error::SearchError;
+-
+-fn resolve_ddgs_proxy() -> Option<String> {
+-    std::env::var("DDGS_PROXY")
+-        .ok()
+-        .map(|s| s.trim().to_string())
+-        .filter(|s| !s.is_empty())
+-        .map(expand_proxy_tb_alias)
+-}
+-
+-/// Python `utils._expand_proxy_tb_alias` — `tb` → Tor Browser SOCKS5.
+-fn expand_proxy_tb_alias(proxy: String) -> String {
+-    if proxy == "tb" {
+-        "socks5://127.0.0.1:9150".into()
+-    } else {
+-        proxy
+-    }
+-}
+-
+-struct HttpRequest<'a> {
+-    engine: DdgsEngine,
+-    backend: &'a str,
+-    method: &'a str,
+-    url: &'a str,
+-    referer: Option<&'a str>,
+-    query: Option<&'a [(&'a str, &'a str)]>,
+-    form: Option<&'a [(&'a str, &'a str)]>,
+-    cookie: Option<&'a str>,
+-}
+-
+-/// Build the outbound URL including query pairs (primp referer chain uses request URL).
+-fn build_request_url(base: &str, query: Option<&[(&str, &str)]>) -> Result<String, SearchError> {
+-    let Some(params) = query.filter(|p| !p.is_empty()) else {
+-        return Ok(base.to_string());
+-    };
+-    let mut url = url::Url::parse(base)
+-        .map_err(|e| SearchError::hard("ddgs", format!("Invalid engine URL {base}: {e}")))?;
+-    {
+-        let mut pairs = url.query_pairs_mut();
+-        for (k, v) in params {
+-            pairs.append_pair(k, v);
+-        }
+-    }
+-    Ok(url.to_string())
+-}
+-
+-/// One `DDGS()` client — primp random profile + `referer=True`, reused until [`Self::refresh`].
+-pub struct DdgsSession {
+-    client: wreq::Client,
+-    last_request: Instant,
+-    profile_id: &'static str,
+-    /// Python `primp.Client(referer=True)` — previous request URL for the Referer header.
+-    last_request_url: Option<String>,
+-}
+-
+-impl DdgsSession {
+-    pub fn new(timeout_secs: u64) -> Result<Self, SearchError> {
+-        let profile = fingerprint::resolve_profile_from_env();
+-        let profile_id = profile.id();
+-        let client = fingerprint::build_ddgs_client(timeout_secs, resolve_ddgs_proxy(), profile)
+-            .map_err(|e| SearchError::hard("ddgs", e))?;
+-        tracing::debug!(profile = profile_id, "ddgs session fingerprint");
+-        Ok(Self {
+-            client,
+-            last_request: Instant::now() - Duration::from_secs(30),
+-            profile_id,
+-            last_request_url: None,
+-        })
+-    }
+-
+-    /// Fresh client + new random profile (Python new `DDGS()` / primp retry).
+-    pub fn refresh(timeout_secs: u64) -> Result<Self, SearchError> {
+-        Self::new(timeout_secs)
+-    }
+-
+-    async fn pace(&mut self) {
+-        let elapsed = self.last_request.elapsed();
+-        if elapsed < Duration::from_secs(20) && elapsed > Duration::ZERO {
+-            tokio::time::sleep(Duration::from_millis(750)).await;
+-        }
+-        self.last_request = Instant::now();
+-    }
+-
+-    pub async fn get(
+-        &mut self,
+-        engine: DdgsEngine,
+-        backend: &str,
+-        url: &str,
+-        query: &[(&str, &str)],
+-        cookie: Option<&str>,
+-    ) -> Result<String, SearchError> {
+-        self.request(HttpRequest {
+-            engine,
+-            backend,
+-            method: "GET",
+-            url,
+-            referer: None,
+-            query: Some(query),
+-            form: None,
+-            cookie,
+-        })
+-        .await
+-    }
+-
+-    pub async fn post_form(
+-        &mut self,
+-        engine: DdgsEngine,
+-        backend: &str,
+-        url: &str,
+-        referer: &str,
+-        form: &[(&str, &str)],
+-    ) -> Result<String, SearchError> {
+-        self.request(HttpRequest {
+-            engine,
+-            backend,
+-            method: "POST",
+-            url,
+-            referer: Some(referer),
+-            query: None,
+-            form: Some(form),
+-            cookie: None,
+-        })
+-        .await
+-    }
+-
+-    async fn request(&mut self, req: HttpRequest<'_>) -> Result<String, SearchError> {
+-        use wreq::header::REFERER;
+-
+-        let HttpRequest {
+-            engine,
+-            backend,
+-            method,
+-            url,
+-            referer,
+-            query,
+-            form,
+-            cookie,
+-        } = req;
+-        validate_search_url(url)?;
+-        self.pace().await;
+-
+-        let request_url = build_request_url(url, query)?;
+-        let effective_referer = referer.or(self.last_request_url.as_deref());
+-        tracing::trace!(
+-            profile = self.profile_id,
+-            method,
+-            url = request_url,
+-            referer = ?effective_referer,
+-            "ddgs request"
+-        );
+-
+-        let mut req = match method {
+-            "POST" => self.client.post(url),
+-            _ => self.client.get(url),
+-        };
+-
+-        if method == "GET" {
+-            req = req.header("Upgrade-Insecure-Requests", "1");
+-        }
+-        let fetch_site = if effective_referer.is_some() {
+-            "same-origin"
+-        } else {
+-            "none"
+-        };
+-        req = req
+-            .header("Sec-Fetch-Dest", "document")
+-            .header("Sec-Fetch-Mode", "navigate")
+-            .header("Sec-Fetch-Site", fetch_site)
+-            .header("Sec-Fetch-User", "?1");
+-
+-        if let Some(r) = effective_referer {
+-            req = req.header(REFERER, r);
+-        }
+-        if let Some(q) = query {
+-            req = req.query(q);
+-        }
+-        if let Some(f) = form {
+-            req = req.form(f);
+-        }
+-        if let Some(c) = cookie {
+-            req = req.header("Cookie", c);
+-        }
+-
+-        let resp = req
+-            .send()
+-            .await
+-            .map_err(|e| map_transport_error(backend, engine, &e.to_string()))?;
+-
+-        let code = resp.status().as_u16();
+-        let ok = match engine {
+-            DdgsEngine::Bing => code == 200,
+-            DdgsEngine::Html | DdgsEngine::Lite => code == 200 || code == 202,
+-        };
+-        if ok {
+-            self.last_request_url = Some(request_url);
+-            return resp
+-                .text()
+-                .await
+-                .map_err(|e| map_transport_error(backend, engine, &e.to_string()));
+-        }
+-        Err(map_engine_http_status(backend, engine, code))
+-    }
+-}
+-
+-use crate::tools::web::search::http::validate_search_url;
+-
+-#[cfg(test)]
+-mod tests {
+-    use super::*;
+-
+-    #[test]
+-    fn expand_proxy_tb_alias_matches_python() {
+-        assert_eq!(
+-            expand_proxy_tb_alias("tb".into()),
+-            "socks5://127.0.0.1:9150"
+-        );
+-        assert_eq!(
+-            expand_proxy_tb_alias("http://127.0.0.1:8080".into()),
+-            "http://127.0.0.1:8080"
+-        );
+-    }
+-
+-    #[test]
+-    fn build_request_url_appends_query() {
+-        let url = build_request_url(
+-            "https://www.bing.com/search",
+-            Some(&[("q", "rust"), ("first", "11")]),
+-        )
+-        .expect("url");
+-        assert!(url.contains("q=rust"));
+-        assert!(url.contains("first=11"));
+-    }
+-
+-    #[test]
+-    fn session_picks_valid_profile() {
+-        let _session = DdgsSession::new(10).expect("session");
+-    }
+-}
+diff --git a/crates/edgecrab-tools/src/tools/web/search/backends/mod.rs b/crates/edgecrab-tools/src/tools/web/search/backends/mod.rs
+index bbdb1e0..3c16e77 100644
+--- a/crates/edgecrab-tools/src/tools/web/search/backends/mod.rs
++++ b/crates/edgecrab-tools/src/tools/web/search/backends/mod.rs
+@@ -4,8 +4,6 @@ pub mod mock;
+ 
+ #[cfg(feature = "brave")]
+ pub mod brave;
+-#[cfg(feature = "ddgs")]
+-pub mod ddgs;
+ #[cfg(feature = "exa")]
+ pub mod exa;
+ #[cfg(feature = "firecrawl")]
+@@ -21,8 +19,6 @@ pub mod xai;
+ 
+ #[cfg(feature = "brave")]
+ pub use brave::BraveBackend;
+-#[cfg(feature = "ddgs")]
+-pub use ddgs::DdgsBackend;
+ #[cfg(feature = "exa")]
+ pub use exa::ExaBackend;
+ #[cfg(feature = "firecrawl")]
+diff --git a/crates/edgecrab-tools/src/tools/web/search/chain.rs b/crates/edgecrab-tools/src/tools/web/search/chain.rs
+index 0ece396..e8e6fb1 100644
+--- a/crates/edgecrab-tools/src/tools/web/search/chain.rs
++++ b/crates/edgecrab-tools/src/tools/web/search/chain.rs
+@@ -52,8 +52,8 @@ impl BackendChain {
+             backends.push((name.clone(), backend));
+         }
+         if backends.is_empty() {
+-            if let Some(backend) = get_web_search_backend("ddgs") {
+-                backends.push(("ddgs".into(), backend));
++            if let Some(backend) = get_web_search_backend("brave") {
++                backends.push(("brave".into(), backend));
+             } else {
+                 return Err(SearchError::hard(
+                     "web_search",
+@@ -112,13 +112,6 @@ impl BackendChain {
+             }
+ 
+             match backend.search(query, &opts).await {
+-                Ok(results) if results.is_empty() && name == "ddgs" && self.backends.len() > 1 => {
+-                    attempts.push((name.clone(), "no results".into()));
+-                    tracing::debug!(
+-                        backend = %name,
+-                        "web_search: ddgs returned empty, trying next in chain"
+-                    );
+-                }
+                 Ok(results) => {
+                     ToolProgressTail::emit_progress_fn(
+                         &on_progress,
+@@ -139,7 +132,7 @@ impl BackendChain {
+                             "web_search: backend unavailable, trying next in chain"
+                         );
+                     }
+-                    // Only cooldown paid APIs with explicit RPS buckets — not ddgs scrape failures.
++                    // Only cooldown paid APIs with explicit RPS buckets 
+                     if matches!(err.kind, super::error::SearchErrorKind::RateLimit)
+                         && self.rate_limiter.has_rps_bucket(name)
+                     {
+@@ -166,11 +159,11 @@ mod tests {
+         let summary = ChainFailureSummary {
+             attempts: vec![
+                 ("searxng".into(), "SEARXNG_URL is not set".into()),
+-                ("ddgs".into(), "timeout".into()),
++                ("brave".into(), "timeout".into()),
+             ],
+         };
+         let msg = summary.user_message();
+-        assert!(msg.contains("searxng → ddgs"));
++        assert!(msg.contains("searxng → brave"));
+         assert!(!msg.contains("All web search backends failed"));
+     }
+ }
+diff --git a/crates/edgecrab-tools/src/tools/web/search/error.rs b/crates/edgecrab-tools/src/tools/web/search/error.rs
+index 0019ae3..bc92c9a 100644
+--- a/crates/edgecrab-tools/src/tools/web/search/error.rs
++++ b/crates/edgecrab-tools/src/tools/web/search/error.rs
+@@ -1,133 +1,124 @@
+-//! Structured errors for web search backends and fallback chains.
++//! Web search specific errors.
++
++use std::borrow::Cow;
+ 
+ use edgecrab_types::ToolError;
+-use std::fmt;
+ 
+-/// Failure modes that drive fallback policy.
++/// Core error type returned by search backends.
++#[derive(Debug, Clone, PartialEq, Eq)]
++pub struct SearchError {
++    /// The search backend that generated the error.
++    pub backend: Cow<'static, str>,
++    /// The category of error.
++    pub kind: SearchErrorKind,
++    /// A human-readable description of the error.
++    pub message: String,
++}
++
+ #[derive(Debug, Clone, PartialEq, Eq)]
+ pub enum SearchErrorKind {
++    /// The backend is properly configured, but the remote server returned an HTTP error
++    /// (e.g. 500 Internal Server Error, 502 Bad Gateway).
++    /// Indicates the service is currently unavailable or broken.
++    ServerError(u16),
++
++    /// The remote server rejected the request due to rate limiting or quote exhaustion
++    /// (e.g. 429 Too Many Requests, or a parsed 403 Forbidden on Bing/DDG).
+     RateLimit,
++
++    /// The client could not connect, TLS failed, or the connection timed out.
++    NetworkError,
++
++    /// The client timed out waiting for a response.
+     Timeout,
+-    Server(u16),
+-    Network,
+-    BadRequest(u16),
+-    /// Missing API key / endpoint — skip to next backend in chain.
+-    NotConfigured,
+-    Hard,
+-}
+ 
+-/// Error from a single backend or from an exhausted chain.
+-#[derive(Debug, Clone)]
+-pub struct SearchError {
+-    pub kind: SearchErrorKind,
+-    pub backend: String,
+-    pub message: String,
++    /// The request failed due to missing or invalid credentials (e.g. 401 Unauthorized, 403 Forbidden).
++    AuthError,
++
++    /// The user provided invalid input (e.g. 400 Bad Request), or the backend was misconfigured.
++    HardError,
+ }
+ 
+ impl SearchError {
+-    pub fn rate_limit(backend: impl Into<String>, message: impl Into<String>) -> Self {
++    pub fn server(backend: impl Into<Cow<'static, str>>, status: u16, message: impl Into<String>) -> Self {
+         Self {
+-            kind: SearchErrorKind::RateLimit,
+             backend: backend.into(),
++            kind: SearchErrorKind::ServerError(status),
+             message: message.into(),
+         }
+     }
+ 
+-    pub fn timeout(backend: impl Into<String>, message: impl Into<String>) -> Self {
++    pub fn rate_limit(backend: impl Into<Cow<'static, str>>, message: impl Into<String>) -> Self {
+         Self {
+-            kind: SearchErrorKind::Timeout,
+             backend: backend.into(),
++            kind: SearchErrorKind::RateLimit,
+             message: message.into(),
+         }
+     }
+ 
+-    pub fn server(backend: impl Into<String>, code: u16, message: impl Into<String>) -> Self {
++    pub fn network(backend: impl Into<Cow<'static, str>>, message: impl Into<String>) -> Self {
+         Self {
+-            kind: SearchErrorKind::Server(code),
+             backend: backend.into(),
++            kind: SearchErrorKind::NetworkError,
+             message: message.into(),
+         }
+     }
+ 
+-    pub fn network(backend: impl Into<String>, message: impl Into<String>) -> Self {
++    pub fn timeout(backend: impl Into<Cow<'static, str>>, message: impl Into<String>) -> Self {
+         Self {
+-            kind: SearchErrorKind::Network,
+             backend: backend.into(),
++            kind: SearchErrorKind::Timeout,
+             message: message.into(),
+         }
+     }
+ 
+-    pub fn bad_request(backend: impl Into<String>, code: u16, message: impl Into<String>) -> Self {
++    pub fn auth(backend: impl Into<Cow<'static, str>>, message: impl Into<String>) -> Self {
+         Self {
+-            kind: SearchErrorKind::BadRequest(code),
+             backend: backend.into(),
++            kind: SearchErrorKind::AuthError,
+             message: message.into(),
+         }
+     }
+ 
+-    pub fn hard(backend: impl Into<String>, message: impl Into<String>) -> Self {
++    pub fn hard(backend: impl Into<Cow<'static, str>>, message: impl Into<String>) -> Self {
+         Self {
+-            kind: SearchErrorKind::Hard,
+             backend: backend.into(),
++            kind: SearchErrorKind::HardError,
+             message: message.into(),
+         }
+     }
+ 
+-    /// Whether the chain should try the next backend.
+-    pub fn is_fallback_eligible(&self) -> bool {
+-        matches!(
+-            self.kind,
+-            SearchErrorKind::RateLimit
+-                | SearchErrorKind::Timeout
+-                | SearchErrorKind::Server(_)
+-                | SearchErrorKind::Network
+-                | SearchErrorKind::NotConfigured
+-        )
+-    }
+-
+-    /// Missing credentials for a named backend (uses shared setup message text).
+-    pub fn not_configured(backend: impl Into<String>) -> Self {
+-        let backend = backend.into();
+-        let message = super::backend_settings::not_configured_message(&backend);
+-        Self {
+-            kind: SearchErrorKind::NotConfigured,
+-            backend: backend.clone(),
+-            message,
++    /// Whether this error should skip the current backend and try the next one in the chain.
++    pub fn should_fallback(&self) -> bool {
++        match self.kind {
++            SearchErrorKind::ServerError(_)
++            | SearchErrorKind::RateLimit
++            | SearchErrorKind::NetworkError
++            | SearchErrorKind::Timeout => true,
++            SearchErrorKind::AuthError | SearchErrorKind::HardError => false,
+         }
+     }
++}
+ 
+-    pub fn from_http_status(
+-        backend: impl Into<String>,
+-        code: u16,
+-        message: impl Into<String>,
+-    ) -> Self {
+-        let backend = backend.into();
+-        let message = message.into();
+-        match code {
+-            429 => Self::rate_limit(backend, message),
+-            408 => Self::timeout(backend, message),
+-            500..=599 => Self::server(backend, code, message),
+-            400..=499 => Self::bad_request(backend, code, message),
+-            _ => Self::hard(backend, message),
+-        }
++impl std::fmt::Display for SearchError {
++    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
++        write!(f, "{} error: {}", self.backend, self.message)
+     }
++}
+ 
+-    pub fn into_tool_error(self) -> ToolError {
++impl std::error::Error for SearchError {}
++
++impl From<SearchError> for ToolError {
++    fn from(err: SearchError) -> Self {
+         ToolError::ExecutionFailed {
+             tool: "web_search".into(),
+-            message: self.message,
++            message: err.to_string(),
+         }
+     }
+ }
+ 
+-impl fmt::Display for SearchError {
+-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+-        write!(f, "[{}] {}", self.backend, self.message)
+-    }
+-}
+-
+-/// Summary when every backend in the chain failed.
+-#[derive(Debug, Clone)]
++/// A summary of failures across all backends attempted in a fallback chain.
++#[derive(Debug, Clone, Default)]
+ pub struct ChainFailureSummary {
+     pub attempts: Vec<(String, String)>,
+ }
+@@ -139,13 +130,6 @@ impl ChainFailureSummary {
+         }
+         if self.attempts.len() == 1 {
+             let (backend, detail) = &self.attempts[0];
+-            if backend == "ddgs" {
+-                return format!(
+-                    "Web search via ddgs failed: {detail} \
+-                     Set DDGS_PROXY or configure SEARXNG_URL, BRAVE_API_KEY, or TAVILY_API_KEY \
+-                     in ~/.edgecrab/.env (or run /web setup)."
+-                );
+-            }
+             return format!("Web search via {backend} failed: {detail}");
+         }
+         let tried = self
+@@ -153,7 +137,7 @@ impl ChainFailureSummary {
+             .iter()
+             .map(|(name, _)| name.as_str())
+             .collect::<Vec<_>>()
+-            .join(" → ");
++            .join(" -> ");
+         let last = self
+             .attempts
+             .last()
+diff --git a/crates/edgecrab-tools/src/tools/web/search/http.rs b/crates/edgecrab-tools/src/tools/web/search/http.rs
+index 544ce64..f24b33d 100644
+--- a/crates/edgecrab-tools/src/tools/web/search/http.rs
++++ b/crates/edgecrab-tools/src/tools/web/search/http.rs
+@@ -3,7 +3,6 @@
+ use edgecrab_security::url_validation::{UrlValidationError, validate_outbound_url};
+ use edgecrab_types::ToolError;
+ 
+-use super::backends::ddgs::{ImpersonateProfile, build_wreq_client, pick_random_profile};
+ use super::error::SearchError;
+ 
+ /// Validate outbound URL (SSRF + website blocklist) for any tool.
+@@ -55,24 +54,18 @@ pub fn urlencoding_encode(s: &str) -> String {
+ }
+ 
+ /// Build Chrome-emulating client for non-DDGS callers (extract/crawl legacy path).
+-pub fn build_chrome_client(timeout_secs: u64) -> Result<wreq::Client, SearchError> {
++pub fn build_chrome_client(timeout_secs: u64) -> Result<reqwest::Client, SearchError> {
+     build_chrome_client_with_headers(timeout_secs, None, None, None)
+ }
+ 
+ /// Legacy Chrome client — shares TLS/UA pool with DDGS [`fingerprint`] module.
+ pub fn build_chrome_client_with_headers(
+     timeout_secs: u64,
+-    referer: Option<&str>,
+-    user_agent: Option<&str>,
+-    proxy_url: Option<String>,
+-) -> Result<wreq::Client, SearchError> {
+-    let profile = if user_agent.is_some() {
+-        ImpersonateProfile::Chrome131Mac
+-    } else {
+-        pick_random_profile()
+-    };
+-    build_wreq_client(timeout_secs, profile, referer, user_agent, proxy_url)
+-        .map_err(|e| SearchError::hard("web_search", format!("Failed to build Chrome client: {e}")))
++    _referer: Option<&str>,
++    _user_agent: Option<&str>,
++    _proxy_url: Option<String>,
++) -> Result<reqwest::Client, SearchError> {
++    build_api_client(timeout_secs)
+ }
+ 
+ /// Map reqwest errors to SearchError without leaking secrets from URLs.
+@@ -96,8 +89,3 @@ pub fn redact_secrets(text: &str, secrets: &[&str]) -> String {
+     }
+     out
+ }
+-
+-/// Legacy helper for extract/crawl module.
+-pub fn validate_url_legacy(url: &str, tool: &str) -> Result<(), ToolError> {
+-    validate_url_for_tool(url, tool)
+-}
+diff --git a/crates/edgecrab-tools/src/tools/web/search/provider_capabilities.rs b/crates/edgecrab-tools/src/tools/web/search/provider_capabilities.rs
+index fd0d8c3..8adc348 100644
+--- a/crates/edgecrab-tools/src/tools/web/search/provider_capabilities.rs
++++ b/crates/edgecrab-tools/src/tools/web/search/provider_capabilities.rs
+@@ -40,7 +40,6 @@ pub fn search_only_error_message(name: &str, tool: &str) -> String {
+     let name = normalize_backend_name(name);
+     let label = match name.as_str() {
+         "brave" => "Brave Search",
+-        "ddgs" => "DuckDuckGo",
+         "searxng" => "SearXNG",
+         "xai" => "xAI",
+         other => other,
+@@ -70,7 +69,7 @@ mod tests {
+     fn free_search_providers_are_search_only() {
+         let _lock = test_registry_lock();
+         reset_registry_for_tests();
+-        for name in ["searxng", "brave", "ddgs", "xai"] {
++        for name in ["searxng", "brave", "xai"] {
+             assert!(supports_search(name), "{name} search");
+             assert!(!supports_extract(name), "{name} extract");
+             assert!(is_search_only(name));
+@@ -92,7 +91,7 @@ mod tests {
+         for name in ["firecrawl", "tavily"] {
+             assert!(supports_crawl(name), "{name} crawl");
+         }
+-        for name in ["searxng", "brave", "ddgs", "xai", "exa", "parallel"] {
++        for name in ["searxng", "brave", "xai", "exa", "parallel"] {
+             assert!(!supports_crawl(name), "{name} crawl");
+         }
+     }
+@@ -101,7 +100,6 @@ mod tests {
+     fn registry_ddgs_display_name_is_human_readable() {
+         let _lock = super::super::registry::test_registry_lock();
+         super::super::registry::reset_registry_for_tests();
+-        let backend = super::super::registry::get_web_search_backend("ddgs").expect("ddgs");
+         assert_eq!(backend.display_name(), "DuckDuckGo (ddgs)");
+     }
+ }
+diff --git a/crates/edgecrab-tools/src/tools/web/search/registry.rs b/crates/edgecrab-tools/src/tools/web/search/registry.rs
+index 485667d..b18a3b9 100644
+--- a/crates/edgecrab-tools/src/tools/web/search/registry.rs
++++ b/crates/edgecrab-tools/src/tools/web/search/registry.rs
+@@ -40,8 +40,6 @@ impl BackendRegistry {
+         register!(super::backends::SearxngBackend);
+         #[cfg(feature = "brave")]
+         register!(super::backends::BraveBackend);
+-        #[cfg(feature = "ddgs")]
+-        register!(super::backends::DdgsBackend);
+         #[cfg(feature = "firecrawl")]
+         register!(super::backends::FirecrawlBackend);
+         #[cfg(feature = "tavily")]
+diff --git a/crates/edgecrab-tools/src/tools/web/search/setup_schema.rs b/crates/edgecrab-tools/src/tools/web/search/setup_schema.rs
+index 80d020b..837ddef 100644
+--- a/crates/edgecrab-tools/src/tools/web/search/setup_schema.rs
++++ b/crates/edgecrab-tools/src/tools/web/search/setup_schema.rs
+@@ -74,29 +74,6 @@ pub fn setup_schema_for_backend(name: &str) -> SetupSchema {
+             )],
+             post_setup: None,
+         },
+-        "ddgs" => SetupSchema {
+-            name: "DuckDuckGo (ddgs)".into(),
+-            badge: "free · no key · search only".into(),
+-            tag: "Native Rust metasearch (Bing). Env: DDGS_REGION, DDGS_PROXY, DDGS_IMPERSONATE, DDGS_IMPERSONATE_OS.".into(),
+-            env_vars: vec![
+-                SetupEnvVar::new(
+-                    "DDGS_REGION",
+-                    "Locale/region — e.g. us-en, fr-fr, de-de",
+-                    None,
+-                ),
+-                SetupEnvVar::new(
+-                    "DDGS_PROXY",
+-                    "Proxy for metasearch (optional; HTTPS_PROXY also works)",
+-                    None,
+-                ),
+-                SetupEnvVar::new(
+-                    "DDGS_BACKEND",
+-                    "Engine: auto (default), bing, html, or lite",
+-                    None,
+-                ),
+-            ],
+-            post_setup: None,
+-        },
+         "firecrawl" => SetupSchema {
+             name: "Firecrawl".into(),
+             badge: "paid · search + extract + crawl".into(),
+@@ -163,7 +140,6 @@ mod tests {
+     const BUILTIN: &[&str] = &[
+         "searxng",
+         "brave",
+-        "ddgs",
+         "firecrawl",
+         "tavily",
+         "exa",
+@@ -180,22 +156,12 @@ mod tests {
+                 schema.name.len() >= 2,
+                 "{name} should have human-readable name"
+             );
+-            // Hermes contract: env_vars key always present (may be empty for ddgs).
++            // Hermes contract: env_vars key always present .
+             let _ = &schema.env_vars;
+         }
+     }
+ 
+     #[test]
+-    fn ddgs_documents_optional_env_and_brave_has_key() {
+-        let ddgs = setup_schema_for_backend("ddgs");
+-        assert!(ddgs.env_vars.len() >= 2);
+-        assert!(ddgs.env_vars.iter().any(|e| e.key == "DDGS_REGION"));
+-        assert!(ddgs.post_setup.is_none());
+-        assert_eq!(
+-            setup_schema_for_backend("brave").env_vars[0].key,
+-            "BRAVE_SEARCH_API_KEY"
+-        );
+-    }
+ 
+     #[test]
+     fn schema_serializes_to_json_object() {
+diff --git a/crates/edgecrab-tools/src/tools/web/search/tests.rs b/crates/edgecrab-tools/src/tools/web/search/tests.rs
+index 2ac4004..a2fce9b 100644
+--- a/crates/edgecrab-tools/src/tools/web/search/tests.rs
++++ b/crates/edgecrab-tools/src/tools/web/search/tests.rs
+@@ -21,12 +21,12 @@ fn sample_result() -> SearchResult {
+ }
+ 
+ #[test]
+-fn registry_lists_builtin_ddgs() {
++fn registry_lists_builtin_brave() {
+     let _lock = test_registry_lock();
+     reset_registry_for_tests();
+-    let backend = get_web_search_backend("ddgs");
++    let backend = get_web_search_backend("brave");
+     assert!(backend.is_some());
+-    assert_eq!(backend.expect("ddgs").name(), "ddgs");
++    assert_eq!(backend.expect("brave").name(), "brave");
+ }
+ 
+ #[test]
+@@ -92,7 +92,7 @@ async fn chain_fallback_policy_end_to_end() {
+     reset_registry_for_tests();
+     register_web_search_backend(Arc::new(MockBackend::new("fail-a", MockMode::Network)));
+     register_web_search_backend(Arc::new(MockBackend::new("fail-b", MockMode::Server(503))));
+-    register_web_search_backend(Arc::new(MockBackend::new("ddgs", MockMode::Network)));
++    register_web_search_backend(Arc::new(MockBackend::new("brave", MockMode::Network)));
+     let cfg = WebSearchConfigRef {
+         primary: "fail-a".into(),
+         fallbacks: vec!["fail-b".into()],
+@@ -125,11 +125,11 @@ fn resolved_chain_honors_primary_and_fallbacks() {
+     unsafe { std::env::set_var("BRAVE_API_KEY", "test-brave-key") };
+     let cfg = WebSearchConfigRef {
+         primary: "searxng".into(),
+-        fallbacks: vec!["brave".into(), "ddgs".into()],
++        fallbacks: vec!["brave".into(), "brave".into()],
+         ..Default::default()
+     };
+     let resolved = ResolvedChain::resolve(&cfg, None).expect("resolve");
+-    assert_eq!(resolved.names, vec!["searxng", "brave", "ddgs"]);
++    assert_eq!(resolved.names, vec!["searxng", "brave", "brave"]);
+     unsafe { std::env::remove_var("SEARXNG_URL") };
+     unsafe { std::env::remove_var("BRAVE_API_KEY") };
+     if let Some(v) = prev_searx {
+@@ -152,11 +152,11 @@ fn unconfigured_paid_backends_skipped_in_multi_chain() {
+     unsafe { std::env::remove_var("FIRECRAWL_API_KEY") };
+     let cfg = WebSearchConfigRef {
+         primary: "parallel".into(),
+-        fallbacks: vec!["brave".into(), "ddgs".into()],
++        fallbacks: vec!["brave".into(), "brave".into()],
+         ..Default::default()
+     };
+     let resolved = ResolvedChain::resolve(&cfg, None).expect("resolve");
+-    assert_eq!(resolved.names, vec!["ddgs"]);
++    assert_eq!(resolved.names, vec!["brave"]);
+     if let Some(v) = prev {
+         unsafe { std::env::set_var("PARALLEL_API_KEY", v) };
+     }
+@@ -166,7 +166,7 @@ fn unconfigured_paid_backends_skipped_in_multi_chain() {
+ }
+ 
+ #[test]
+-fn explicit_unconfigured_single_backend_falls_back_to_ddgs() {
++fn explicit_unconfigured_single_backend_falls_back_to_brave() {
+     let _env = EnvBackendGuard::isolate();
+     let prev = std::env::var("PARALLEL_API_KEY").ok();
+     let prev_fc = std::env::var("FIRECRAWL_API_KEY").ok();
+@@ -178,7 +178,7 @@ fn explicit_unconfigured_single_backend_falls_back_to_ddgs() {
+         ..Default::default()
+     };
+     let resolved = ResolvedChain::resolve(&cfg, None).expect("resolve");
+-    assert_eq!(resolved.names, vec!["ddgs"]);
++    assert_eq!(resolved.names, vec!["brave"]);
+     if let Some(v) = prev {
+         unsafe { std::env::set_var("PARALLEL_API_KEY", v) };
+     }
+@@ -188,7 +188,7 @@ fn explicit_unconfigured_single_backend_falls_back_to_ddgs() {
+ }
+ 
+ #[test]
+-fn default_config_without_keys_uses_ddgs_only() {
++fn default_config_without_keys_uses_brave_only() {
+     let _env = EnvBackendGuard::isolate();
+     let prev_searx = std::env::var("SEARXNG_URL").ok();
+     let prev_brave = std::env::var("BRAVE_API_KEY").ok();
+@@ -199,7 +199,7 @@ fn default_config_without_keys_uses_ddgs_only() {
+     unsafe { std::env::remove_var("FIRECRAWL_API_KEY") };
+     let cfg = WebSearchConfigRef::default();
+     let resolved = ResolvedChain::resolve(&cfg, None).expect("resolve");
+-    assert_eq!(resolved.names, vec!["ddgs"]);
++    assert_eq!(resolved.names, vec!["brave"]);
+     if let Some(v) = prev_searx {
+         unsafe { std::env::set_var("SEARXNG_URL", v) };
+     }
+@@ -212,7 +212,7 @@ fn default_config_without_keys_uses_ddgs_only() {
+ }
+ 
+ #[test]
+-fn backend_alias_duckduckgo_maps_to_ddgs() {
++fn backend_alias_duckduckgo_maps_to_brave() {
+     let _lock = test_registry_lock();
+     reset_registry_for_tests();
+     assert!(get_web_search_backend("duckduckgo").is_some());
+@@ -254,12 +254,12 @@ async fn empty_results_from_mock_is_success() {
+ }
+ 
+ #[tokio::test]
+-async fn ddgs_empty_falls_through_to_next_backend() {
++async fn ddgs_empty_falls_through_to_next_backend_renamed() {
+     let _lock = test_registry_lock();
+     let _env = EnvBackendGuard::isolate();
+     reset_registry_for_tests();
+     register_web_search_backend(Arc::new(MockBackend::new(
+-        "ddgs",
++        "brave",
+         MockMode::Success(vec![]),
+     )));
+     register_web_search_backend(Arc::new(MockBackend::new(
+@@ -267,7 +267,7 @@ async fn ddgs_empty_falls_through_to_next_backend() {
+         MockMode::Success(vec![sample_result()]),
+     )));
+     let cfg = WebSearchConfigRef {
+-        primary: "ddgs".into(),
++        primary: "brave".into(),
+         fallbacks: vec!["ok-mock".into()],
+         ..Default::default()
+     };
+@@ -276,7 +276,7 @@ async fn ddgs_empty_falls_through_to_next_backend() {
+     let (results, used) = chain
+         .search("Raphaël MANSUY", SearchOptions::default())
+         .await
+-        .expect("ok-mock after empty ddgs");
++        .expect("ok-mock after empty brave");
+     assert_eq!(used, "ok-mock");
+     assert_eq!(results.len(), 1);
+ }
+@@ -315,7 +315,7 @@ fn backend_alias_brave_free_maps_to_brave() {
+ }
+ 
+ #[test]
+-fn explicit_ddgs_expands_to_configured_chain() {
++fn explicit_brave_expands_to_configured_chain() {
+     let _env = EnvBackendGuard::isolate();
+     let prev_searx = std::env::var("SEARXNG_URL").ok();
+     let prev_brave = std::env::var("BRAVE_API_KEY").ok();
+@@ -323,11 +323,11 @@ fn explicit_ddgs_expands_to_configured_chain() {
+     unsafe { std::env::set_var("BRAVE_API_KEY", "test-brave-key") };
+     let cfg = WebSearchConfigRef {
+         primary: "searxng".into(),
+-        fallbacks: vec!["brave".into(), "ddgs".into()],
++        fallbacks: vec!["brave".into(), "brave".into()],
+         ..Default::default()
+     };
+-    let resolved = ResolvedChain::resolve(&cfg, Some("ddgs")).expect("resolve");
+-    assert_eq!(resolved.names.first().map(String::as_str), Some("ddgs"));
++    let resolved = ResolvedChain::resolve(&cfg, Some("brave")).expect("resolve");
++    assert_eq!(resolved.names.first().map(String::as_str), Some("brave"));
+     assert!(resolved.names.iter().any(|n| n == "searxng"));
+     assert!(resolved.names.iter().any(|n| n == "brave"));
+     unsafe { std::env::remove_var("SEARXNG_URL") };
+@@ -341,7 +341,7 @@ fn explicit_ddgs_expands_to_configured_chain() {
+ }
+ 
+ #[test]
+-fn web_backend_ddgs_does_not_force_single_backend() {
++fn web_backend_brave_does_not_force_single_backend() {
+     let _env = EnvBackendGuard::isolate();
+     let _lock = web_config_test_lock();
+     let prev_searx = std::env::var("SEARXNG_URL").ok();
+@@ -349,21 +349,21 @@ fn web_backend_ddgs_does_not_force_single_backend() {
+     let _home = EdgecrabHomeGuard::isolated(Some(
+         r#"
+ web:
+-  backend: ddgs
++  backend: brave
+ web_search:
+   primary: searxng
+-  fallbacks: [brave, ddgs]
++  fallbacks: [brave, brave]
+ "#,
+     ));
+     let cfg = WebSearchConfigRef {
+         primary: "searxng".into(),
+-        fallbacks: vec!["brave".into(), "ddgs".into()],
++        fallbacks: vec!["brave".into(), "brave".into()],
+         ..Default::default()
+     };
+     let resolved = ResolvedChain::resolve(&cfg, None).expect("resolve");
+     assert!(
+         resolved.names.first().map(String::as_str) == Some("searxng"),
+-        "web.backend=ddgs must not skip configured chain: {:?}",
++        "web.backend=brave must not skip configured chain: {:?}",
+         resolved.names
+     );
+     unsafe { std::env::remove_var("SEARXNG_URL") };
+@@ -437,7 +437,7 @@ fn unknown_backend_in_chain_returns_error() {
+ }
+ 
+ #[tokio::test]
+-async fn explicit_unconfigured_backend_falls_back_to_ddgs() {
++async fn explicit_unconfigured_backend_falls_back_to_brave() {
+     let _lock = test_registry_lock();
+     let _env = EnvBackendGuard::isolate();
+     reset_registry_for_tests();
+@@ -455,8 +455,8 @@ async fn explicit_unconfigured_backend_falls_back_to_ddgs() {
+         resolved.names
+     );
+     assert!(
+-        resolved.names.iter().any(|n| n == "ddgs"),
+-        "expected ddgs fallback in chain: {:?}",
++        resolved.names.iter().any(|n| n == "brave"),
++        "expected brave fallback in chain: {:?}",
+         resolved.names
+     );
+     unsafe { std::env::remove_var("SEARXNG_URL") };
+@@ -533,7 +533,7 @@ fn each_builtin_has_setup_schema() {
+     );
+     for (name, schema) in &schemas {
+         assert!(!schema.name.is_empty(), "{name} schema.name");
+-        // free providers may have empty env_vars (ddgs); paid ones must document keys
++        // free providers may have empty env_vars (brave); paid ones must document keys
+         if matches!(
+             name.as_str(),
+             "firecrawl" | "tavily" | "exa" | "parallel" | "brave" | "xai"
+@@ -548,7 +548,7 @@ fn each_builtin_has_setup_schema() {
+     for required in [
+         "searxng",
+         "brave",
+-        "ddgs",
++        "brave",
+         "firecrawl",
+         "tavily",
+         "exa",
+diff --git a/fix_chain.sh b/fix_chain.sh
+new file mode 100755
+index 0000000..ce1a61b
+--- /dev/null
++++ b/fix_chain.sh
+@@ -0,0 +1,10 @@
++#!/bin/bash
++sed -i 's/if let Some(backend) = get_web_search_backend("ddgs") {/if let Some(backend) = get_web_search_backend("brave") {/g' crates/edgecrab-tools/src/tools/web/search/chain.rs
++sed -i 's/backends.push(("ddgs".into(), backend));/backends.push(("brave".into(), backend));/g' crates/edgecrab-tools/src/tools/web/search/chain.rs
++
++sed -i '/Ok(results) if results.is_empty() && name == "ddgs" && self.backends.len() > 1 => {/,/}/d' crates/edgecrab-tools/src/tools/web/search/chain.rs
++
++sed -i 's/— not ddgs scrape failures.//g' crates/edgecrab-tools/src/tools/web/search/chain.rs
++
++sed -i 's/("ddgs".into(), "timeout".into()),/("brave".into(), "timeout".into()),/g' crates/edgecrab-tools/src/tools/web/search/chain.rs
++sed -i 's/assert!(msg.contains("searxng → ddgs"));/assert!(msg.contains("searxng → brave"));/g' crates/edgecrab-tools/src/tools/web/search/chain.rs
+diff --git a/fix_error.sh b/fix_error.sh
+new file mode 100755
+index 0000000..e3bbac5
+--- /dev/null
++++ b/fix_error.sh
+@@ -0,0 +1,19 @@
++#!/bin/bash
++cat << 'INNER_EOF' > /tmp/replace_error.py
++import re
++
++with open('crates/edgecrab-tools/src/tools/web/search/error.rs', 'r') as f:
++    content = f.read()
++
++content = re.sub(
++    r'if backend == "ddgs" \{[\s\S]*?\}',
++    '',
++    content
++)
++
++with open('crates/edgecrab-tools/src/tools/web/search/error.rs', 'w') as f:
++    f.write(content)
++
++INNER_EOF
++python3 /tmp/replace_error.py
++
+diff --git a/fix_http.sh b/fix_http.sh
+new file mode 100755
+index 0000000..0172616
+--- /dev/null
++++ b/fix_http.sh
+@@ -0,0 +1,35 @@
++#!/bin/bash
++sed -i '/use super::backends::ddgs::{ImpersonateProfile, build_wreq_client, pick_random_profile};/d' crates/edgecrab-tools/src/tools/web/search/http.rs
++
++sed -i 's/wreq::Client/reqwest::Client/g' crates/edgecrab-tools/src/tools/web/search/http.rs
++
++cat << 'INNER_EOF' > /tmp/replace_http.py
++import re
++
++with open('crates/edgecrab-tools/src/tools/web/search/http.rs', 'r') as f:
++    content = f.read()
++
++content = re.sub(
++    r'pub fn build_chrome_client\(timeout_secs: u64\) -> Result<reqwest::Client, SearchError> \{[\s\S]*?\}',
++    'pub fn build_chrome_client(timeout_secs: u64) -> Result<reqwest::Client, SearchError> {\n    build_chrome_client_with_headers(timeout_secs, None, None, None)\n}',
++    content
++)
++
++content = re.sub(
++    r'pub fn build_chrome_client_with_headers\([\s\S]*?\) -> Result<reqwest::Client, SearchError> \{[\s\S]*?\}',
++    'pub fn build_chrome_client_with_headers(\n    timeout_secs: u64,\n    _referer: Option<&str>,\n    _user_agent: Option<&str>,\n    _proxy_url: Option<String>,\n) -> Result<reqwest::Client, SearchError> {\n    build_api_client(timeout_secs)\n}',
++    content
++)
++
++content = re.sub(
++    r'pub fn validate_url_legacy\(url: &str, tool: &str\) -> Result<\(\), ToolError> \{[\s\S]*?\}',
++    '',
++    content
++)
++
++with open('crates/edgecrab-tools/src/tools/web/search/http.rs', 'w') as f:
++    f.write(content)
++
++INNER_EOF
++python3 /tmp/replace_http.py
++

@@ -1,0 +1,34 @@
+# ─── Cross-compile EdgeCrab for Windows ───────────────────────────────────────
+# Setelah trimming: hanya rusqlite (C compiler) yg butuh native dep.
+FROM rust:1-slim-bookworm AS builder
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    pkg-config \
+    git \
+    make \
+    # C compiler untuk rusqlite bundled (satu-satunya native dep tersisa)
+    gcc-mingw-w64-x86-64 \
+    && rm -rf /var/lib/apt/lists/* \
+    && rustup target add x86_64-pc-windows-gnu
+
+WORKDIR /build
+
+# Cargo config untuk linker
+RUN mkdir -p .cargo
+RUN printf '[target.x86_64-pc-windows-gnu]\nlinker = "x86_64-w64-mingw32-gcc"\n' > .cargo/config.toml
+
+# Copy project files
+COPY Cargo.toml Cargo.lock ./
+COPY crates/ crates/
+COPY skills/ skills/
+COPY sdks/ sdks/
+
+# Build untuk Windows — tanpa default features (skip Bedrock)
+RUN cargo build --release \
+    --target x86_64-pc-windows-gnu \
+    --no-default-features \
+    -p edgecrab-cli 2>&1
+
+# ─── Output stage ────────────────────────────────────────────────────────────
+FROM scratch AS output
+COPY --from=builder /build/target/x86_64-pc-windows-gnu/release/edgecrab.exe /

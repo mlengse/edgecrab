@@ -875,7 +875,7 @@ fn remove_dir_all_writable(path: &Path) -> std::io::Result<()> {
     match std::fs::remove_dir_all(path) {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(_e) => {
+        Err(e) => {
             #[cfg(unix)]
             {
                 make_tree_writable(path);

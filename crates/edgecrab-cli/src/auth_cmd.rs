@@ -659,11 +659,17 @@ pub fn extract_grok_auth_code(input: &str) -> anyhow::Result<String> {
 }
 
 /// Read authorization code from the system clipboard (macOS/Linux/Windows).
+#[cfg(not(target_os = "windows"))]
 pub fn grok_read_clipboard_code() -> anyhow::Result<String> {
     let text = arboard::Clipboard::new()
         .and_then(|mut cb| cb.get_text())
         .map_err(|e| anyhow::anyhow!("clipboard: {e}"))?;
     extract_grok_auth_code(&text)
+}
+
+#[cfg(target_os = "windows")]
+pub fn grok_read_clipboard_code() -> anyhow::Result<String> {
+    anyhow::bail!("clipboard not supported on Windows")
 }
 
 const GROK_FINISH_PROMPT: &str = "Copy the authorization code from the x.ai page.\n\
