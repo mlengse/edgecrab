@@ -954,7 +954,7 @@ fn default_result_turn_budget_chars() -> usize {
 impl Default for ToolsConfig {
     fn default() -> Self {
         Self {
-            enabled_toolsets: None,
+            enabled_toolsets: Some(vec!["core".to_string()]),
             disabled_toolsets: None,
             enabled_tools: None,
             disabled_tools: None,

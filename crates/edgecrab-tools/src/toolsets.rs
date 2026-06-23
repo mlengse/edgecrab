@@ -186,15 +186,14 @@ const ACP_EXCLUDED: &[&str] = &[
 /// ACP (editor integration) tools — coding-focused subset of CORE_TOOLS.
 ///
 /// Derived from CORE_TOOLS minus interactive/messaging/media tools.
-/// Also includes LSP tools (always relevant in editor context).
+/// LSP/MOA load via `enabled_toolsets: ["core", "lsp"]` in ACP mode — not
+/// baked into the static surface (see specs/007-minimum-context L1.3).
 pub fn acp_tools() -> Vec<&'static str> {
-    let mut tools: Vec<&str> = CORE_TOOLS
+    CORE_TOOLS
         .iter()
         .filter(|t| !ACP_EXCLUDED.contains(t))
         .copied()
-        .collect();
-    tools.extend_from_slice(LSP_TOOLS);
-    tools
+        .collect()
 }
 
 /// Static ACP_TOOLS for backward compatibility with const contexts.
@@ -253,39 +252,6 @@ pub const ACP_TOOLS: &[&str] = &[
     "manage_cron_jobs",
     "mcp_list_tools",
     "mcp_call_tool",
-    // LSP tools always included in editor context
-    "lsp_goto_definition",
-    "lsp_find_references",
-    "lsp_hover",
-    "lsp_document_symbols",
-    "lsp_workspace_symbols",
-    "lsp_goto_implementation",
-    "lsp_call_hierarchy_prepare",
-    "lsp_incoming_calls",
-    "lsp_outgoing_calls",
-    "lsp_code_actions",
-    "lsp_apply_code_action",
-    "lsp_rename",
-    "lsp_format_document",
-    "lsp_format_range",
-    "lsp_inlay_hints",
-    "lsp_semantic_tokens",
-    "lsp_signature_help",
-    "lsp_type_hierarchy_prepare",
-    "lsp_supertypes",
-    "lsp_subtypes",
-    "lsp_diagnostics_pull",
-    "lsp_linked_editing_range",
-    "lsp_enrich_diagnostics",
-    "lsp_select_and_apply_action",
-    "lsp_workspace_type_errors",
-    // Extended MCP in ACP context
-    "mcp_list_resources",
-    "mcp_read_resource",
-    "mcp_list_prompts",
-    "mcp_get_prompt",
-    // MOA in editor context
-    "moa",
 ];
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -307,7 +273,8 @@ pub struct ToolsetEnableSync {
 /// - `"terminal"`     → terminal, run_process, list_processes, kill_process
 /// - `"web"`          → web_search, web_extract, web_crawl
 /// - `"browser"`      → browser_navigate, browser_snapshot, …
-/// - `"memory"`       → memory_read, memory_write, honcho_*
+/// - `"memory"`       → memory_read, memory_write
+/// - `"honcho"`       → honcho_* cross-session modeling (opt-in)
 /// - `"skills"`       → skills_list, skills_categories, skill_view, skill_manage, skills_hub
 /// - `"meta"`         → manage_todo_list, report_task_status, clarify
 /// - `"scheduling"`   → manage_cron_jobs
@@ -344,6 +311,10 @@ pub fn resolve_alias(alias: &str) -> Option<&'static [&'static str]> {
         "core" => Some(&[
             "core",           // checkpoint tool
             "file",           // read_file, write_file, patch, search_files
+            "web",            // web_search, web_extract (not web_crawl — research toolset)
+            "terminal",       // shell + process management — non-negotiable for an agent
+            "memory",         // memory_read, memory_write (honcho is opt-in "honcho" toolset)
+            "skills",         // skill library
             "meta",           // manage_todo_list, report_task_status, clarify
             "scheduling",     // manage_cron_jobs
             "delegation",     // delegate_task
@@ -588,22 +559,18 @@ mod tests {
         assert!(ACP_TOOLS.contains(&"browser_wait_for"));
         assert!(ACP_TOOLS.contains(&"browser_select"));
         assert!(ACP_TOOLS.contains(&"browser_hover"));
-        // ACP includes LSP (editor context) and MOA
-        assert!(ACP_TOOLS.contains(&"lsp_goto_definition"));
-        assert!(ACP_TOOLS.contains(&"lsp_workspace_type_errors"));
-        assert!(ACP_TOOLS.contains(&"moa"));
+        // LSP/MOA are opt-in via enabled_toolsets — not in the base ACP surface.
+        assert!(!ACP_TOOLS.contains(&"lsp_goto_definition"));
+        assert!(!ACP_TOOLS.contains(&"moa"));
     }
 
     #[test]
     fn acp_tools_fn_matches_static_const() {
-        let dynamic = acp_tools();
-        // Every tool in the dynamic list should be in the static list
-        for tool in &dynamic {
-            assert!(
-                ACP_TOOLS.contains(tool),
-                "acp_tools() produced '{tool}' not in ACP_TOOLS const"
-            );
-        }
+        let mut dynamic = acp_tools();
+        dynamic.sort_unstable();
+        let mut expected: Vec<&str> = ACP_TOOLS.to_vec();
+        expected.sort_unstable();
+        assert_eq!(dynamic, expected, "acp_tools() must match ACP_TOOLS const");
     }
 
     #[test]
@@ -683,6 +650,31 @@ mod tests {
     }
 
     // ── New regression tests for the "core" alias and expand_toolset_names ──
+
+    #[test]
+    fn resolve_alias_core_includes_web_and_terminal() {
+        let expanded = resolve_alias("core").expect("'core' must be a registered alias");
+        assert!(
+            expanded.contains(&"web"),
+            "'core' must include web (web_search, web_extract)"
+        );
+        assert!(
+            expanded.contains(&"terminal"),
+            "'core' must include terminal — agent cannot act without a shell"
+        );
+        assert!(
+            expanded.contains(&"memory"),
+            "'core' must include memory_read/memory_write"
+        );
+        assert!(
+            expanded.contains(&"skills"),
+            "'core' must include skills toolset"
+        );
+        assert!(
+            !expanded.contains(&"honcho"),
+            "honcho is opt-in — not in default core alias"
+        );
+    }
 
     #[test]
     fn resolve_alias_core_includes_file_toolset() {

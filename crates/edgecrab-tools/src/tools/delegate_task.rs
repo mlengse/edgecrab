@@ -115,11 +115,9 @@ fn filter_child_toolsets(requested: Option<&[String]>, parent_enabled: &[String]
                 .cloned()
                 .collect()
         }
-    } else if !parent_enabled.is_empty() {
-        parent_enabled.to_vec()
     } else {
-        // Default toolsets when nothing is configured
-        vec!["terminal".into(), "file".into(), "web".into()]
+        // Default: minimal subagent surface (~file + terminal) — not full parent inheritance.
+        vec!["minimal".into()]
     };
 
     // Strip blocked toolsets
@@ -777,13 +775,8 @@ mod tests {
             "web".into(),
         ];
         let filtered = filter_child_toolsets(None, &parent);
-        assert!(filtered.contains(&"terminal".to_string()));
-        assert!(filtered.contains(&"file".to_string()));
-        assert!(filtered.contains(&"web".to_string()));
-        assert!(!filtered.contains(&"delegation".to_string()));
-        assert!(!filtered.contains(&"memory".to_string()));
-        assert!(!filtered.contains(&"code_execution".to_string()));
-        assert!(!filtered.contains(&"messaging".to_string()));
+        // Default is minimal alias — expands to file + terminal at runtime.
+        assert_eq!(filtered, vec!["minimal".to_string()]);
     }
 
     #[test]

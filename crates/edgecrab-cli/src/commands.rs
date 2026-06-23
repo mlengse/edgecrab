@@ -111,6 +111,8 @@ pub enum CommandResult {
     ShowStatus,
     /// Show cost breakdown (tokens × pricing → estimated USD)
     ShowCost,
+    /// Show estimated context token budget breakdown.
+    ShowContextBudget,
     /// Show full token usage breakdown
     ShowUsage,
     /// Show, clear, or update the custom system prompt override
@@ -947,6 +949,22 @@ impl CommandRegistry {
             aliases: &[],
             description: "Show token usage and estimated cost",
             handler: |_| CommandResult::ShowCost,
+        });
+
+        self.register(Command {
+            name: "context",
+            aliases: &[],
+            description: "Context budget and conversation info",
+            handler: |args| {
+                let trimmed = args.trim();
+                if trimmed == "budget" || trimmed.is_empty() {
+                    CommandResult::ShowContextBudget
+                } else {
+                    CommandResult::Output(format!(
+                        "Unknown /context subcommand: {trimmed}\nUsage: /context budget"
+                    ))
+                }
+            },
         });
 
         self.register(Command {
@@ -2407,6 +2425,15 @@ mod tests {
         assert!(matches!(
             reg.dispatch("/cost"),
             Some(CommandResult::ShowCost)
+        ));
+    }
+
+    #[test]
+    fn dispatch_context_budget_returns_show_context_budget() {
+        let reg = CommandRegistry::new();
+        assert!(matches!(
+            reg.dispatch("/context budget"),
+            Some(CommandResult::ShowContextBudget)
         ));
     }
 

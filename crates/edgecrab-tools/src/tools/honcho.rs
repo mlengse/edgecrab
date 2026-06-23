@@ -322,7 +322,7 @@ impl ToolHandler for HonchoConclудeTool {
     }
 
     fn toolset(&self) -> &'static str {
-        "memory"
+        "honcho"
     }
 
     fn emoji(&self) -> &'static str {
@@ -468,7 +468,7 @@ impl ToolHandler for HonchoSearchTool {
     }
 
     fn toolset(&self) -> &'static str {
-        "memory"
+        "honcho"
     }
 
     fn emoji(&self) -> &'static str {
@@ -581,7 +581,7 @@ impl ToolHandler for HonchoListTool {
     }
 
     fn toolset(&self) -> &'static str {
-        "memory"
+        "honcho"
     }
 
     fn emoji(&self) -> &'static str {
@@ -665,7 +665,7 @@ impl ToolHandler for HonchoRemoveTool {
     }
 
     fn toolset(&self) -> &'static str {
-        "memory"
+        "honcho"
     }
 
     fn emoji(&self) -> &'static str {
@@ -736,7 +736,7 @@ impl ToolHandler for HonchoProfileTool {
     }
 
     fn toolset(&self) -> &'static str {
-        "memory"
+        "honcho"
     }
 
     fn emoji(&self) -> &'static str {
@@ -817,7 +817,7 @@ impl ToolHandler for HonchoContextTool {
     }
 
     fn toolset(&self) -> &'static str {
-        "memory"
+        "honcho"
     }
 
     fn emoji(&self) -> &'static str {

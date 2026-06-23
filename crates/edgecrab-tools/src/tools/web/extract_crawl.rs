@@ -1424,7 +1424,7 @@ impl ToolHandler for WebCrawlTool {
     }
 
     fn toolset(&self) -> &'static str {
-        "web"
+        "research"
     }
 
     fn emoji(&self) -> &'static str {

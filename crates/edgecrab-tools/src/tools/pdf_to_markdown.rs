@@ -124,7 +124,7 @@ impl ToolHandler for PdfToMarkdownTool {
     }
 
     fn toolset(&self) -> &'static str {
-        "file"
+        "research"
     }
 
     fn emoji(&self) -> &'static str {
